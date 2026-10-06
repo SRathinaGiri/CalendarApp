@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>SRG Calendar Pro</title>
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#1e293b">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  
+  <!-- Fonts & Icons -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  
+  <!-- SQL.js WASM & Pako & Google API & PDF.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js"></script>
+  <script src="pako.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app" class="app-layout">
+    
+    <!-- TOP NAVIGATION BAR -->
+    <header class="app-header">
+      <div class="brand">
+        <div class="brand-logo">
+          <i class="fa-solid fa-calendar-days"></i>
+        </div>
+        <div class="brand-text">
+          <span class="brand-name">SRG Calendar</span>
+          <span class="brand-badge" id="sourceBadge">Offline Local DB</span>
+        </div>
+      </div>
+
+      <!-- Quick Nav Controls -->
+      <div class="calendar-nav-bar">
+        <button id="prevBtn" class="btn-icon" title="Previous Month"><i class="fa-solid fa-chevron-left"></i></button>
+        <button id="todayBtn" class="btn-secondary btn-sm">Today</button>
+        <button id="nextBtn" class="btn-icon" title="Next Month"><i class="fa-solid fa-chevron-right"></i></button>
+        <h2 id="currentPeriodTitle" class="current-period">October 2026</h2>
+      </div>
+
+      <!-- Action Tools -->
+      <div class="header-actions">
+        <!-- View selector -->
+        <div class="view-switchers">
+          <button class="view-btn active" data-view="month">Month</button>
+          <button class="view-btn" data-view="day">Day</button>
+          <button class="view-btn" data-view="agenda">Agenda</button>
+        </div>
+
+        <!-- Google Drive Sync Button -->
+        <button id="syncDriveBtn" class="btn-sync" title="Sync with Google Drive">
+          <i class="fa-brands fa-google-drive"></i>
+          <span id="syncStatusText">Drive Sync</span>
+        </button>
+
+        <!-- Manage Tags Button -->
+        <button id="openTagMasterBtn" class="btn-secondary" title="Manage Tag Categories & Custom Fields">
+          <i class="fa-solid fa-tags"></i>
+          <span class="btn-label">Tags</span>
+        </button>
+
+        <!-- Backup & Settings -->
+        <button id="openSettingsBtn" class="btn-icon" title="Database Backup & Settings">
+          <i class="fa-solid fa-gear"></i>
+        </button>
+      </div>
+    </header>
+
+    <!-- MULTI-SELECT FLOATING ACTION BAR -->
+    <div id="selectionActionBar" class="selection-action-bar hidden">
+      <div class="selection-info">
+        <span class="selection-count" id="selectedCountText">0 dates selected</span>
+        <span class="selection-hint">Tap any date to select / deselect</span>
+      </div>
+      <div class="selection-buttons">
+        <button id="applyBulkTagsBtn" class="btn-primary">
+          <i class="fa-solid fa-tag"></i> Apply Tags & Schedules
+        </button>
+        <button id="clearSelectionBtn" class="btn-ghost">
+          <i class="fa-solid fa-xmark"></i> Clear Selection
+        </button>
+      </div>
+    </div>
+
+    <!-- MAIN BODY CONTENT -->
+    <main class="app-main">
+      
+      <!-- MONTH VIEW -->
+      <section id="monthView" class="calendar-view-container active">
+        <!-- Days Header -->
+        <div class="weekdays-grid">
+          <div class="weekday-cell sun">Sun</div>
+          <div class="weekday-cell">Mon</div>
+          <div class="weekday-cell">Tue</div>
+          <div class="weekday-cell">Wed</div>
+          <div class="weekday-cell">Thu</div>
+          <div class="weekday-cell">Fri</div>
+          <div class="weekday-cell sat">Sat</div>
+        </div>
+        <!-- Days Grid Cells -->
+        <div id="calendarGrid" class="calendar-grid"></div>
+      </section>
+
+      <!-- DAY VIEW (24-HOUR HOURLY SCHEDULE) -->
+      <section id="dayView" class="day-view-container">
+        <!-- Day View Header / Date Selector -->
+        <div class="day-view-header">
+          <div class="day-view-date-info">
+            <div class="day-view-day-name" id="dayViewDayName">Monday</div>
+            <div class="day-view-full-date" id="dayViewFullDate">06-Oct-2026</div>
+            <div class="day-view-tamil" id="dayViewTamil">திங்கள்</div>
+          </div>
+          <div class="day-view-controls">
+            <label for="dayViewDatePicker" class="day-picker-label"><i class="fa-regular fa-calendar"></i> Jump to Date:</label>
+            <input type="date" id="dayViewDatePicker" class="day-picker-input">
+            <button id="dayViewTodayBtn" class="btn-secondary btn-sm"><i class="fa-solid fa-calendar-day"></i> Today</button>
+          </div>
+        </div>
+
+        <!-- 24-Hour Timeline Grid -->
+        <div class="day-timeline" id="dayTimeline">
+          <!-- Dynamically populated 24 hours (00:00 to 23:59) -->
+        </div>
+      </section>
+
+      <!-- AGENDA / LIST VIEW -->
+      <section id="agendaView" class="agenda-view-container">
+        <div class="agenda-toolbar">
+          <div class="search-box">
+            <i class="fa-solid fa-magnifying-glass"></i>
+            <input type="text" id="agendaSearchInput" placeholder="Search programmes, places, courses, tags, PNR...">
+          </div>
+          <div class="filter-group">
+            <select id="modeFilter">
+              <option value="all">All Modes (Online + Offline)</option>
+              <option value="online">Online Only</option>
+              <option value="offline">Offline Only</option>
+            </select>
+            <select id="categoryFilter">
+              <option value="all">All Tag Categories</option>
+            </select>
+          </div>
+        </div>
+        <div id="agendaList" class="agenda-list"></div>
+      </section>
+
+    </main>
+
+    <!-- MODAL: ADD / EDIT SCHEDULE MODAL -->
+    <div id="scheduleModal" class="modal-backdrop hidden">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3 id="modalTitle"><i class="fa-solid fa-calendar-plus"></i> Add Schedule</h3>
+          <button class="modal-close-btn" id="closeScheduleModalBtn"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+
+        <form id="scheduleForm" class="modal-form">
+          <input type="hidden" id="editScheduleId">
+          
+          <!-- Selected Dates Badge Display -->
+          <div class="form-group">
+            <label>Selected Date(s)</label>
+            <div id="selectedDatesChips" class="selected-dates-chips"></div>
+          </div>
+
+          <!-- Title with Autocomplete from previous titles -->
+          <div class="form-group">
+            <label for="schedTitle">Programme Title / Details *</label>
+            <input type="text" id="schedTitle" list="previousTitlesDatalist" required placeholder="e.g. Chennai AITT or Manipal Finance Online" autocomplete="off">
+            <datalist id="previousTitlesDatalist"></datalist>
+          </div>
+
+          <!-- Batch / Group Indicator (if multi-date or existing group) -->
+          <div id="groupBadgeContainer" class="group-badge-container hidden">
+            <div class="group-info-pill">
+              <i class="fa-solid fa-layer-group"></i>
+              <span id="groupInfoText">Batch / Program Group</span>
+            </div>
+            <label class="group-checkbox-label">
+              <input type="checkbox" id="applyAsGroupCheckbox" checked> Treat as a Group (edit & delete together)
+            </label>
+          </div>
+
+          <!-- Tightened Fields: Status, From Time, To Time (Venue and Mode are now handled via Tags) -->
+          <div class="form-row-3">
+            <div class="form-group">
+              <label for="schedStatus">Status *</label>
+              <select id="schedStatus">
+                <option value="planned">📅 Planned</option>
+                <option value="completed">✅ Completed</option>
+                <option value="cancelled">❌ Cancelled</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="schedFromTime">From Time *</label>
+              <input type="time" id="schedFromTime" required value="09:30">
+            </div>
+            <div class="form-group">
+              <label for="schedToTime">To Time *</label>
+              <input type="time" id="schedToTime" required value="13:30">
+            </div>
+          </div>
+
+          <!-- TRAVEL TRANSIT SCHEDULING (PREVIOUS DAY & NEXT DAY RETURN) -->
+          <div class="travel-transit-section">
+            <div class="travel-transit-toggle" id="toggleTravelTransitHeader">
+              <span class="section-label"><i class="fa-solid fa-plane-departure"></i> Travel / Transit Scheduling</span>
+              <button type="button" class="btn-xs btn-secondary" id="toggleTravelSectionBtn"><i class="fa-solid fa-chevron-down"></i></button>
+            </div>
+            
+            <div id="travelTransitBody" class="travel-transit-body hidden">
+              <!-- Onward Travel (Previous day / Start Day) -->
+              <div class="travel-box">
+                <div class="travel-box-header">
+                  <label class="checkbox-inline">
+                    <input type="checkbox" id="addOnwardTravel"> Schedule Onward Travel (Going to Program)
+                  </label>
+                </div>
+                <div id="onwardTravelFields" class="travel-fields-container hidden">
+                  <div class="travel-fields-grid">
+                    <div class="form-group">
+                      <label>Travel Mode</label>
+                      <select id="onwardTravelMode">
+                        <option value="Train">🚆 Train</option>
+                        <option value="Flight">✈️ Flight</option>
+                        <option value="Bus">🚌 Bus</option>
+                      </select>
+                    </div>
+                    <div class="form-group">
+                      <label>From Date</label>
+                      <input type="date" id="onwardTravelDate">
+                      <span id="onwardTravelDateHint" class="date-format-hint"></span>
+                    </div>
+                    <div class="form-group">
+                      <label>Departure Time</label>
+                      <input type="time" id="onwardDepTime" value="20:40">
+                    </div>
+                    <div class="form-group">
+                      <label>To Date (Arrival Date)</label>
+                      <input type="date" id="onwardArrivalDate">
+                      <span id="onwardArrivalDateHint" class="date-format-hint"></span>
+                    </div>
+                    <div class="form-group">
+                      <label>Arrival Time</label>
+                      <input type="time" id="onwardArrTime" value="07:30">
+                    </div>
+                    <div class="form-group">
+                      <label>From Place</label>
+                      <input type="text" id="onwardFromPlace" placeholder="e.g. Sivakasi">
+                    </div>
+                    <div class="form-group">
+                      <label>To Place</label>
+                      <input type="text" id="onwardToPlace" placeholder="e.g. Chennai">
+                    </div>
+                    <div class="form-group">
+                      <label>Train/Flight No / Name</label>
+                      <input type="text" id="onwardTravelDetails" placeholder="e.g. 12662 Pothigai Exp">
+                    </div>
+                    <div class="form-group">
+                      <label>PNR / Booking Ref No</label>
+                      <input type="text" id="onwardPnrNo" placeholder="e.g. 4215896321">
+                    </div>
+                    <div class="form-group">
+                      <label>Ticket Amount (₹)</label>
+                      <input type="number" id="onwardAmount" min="0" step="0.01" value="0" placeholder="0 if sponsored">
+                    </div>
+                  </div>
+
+                  <!-- Reimbursement & Ticket Image Attachment for Onward Travel -->
+                  <div class="travel-finance-row">
+                    <label id="onwardReimbursableWrapper" class="checkbox-inline disabled-opt">
+                      <input type="checkbox" id="onwardReimbursable" disabled> Reimbursable by Organizer
+                    </label>
+                    <div class="travel-attachment-wrapper">
+                      <label class="btn-secondary btn-xs upload-label">
+                        <i class="fa-solid fa-paperclip"></i> Attach Onward Ticket Image
+                        <input type="file" id="onwardTicketFileInput" accept="image/*,application/pdf" style="display:none;">
+                      </label>
+                      <div id="onwardTicketPreview" class="travel-ticket-preview"></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Return Travel (Last Day / Next Day) -->
+              <div class="travel-box">
+                <div class="travel-box-header">
+                  <label class="checkbox-inline">
+                    <input type="checkbox" id="addReturnTravel"> Schedule Return Travel (Returning Home)
+                  </label>
+                </div>
+                <div id="returnTravelFields" class="travel-fields-container hidden">
+                  <div class="travel-fields-grid">
+                    <div class="form-group">
+                      <label>Travel Mode</label>
+                      <select id="returnTravelMode">
+                        <option value="Train">🚆 Train</option>
+                        <option value="Flight">✈️ Flight</option>
+                        <option value="Bus">🚌 Bus</option>
+                      </select>
+                    </div>
+                    <div class="form-group">
+                      <label>From Date</label>
+                      <input type="date" id="returnTravelDate">
+                      <span id="returnTravelDateHint" class="date-format-hint"></span>
+                    </div>
+                    <div class="form-group">
+                      <label>Departure Time</label>
+                      <input type="time" id="returnDepTime" value="20:10">
+                    </div>
+                    <div class="form-group">
+                      <label>To Date (Arrival Date)</label>
+                      <input type="date" id="returnArrivalDate">
+                      <span id="returnArrivalDateHint" class="date-format-hint"></span>
+                    </div>
+                    <div class="form-group">
+                      <label>Arrival Time</label>
+                      <input type="time" id="returnArrTime" value="06:45">
+                    </div>
+                    <div class="form-group">
+                      <label>From Place</label>
+                      <input type="text" id="returnFromPlace" placeholder="e.g. Chennai">
+                    </div>
+                    <div class="form-group">
+                      <label>To Place</label>
+                      <input type="text" id="returnToPlace" placeholder="e.g. Sivakasi">
+                    </div>
+                    <div class="form-group">
+                      <label>Train/Flight No / Name</label>
+                      <input type="text" id="returnTravelDetails" placeholder="e.g. 12661 Pothigai Exp">
+                    </div>
+                    <div class="form-group">
+                      <label>PNR / Booking Ref No</label>
+                      <input type="text" id="returnPnrNo" placeholder="e.g. 6325897410">
+                    </div>
+                    <div class="form-group">
+                      <label>Ticket Amount (₹)</label>
+                      <input type="number" id="returnAmount" min="0" step="0.01" value="0" placeholder="0 if sponsored">
+                    </div>
+                  </div>
+
+                  <!-- Reimbursement & Ticket Image Attachment for Return Travel -->
+                  <div class="travel-finance-row">
+                    <label id="returnReimbursableWrapper" class="checkbox-inline disabled-opt">
+                      <input type="checkbox" id="returnReimbursable" disabled> Reimbursable by Organizer
+                    </label>
+                    <div class="travel-attachment-wrapper">
+                      <label class="btn-secondary btn-xs upload-label">
+                        <i class="fa-solid fa-paperclip"></i> Attach Return Ticket Image
+                        <input type="file" id="returnTicketFileInput" accept="image/*,application/pdf" style="display:none;">
+                      </label>
+                      <div id="returnTicketPreview" class="travel-ticket-preview"></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Categorized Tags Selection Area -->
+          <div class="form-group">
+            <div class="tags-picker-header">
+              <label class="section-label"><i class="fa-solid fa-tags"></i> Tag Classification (Select multiple)</label>
+              <span class="hint-small">Click "+" beside any category to add new tags instantly</span>
+            </div>
+            <div id="categoryTagsPicker" class="category-tags-picker"></div>
+          </div>
+
+          <!-- Dynamic Configurable Fields based on active tags -->
+          <div id="tagCustomFieldsContainer" class="custom-fields-container hidden">
+            <label class="section-label"><i class="fa-solid fa-sliders"></i> Specific Tag Details (PNR, Train No, etc.)</label>
+            <div id="dynamicFieldsInputs" class="dynamic-fields-grid"></div>
+          </div>
+
+          <!-- ATTACHMENT FACILITY (TICKETS / IMAGES / DOCUMENTS AS BASE64) -->
+          <div class="form-group">
+            <label class="section-label"><i class="fa-solid fa-paperclip"></i> Attachments (Tickets, Bills, Boarding Passes)</label>
+            <div class="attachment-upload-zone">
+              <label class="btn-secondary btn-sm upload-label">
+                <i class="fa-solid fa-file-arrow-up"></i> Add Ticket / Document Image
+                <input type="file" id="ticketFileInput" accept="image/*,application/pdf" style="display:none;" multiple>
+              </label>
+              <span class="hint-small">Stored securely as base64 inside your SQLite database</span>
+            </div>
+            <div id="attachmentsPreviewList" class="attachments-preview-list"></div>
+          </div>
+
+          <!-- General Notes -->
+          <div class="form-group">
+            <label for="schedNotes">Notes & References</label>
+            <textarea id="schedNotes" rows="2" placeholder="Fee info, contact person, coordinator details..."></textarea>
+          </div>
+
+          <!-- Actions -->
+          <div class="modal-footer">
+            <div class="footer-left-buttons">
+              <button type="button" id="deleteScheduleBtn" class="btn-danger hidden">
+                <i class="fa-solid fa-trash"></i> Delete
+              </button>
+              <button type="button" id="deleteGroupBtn" class="btn-danger hidden">
+                <i class="fa-solid fa-layer-group"></i> Delete Entire Batch Group
+              </button>
+            </div>
+            <div class="footer-right-buttons">
+              <button type="button" id="cancelScheduleBtn" class="btn-secondary">Cancel</button>
+              <button type="submit" class="btn-primary"><i class="fa-solid fa-check"></i> Save Schedule</button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- MODAL: SCHEDULE DETAILS & ACTIONS (VIEW / MOBILE POPUP) -->
+    <div id="scheduleDetailsModal" class="modal-backdrop hidden">
+      <div class="modal-card" style="max-width: 520px;">
+        <div class="modal-header">
+          <h3 id="detailsModalHeading"><i class="fa-solid fa-calendar-day"></i> Schedule Details</h3>
+          <button class="modal-close-btn" id="closeScheduleDetailsBtn"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="schedule-details-body" id="scheduleDetailsBody" style="padding: 20px; overflow-y: auto; max-height: 70vh;">
+          <!-- Dynamically populated -->
+        </div>
+        <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 10px; padding: 12px 20px; background: var(--bg-primary); border-top: 1px solid var(--border-color);">
+          <button type="button" id="detailsEditBtn" class="btn-primary btn-sm"><i class="fa-solid fa-pen-to-square"></i> Edit</button>
+          <button type="button" id="detailsCloseBtn" class="btn-secondary btn-sm">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL: TAG MASTER -->
+    <div id="tagMasterModal" class="modal-backdrop hidden">
+      <div class="modal-card wide">
+        <div class="modal-header">
+          <h3><i class="fa-solid fa-tags"></i> Tag Master & Categories</h3>
+          <button class="modal-close-btn" id="closeTagMasterBtn"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+
+        <div class="tag-master-body">
+          <div class="tag-master-sidebar">
+            <div class="sidebar-header">
+              <span>Categories</span>
+              <button id="addCategoryBtn" class="btn-xs btn-primary"><i class="fa-solid fa-plus"></i></button>
+            </div>
+            <ul id="categoryListUl" class="category-list-ul"></ul>
+          </div>
+
+          <div class="tag-master-content">
+            <div class="tag-content-header">
+              <h4 id="activeCategoryHeading">Tags in Category</h4>
+              <button id="addTagBtn" class="btn-secondary btn-sm"><i class="fa-solid fa-plus"></i> Add Tag</button>
+            </div>
+            <div id="tagsListContainer" class="tags-list-container"></div>
+
+            <div class="custom-fields-header">
+              <h4>Configurable Fields for this Category</h4>
+              <button id="addFieldBtn" class="btn-secondary btn-sm"><i class="fa-solid fa-plus"></i> Add Field</button>
+            </div>
+            <div id="categoryFieldsContainer" class="category-fields-container"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL: GOOGLE DRIVE & SETTINGS -->
+    <div id="settingsModal" class="modal-backdrop hidden">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3><i class="fa-solid fa-gear"></i> Google Drive Sync & Database</h3>
+          <button class="modal-close-btn" id="closeSettingsBtn"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+
+        <div class="settings-content">
+          <!-- Google Drive Status Card -->
+          <div class="settings-section">
+            <h4><i class="fa-brands fa-google-drive"></i> Google Drive Connection</h4>
+            <p class="settings-hint">Sync your SQLite single-source-of-truth database (<code>SRG_Calendar.db</code>) with your personal Google Drive.</p>
+            
+            <div class="drive-auth-box">
+              <div class="auth-status-row">
+                <span>Drive Status:</span>
+                <span id="gdriveStatusBadge" class="status-pill status-disconnected">Not Connected</span>
+              </div>
+              <div class="drive-folder-row">
+                <span>Target File:</span>
+                <code>Google Drive > CalendarApp > SRG_Calendar.db</code>
+              </div>
+              <div class="auth-buttons-row">
+                <button id="gdriveSignInBtn" class="btn-primary">
+                  <i class="fa-brands fa-google"></i> Connect Google Account
+                </button>
+                <button id="gdriveUploadNowBtn" class="btn-secondary" disabled>
+                  <i class="fa-solid fa-cloud-arrow-up"></i> Upload DB to Drive
+                </button>
+                <button id="gdriveDownloadNowBtn" class="btn-secondary" disabled>
+                  <i class="fa-solid fa-cloud-arrow-down"></i> Pull DB from Drive
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Local SQLite Backup & Restore -->
+          <div class="settings-section">
+            <h4><i class="fa-solid fa-database"></i> SQLite File Backup & Restore</h4>
+            <p class="settings-hint">Directly export the live SQLite database or import a new SQLite file anytime.</p>
+            <div class="db-actions-row">
+              <button id="exportDbBtn" class="btn-secondary">
+                <i class="fa-solid fa-download"></i> Download .db File
+              </button>
+              <label class="btn-secondary upload-label">
+                <i class="fa-solid fa-upload"></i> Restore .db File
+                <input type="file" id="importDbInput" accept=".db,.sqlite,.sqlite3" style="display:none;">
+              </label>
+            </div>
+          </div>
+
+          <!-- Client ID Settings -->
+          <div class="settings-section">
+            <h4><i class="fa-solid fa-key"></i> Google OAuth Client ID</h4>
+            <p class="settings-hint">Enter your Google Cloud Web Client ID to authorize Drive access from this app.</p>
+            <div class="form-group">
+              <input type="text" id="gdriveClientIdInput" placeholder="your-client-id.apps.googleusercontent.com">
+            </div>
+            <button id="saveClientIdBtn" class="btn-secondary btn-sm">Save Client ID</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

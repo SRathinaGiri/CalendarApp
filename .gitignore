@@ -1,0 +1,24 @@
+# SRG Calendar Pro - Git Ignore
+
+# Secrets & Credentials
+client_secret*.json
+*.env
+*.pem
+*.key
+
+# Data & Database Backups (personal data)
+*.db
+*.sqlite
+*.sqlite3
+*.xlsx
+*.csv
+
+# Python scripts/caches
+__pycache__/
+*.py[cod]
+import_excel.py
+scratch*.*
+
+# OS generated files
+.DS_Store
+Thumbs.db
