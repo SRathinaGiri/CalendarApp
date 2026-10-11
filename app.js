@@ -106,7 +106,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA
-const APP_VERSION = 'v1.0.2 (Local DB)';
+const APP_VERSION = 'v1.0.3 (Local DB)';
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').then((reg) => {
     console.log('SRG Calendar Local DB SW Registered');
@@ -121,7 +121,7 @@ if (localStorage.getItem('srg_installed_version') !== APP_VERSION) {
   if ('caches' in window) {
     caches.keys().then(names => {
       names.forEach(name => {
-        if (!name.includes('v1.0.2')) {
+        if (!name.includes('v1.0.3')) {
           caches.delete(name);
         }
       });
@@ -591,7 +591,39 @@ async function deleteAllLocalDbSnapshots() {
   } catch(e) {}
 }
 
-/* Decoupled File Storage Helpers (IndexedDB Local Storage) */
+/* ==========================================================================
+   1B. DECOUPLED ATTACHMENT STORAGE & BACKUP SYSTEM (INDEXEDDB & CANONICAL MAPPING)
+   ========================================================================== */
+
+const ALLOWED_ATTACHMENT_EXTENSIONS = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'pdf'];
+
+function isAllowedAttachmentFile(filename) {
+  if (!filename) return false;
+  const ext = filename.split('.').pop().toLowerCase();
+  return ALLOWED_ATTACHMENT_EXTENSIONS.includes(ext);
+}
+
+function extractCanonicalAttachmentId(filename) {
+  if (!filename) return null;
+  // 1. Detect ticket onward / return pattern (e.g. ticket_onward_1791635563947)
+  const ticketMatch = filename.match(/(ticket_(?:onward|return)_\d+)/i);
+  if (ticketMatch) {
+    return ticketMatch[1].toLowerCase();
+  }
+  // 2. Strip server random hash prefix (e.g. att_1791635569_2f102dd1_...)
+  const cleanedServerName = filename.replace(/^att_\d+_[a-f0-9]+_/, '');
+  if (cleanedServerName && cleanedServerName !== filename) {
+    const subTicket = cleanedServerName.match(/(ticket_(?:onward|return)_\d+)/i);
+    if (subTicket) return subTicket[1].toLowerCase();
+    return cleanedServerName;
+  }
+  // 3. Strip 'att_' prefix if present
+  if (filename.startsWith('att_')) {
+    return filename.slice(4);
+  }
+  return filename;
+}
+
 function saveAttachmentToIndexedDB(attId, dataBase64) {
   return new Promise(async (resolve) => {
     if (!attId || !dataBase64) return resolve();
@@ -599,7 +631,8 @@ function saveAttachmentToIndexedDB(attId, dataBase64) {
       const idb = await openSRGDatabase();
       const tx = idb.transaction('files', 'readwrite');
       const store = tx.objectStore('files');
-      store.put(dataBase64, 'att_' + attId);
+      const canonicalKey = attId.startsWith('att_') ? attId : ('att_' + attId);
+      store.put(dataBase64, canonicalKey);
       tx.oncomplete = () => resolve();
       tx.onerror = () => resolve();
     } catch(e) {
@@ -616,15 +649,14 @@ function loadAttachmentFromIndexedDB(attId) {
       const tx = idb.transaction('files', 'readonly');
       const store = tx.objectStore('files');
 
-      // Try with 'att_' prefix, without 'att_' prefix, and clean key
-      const key1 = attId.startsWith('att_') ? attId : ('att_' + attId);
-      const key2 = attId.startsWith('att_') ? attId.slice(4) : attId;
+      const canonicalKey = attId.startsWith('att_') ? attId : ('att_' + attId);
+      const rawKey = attId.startsWith('att_') ? attId.slice(4) : attId;
 
-      const req1 = store.get(key1);
+      const req1 = store.get(canonicalKey);
       req1.onsuccess = () => {
         if (req1.result) return resolve(req1.result);
 
-        const req2 = store.get(key2);
+        const req2 = store.get(rawKey);
         req2.onsuccess = () => {
           if (req2.result) return resolve(req2.result);
           resolve(null);
@@ -698,7 +730,6 @@ async function getAttachmentData(att) {
         const cursor = e.target.result;
         if (cursor) {
           const kStr = String(cursor.key).toLowerCase();
-          // Check if cursor key matches or contains any of the search targets
           const isMatch = searchTargets.some(target => {
             if (target.length < 4) return false;
             return kStr.includes(target) || target.includes(kStr.replace(/^att_/, ''));
@@ -716,7 +747,6 @@ async function getAttachmentData(att) {
 
     if (matchedData) {
       att.data = matchedData;
-      // Cache under att.id for faster subsequent loads
       if (att.id) await saveAttachmentToIndexedDB(att.id, matchedData);
       return matchedData;
     }
@@ -725,6 +755,439 @@ async function getAttachmentData(att) {
   }
 
   return null;
+}
+
+function getReferencedAttachmentIds() {
+  const referenced = new Set();
+  if (!db) return referenced;
+  try {
+    const res = db.exec("SELECT attachments, travel_info FROM schedules");
+    if (res.length > 0 && res[0].values) {
+      for (const row of res[0].values) {
+        const attJson = row[0];
+        const travelJson = row[1];
+        if (attJson) {
+          try {
+            const arr = JSON.parse(attJson);
+            if (Array.isArray(arr)) {
+              for (const a of arr) {
+                if (a.id) referenced.add(String(a.id).trim().toLowerCase());
+                if (a.filename) referenced.add(String(a.filename).trim().toLowerCase());
+              }
+            }
+          } catch(e) {}
+        }
+        if (travelJson) {
+          try {
+            const t = JSON.parse(travelJson);
+            ['onward', 'return'].forEach(leg => {
+              if (t && t[leg] && t[leg].attachment) {
+                const a = t[leg].attachment;
+                if (a.id) referenced.add(String(a.id).trim().toLowerCase());
+                if (a.filename) referenced.add(String(a.filename).trim().toLowerCase());
+              }
+            });
+          } catch(e) {}
+        }
+      }
+    }
+  } catch(e) {
+    console.warn('Error reading referenced attachments from db:', e);
+  }
+  return referenced;
+}
+
+async function scanStorageAttachments() {
+  const referenced = getReferencedAttachmentIds();
+  const idb = await openSRGDatabase();
+  const tx = idb.transaction('files', 'readonly');
+  const store = tx.objectStore('files');
+
+  let totalFiles = 0;
+  let totalBytes = 0;
+  const orphanList = [];
+  let referencedCount = 0;
+
+  await new Promise((resolve, reject) => {
+    const cursorReq = store.openCursor();
+    cursorReq.onsuccess = (e) => {
+      const cursor = e.target.result;
+      if (cursor) {
+        const key = String(cursor.key);
+        if (key.startsWith('att_')) {
+          totalFiles++;
+          const val = cursor.value;
+          let valSize = 0;
+          if (typeof val === 'string') {
+            valSize = Math.round(val.length * 0.75);
+          } else if (val instanceof ArrayBuffer || val instanceof Uint8Array) {
+            valSize = val.byteLength;
+          }
+          totalBytes += valSize;
+
+          const rawId = key.slice(4).trim().toLowerCase();
+          let isRef = referenced.has(rawId);
+          if (!isRef) {
+            for (const ref of referenced) {
+              if (ref.length >= 5 && (rawId.includes(ref) || ref.includes(rawId))) {
+                isRef = true;
+                break;
+              }
+            }
+          }
+
+          if (isRef) {
+            referencedCount++;
+          } else {
+            orphanList.push({ key, size: valSize });
+          }
+        }
+        cursor.continue();
+      } else {
+        resolve();
+      }
+    };
+    cursorReq.onerror = () => reject(cursorReq.error);
+  });
+
+  return { totalFiles, totalBytes, orphanList, referencedCount };
+}
+
+async function updateStorageStatsUI() {
+  const statsEl = document.getElementById('storageAttachmentsStats');
+  if (!statsEl) return;
+  try {
+    const stats = await scanStorageAttachments();
+    const mb = (stats.totalBytes / (1024 * 1024)).toFixed(2);
+    const orphanCount = stats.orphanList.length;
+    if (orphanCount > 0) {
+      const orphanMb = (stats.orphanList.reduce((acc, o) => acc + o.size, 0) / (1024 * 1024)).toFixed(2);
+      statsEl.innerHTML = `${stats.totalFiles} files (${mb} MB) <span style="color:#f59e0b; font-size:0.75rem;">• ${orphanCount} orphan (${orphanMb} MB)</span>`;
+    } else {
+      statsEl.innerHTML = `${stats.totalFiles} files (${mb} MB) <span style="color:#10b981; font-size:0.75rem;">• All active</span>`;
+    }
+  } catch(e) {
+    statsEl.textContent = 'Active';
+  }
+}
+
+async function purgeOrphanAttachments() {
+  const stats = await scanStorageAttachments();
+  if (stats.orphanList.length === 0) {
+    showToast('✓ Storage is clean! No unreferenced attachments found.', 'success', 3500);
+    return;
+  }
+
+  const orphanMb = (stats.orphanList.reduce((acc, o) => acc + o.size, 0) / (1024 * 1024)).toFixed(2);
+  const ok = confirm(`Clean Up Orphan Files:\n\nFound ${stats.orphanList.length} unreferenced attachment file(s) occupying ~${orphanMb} MB.\nThese are not attached to any current schedule.\n\nPermanently delete these orphan files from local storage?`);
+  if (!ok) return;
+
+  try {
+    const idb = await openSRGDatabase();
+    const tx = idb.transaction('files', 'readwrite');
+    const store = tx.objectStore('files');
+    for (const item of stats.orphanList) {
+      store.delete(item.key);
+    }
+    await new Promise((res, rej) => {
+      tx.oncomplete = res;
+      tx.onerror = rej;
+    });
+
+    showToast(`✓ Cleaned ${stats.orphanList.length} orphan files and freed ${orphanMb} MB!`, 'success', 4000);
+    await updateStorageStatsUI();
+  } catch(err) {
+    console.error('Error purging orphans:', err);
+    showToast('Error cleaning orphan files: ' + err.message, 'error', 4000);
+  }
+}
+
+/**
+ * Export complete atomic backup (SQLite database + manifest + all attachments)
+ * as a single .zip archive.
+ */
+async function exportFullBackupZip() {
+  if (!db) {
+    showToast('Database is not initialized.', 'warning');
+    return;
+  }
+  if (typeof JSZip === 'undefined') {
+    showToast('Zip library not loaded. Please refresh the app.', 'error');
+    return;
+  }
+
+  const loadingToast = showToast('Creating full backup bundle (database + attachments)...', 'info', 0);
+  try {
+    const zip = new JSZip();
+
+    // 1. Export SQLite database binary
+    const dbBinary = db.export();
+    zip.file('database.db', dbBinary);
+
+    // 2. Query schedules/records counts
+    let schCount = 0, txCount = 0, noteCount = 0, tagCount = 0;
+    try {
+      const r0 = db.exec("SELECT COUNT(*) FROM schedules");
+      if (r0.length > 0) schCount = r0[0].values[0][0];
+      const r1 = db.exec("SELECT COUNT(*) FROM daily_transactions");
+      if (r1.length > 0) txCount = r1[0].values[0][0];
+      const r2 = db.exec("SELECT COUNT(*) FROM daily_notes");
+      if (r2.length > 0) noteCount = r2[0].values[0][0];
+      const r3 = db.exec("SELECT COUNT(*) FROM tags");
+      if (r3.length > 0) tagCount = r3[0].values[0][0];
+    } catch(e) {}
+
+    // 3. Export all IndexedDB attachments with manifest
+    const idb = await openSRGDatabase();
+    const tx = idb.transaction('files', 'readonly');
+    const store = tx.objectStore('files');
+
+    const manifestAttachments = [];
+    const attFolder = zip.folder('attachments');
+    const seenFiles = new Set();
+
+    await new Promise((resolve, reject) => {
+      const cursorReq = store.openCursor();
+      cursorReq.onsuccess = (e) => {
+        const cursor = e.target.result;
+        if (cursor) {
+          const key = String(cursor.key);
+          if (key.startsWith('att_')) {
+            const rawId = key.slice(4);
+            const val = cursor.value;
+            if (val) {
+              let ext = 'bin';
+              let mime = 'application/octet-stream';
+              let b64 = '';
+
+              if (typeof val === 'string' && val.startsWith('data:')) {
+                const commaIdx = val.indexOf(',');
+                b64 = commaIdx > -1 ? val.slice(commaIdx + 1) : val;
+                const matchMime = val.match(/data:([^;]+);/);
+                if (matchMime) {
+                  mime = matchMime[1];
+                  if (mime === 'application/pdf') ext = 'pdf';
+                  else if (mime === 'image/jpeg') ext = 'jpg';
+                  else if (mime === 'image/png') ext = 'png';
+                  else if (mime === 'image/gif') ext = 'gif';
+                  else if (mime === 'image/webp') ext = 'webp';
+                }
+              }
+
+              let zipFileName = rawId;
+              if (!zipFileName.includes('.')) {
+                zipFileName = `${rawId}.${ext}`;
+              }
+
+              if (!seenFiles.has(zipFileName)) {
+                seenFiles.add(zipFileName);
+                if (b64) {
+                  attFolder.file(zipFileName, b64, { base64: true });
+                } else if (val instanceof ArrayBuffer || val instanceof Uint8Array) {
+                  attFolder.file(zipFileName, val);
+                }
+
+                manifestAttachments.push({
+                  id: rawId,
+                  path: `attachments/${zipFileName}`,
+                  filename: zipFileName,
+                  mime: mime,
+                  size: b64 ? Math.round(b64.length * 0.75) : (val.byteLength || 0)
+                });
+              }
+            }
+          }
+          cursor.continue();
+        } else {
+          resolve();
+        }
+      };
+      cursorReq.onerror = () => reject(cursorReq.error);
+    });
+
+    // 4. Manifest
+    const nowIso = new Date().toISOString();
+    const manifest = {
+      app: 'SRG_Calendar',
+      app_version: APP_VERSION,
+      backup_id: 'SRG_BACKUP_' + Date.now(),
+      created_at: nowIso,
+      database: {
+        filename: 'database.db',
+        schedules_count: schCount,
+        transactions_count: txCount,
+        notes_count: noteCount,
+        tags_count: tagCount
+      },
+      attachments_count: manifestAttachments.length,
+      attachments: manifestAttachments
+    };
+    zip.file('manifest.json', JSON.stringify(manifest, null, 2));
+
+    // 5. Generate and download zip
+    const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+    const nowStr = formatDateYMD(new Date());
+    const downloadFilename = `SRG_Calendar_FullBackup_${nowStr}.zip`;
+
+    const url = URL.createObjectURL(zipBlob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = downloadFilename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    if (loadingToast) dismissToast(loadingToast);
+    showToast(`✓ Exported complete backup (${schCount} schedules, ${manifestAttachments.length} files) to ${downloadFilename}!`, 'success', 5000);
+  } catch (err) {
+    if (loadingToast) dismissToast(loadingToast);
+    console.error('Error exporting full backup zip:', err);
+    showToast('Failed to export full backup: ' + err.message, 'error', 5000);
+  }
+}
+
+/**
+ * Import complete atomic backup (database.db + manifest.json + attachments/)
+ * with validation, safety snapshots, and single canonical key mapping.
+ */
+async function importFullBackupZip(file) {
+  if (!file) return;
+  if (typeof JSZip === 'undefined') {
+    showToast('Zip library not loaded. Please refresh the app.', 'error');
+    return;
+  }
+
+  // Guardrail 1: Max archive size (250 MB)
+  if (file.size > 250 * 1024 * 1024) {
+    showToast('❌ Backup archive exceeds maximum size limit (250 MB).', 'error', 5000);
+    return;
+  }
+
+  const ok = confirm(`⚠️ Restore Complete Backup from "${file.name}"?\n\nThis will restore your SQLite database and all ticket attachments.\nA safety snapshot of your current database will be saved before restoring.`);
+  if (!ok) return;
+
+  const loadingToast = showToast('Validating backup archive...', 'info', 0);
+
+  try {
+    const zip = await JSZip.loadAsync(file);
+    const fileEntries = Object.keys(zip.files).filter(k => !zip.files[k].dir && !k.startsWith('__MACOSX'));
+
+    // Guardrail 2: Max entry count (1000 files)
+    if (fileEntries.length > 1000) {
+      throw new Error('Archive contains too many entries (> 1000). Aborting for safety.');
+    }
+
+    // Locate database.db
+    let dbEntry = zip.file('database.db');
+    if (!dbEntry) {
+      const dbName = fileEntries.find(k => k.toLowerCase().endsWith('.db') && !k.includes('/'));
+      if (dbName) dbEntry = zip.file(dbName);
+    }
+
+    if (!dbEntry) {
+      throw new Error('Archive is missing "database.db". If this is an attachments-only ZIP, use "Restore Files (.zip)" under Advanced Options.');
+    }
+
+    // Stage & Validate DB binary
+    const dbBuffer = await dbEntry.async('arraybuffer');
+    const u8 = new Uint8Array(dbBuffer);
+    const headerStr = String.fromCharCode(...u8.slice(0, 16));
+    if (!headerStr.startsWith('SQLite format 3')) {
+      throw new Error('database.db in archive is corrupted or not a valid SQLite database.');
+    }
+
+    // Read manifest.json if present
+    let manifest = null;
+    const manifestEntry = zip.file('manifest.json');
+    if (manifestEntry) {
+      try {
+        const manifestText = await manifestEntry.async('string');
+        manifest = JSON.parse(manifestText);
+      } catch(e) {
+        console.warn('Manifest parsing warning:', e);
+      }
+    }
+
+    // Safety Snapshot
+    await saveLocalDbSnapshot('Pre-Full-Restore Safety Backup');
+
+    // 1. Commit Database
+    db = new SQL.Database(u8);
+    ensureSchemaUpToDate();
+    await saveDbToIndexedDB();
+
+    // 2. Commit Attachments (Canonical mapping, single key per file)
+    let restoredFilesCount = 0;
+    const attachmentEntries = fileEntries.filter(k => k !== 'database.db' && k !== 'manifest.json');
+
+    const manifestMap = new Map();
+    if (manifest && Array.isArray(manifest.attachments)) {
+      manifest.attachments.forEach(att => {
+        if (att.filename && att.id) manifestMap.set(att.filename.toLowerCase(), att.id);
+        if (att.path && att.id) manifestMap.set(att.path.toLowerCase(), att.id);
+      });
+    }
+
+    for (let i = 0; i < attachmentEntries.length; i++) {
+      const entryKey = attachmentEntries[i];
+      const entry = zip.files[entryKey];
+      const entryFilename = entryKey.split('/').pop().trim();
+
+      if (!entryFilename || !isAllowedAttachmentFile(entryFilename)) continue;
+
+      const ext = entryFilename.split('.').pop().toLowerCase();
+      let mime = 'application/octet-stream';
+      if (['jpg', 'jpeg'].includes(ext)) mime = 'image/jpeg';
+      else if (ext === 'png') mime = 'image/png';
+      else if (ext === 'gif') mime = 'image/gif';
+      else if (ext === 'webp') mime = 'image/webp';
+      else if (ext === 'pdf') mime = 'application/pdf';
+
+      const base64Content = await entry.async('base64');
+      if (base64Content.length > 40 * 1024 * 1024) continue; // Skip oversized
+
+      const dataUrl = `data:${mime};base64,${base64Content}`;
+
+      let canonicalId = manifestMap.get(entryFilename.toLowerCase()) ||
+                        manifestMap.get(entryKey.toLowerCase()) ||
+                        extractCanonicalAttachmentId(entryFilename);
+
+      if (!canonicalId) {
+        canonicalId = entryFilename;
+      }
+
+      await saveAttachmentToIndexedDB(canonicalId, dataUrl);
+      restoredFilesCount++;
+    }
+
+    // 3. Post-Restore Integrity Verification
+    const referencedIds = getReferencedAttachmentIds();
+    let missingCount = 0;
+    for (const refId of referencedIds) {
+      const data = await loadAttachmentFromIndexedDB(refId);
+      if (!data) missingCount++;
+    }
+
+    loadMasterDataFromDb();
+    populateTitlesDatalist();
+    renderCurrentView();
+    closeServerSyncModal();
+
+    if (loadingToast) dismissToast(loadingToast);
+
+    let summaryMsg = `✓ Full restore complete! Restored database & ${restoredFilesCount} files.`;
+    if (missingCount > 0) {
+      summaryMsg += ` (${missingCount} attachment references missing from archive)`;
+      showToast(summaryMsg, 'warning', 6000);
+    } else {
+      showToast(summaryMsg, 'success', 5000);
+    }
+  } catch (err) {
+    if (loadingToast) dismissToast(loadingToast);
+    console.error('Error during full backup restore:', err);
+    showToast('❌ Failed to restore full backup: ' + err.message, 'error', 6000);
+  }
 }
 
 /**
@@ -744,6 +1207,8 @@ async function exportAttachmentsZipFile() {
 
     const zip = new JSZip();
     let fileCount = 0;
+    const seenFiles = new Set();
+    const manifestAttachments = [];
 
     await new Promise((resolve, reject) => {
       const cursorReq = store.openCursor();
@@ -751,20 +1216,49 @@ async function exportAttachmentsZipFile() {
         const cursor = e.target.result;
         if (cursor) {
           const key = String(cursor.key);
-          // Only package attachments (keys starting with 'att_')
           if (key.startsWith('att_')) {
-            const rawKey = key.slice(4); // Remove 'att_' prefix
+            const rawKey = key.slice(4);
             const val = cursor.value;
             if (val) {
+              let ext = 'bin';
+              let mime = 'application/octet-stream';
+              let b64 = '';
+
               if (typeof val === 'string' && val.startsWith('data:')) {
-                // Convert data URL to binary for zip
                 const commaIdx = val.indexOf(',');
-                const b64 = commaIdx > -1 ? val.slice(commaIdx + 1) : val;
-                zip.file(rawKey, b64, { base64: true });
-                fileCount++;
-              } else if (val instanceof ArrayBuffer || val instanceof Uint8Array) {
-                zip.file(rawKey, val);
-                fileCount++;
+                b64 = commaIdx > -1 ? val.slice(commaIdx + 1) : val;
+                const matchMime = val.match(/data:([^;]+);/);
+                if (matchMime) {
+                  mime = matchMime[1];
+                  if (mime === 'application/pdf') ext = 'pdf';
+                  else if (mime === 'image/jpeg') ext = 'jpg';
+                  else if (mime === 'image/png') ext = 'png';
+                  else if (mime === 'image/gif') ext = 'gif';
+                  else if (mime === 'image/webp') ext = 'webp';
+                }
+              }
+
+              let zipFileName = rawKey;
+              if (!zipFileName.includes('.')) {
+                zipFileName = `${rawKey}.${ext}`;
+              }
+
+              if (!seenFiles.has(zipFileName)) {
+                seenFiles.add(zipFileName);
+                if (b64) {
+                  zip.file(zipFileName, b64, { base64: true });
+                  fileCount++;
+                } else if (val instanceof ArrayBuffer || val instanceof Uint8Array) {
+                  zip.file(zipFileName, val);
+                  fileCount++;
+                }
+
+                manifestAttachments.push({
+                  id: rawKey,
+                  filename: zipFileName,
+                  mime: mime,
+                  size: b64 ? Math.round(b64.length * 0.75) : (val.byteLength || 0)
+                });
               }
             }
           }
@@ -783,8 +1277,16 @@ async function exportAttachmentsZipFile() {
       return;
     }
 
+    zip.file('manifest.json', JSON.stringify({
+      app: 'SRG_Calendar',
+      type: 'attachments_only',
+      exported_at: new Date().toISOString(),
+      attachments_count: manifestAttachments.length,
+      attachments: manifestAttachments
+    }, null, 2));
+
     const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
-    const nowStr = new Date().toISOString().slice(0, 10);
+    const nowStr = formatDateYMD(new Date());
     const filename = `SRG_Calendar_Attachments_${nowStr}.zip`;
 
     const url = URL.createObjectURL(zipBlob);
@@ -805,8 +1307,8 @@ async function exportAttachmentsZipFile() {
 }
 
 /**
- * Import a .zip file containing attachments (from this app or server's uploads folder)
- * into IndexedDB local storage.
+ * Import a .zip file containing attachments into IndexedDB local storage.
+ * Enforces guardrails, supported file extensions, and saves single canonical keys.
  */
 async function importAttachmentsZipFile(file) {
   if (!file) return;
@@ -815,18 +1317,43 @@ async function importAttachmentsZipFile(file) {
     return;
   }
 
+  // Guardrail 1: Max archive size (150 MB)
+  if (file.size > 150 * 1024 * 1024) {
+    showToast('❌ Attachments archive exceeds maximum size limit (150 MB).', 'error', 5000);
+    return;
+  }
+
   const loadingToast = showToast(`Unpacking "${file.name}" into local storage...`, 'info', 0);
   try {
     const zip = await JSZip.loadAsync(file);
-    const idb = await openSRGDatabase();
     let importedCount = 0;
 
-    const fileEntries = Object.keys(zip.files).filter(k => !zip.files[k].dir && !k.startsWith('__MACOSX'));
+    const fileEntries = Object.keys(zip.files).filter(k => !zip.files[k].dir && !k.startsWith('__MACOSX') && k !== 'manifest.json');
+
+    // Guardrail 2: Max entry count (500 files)
+    if (fileEntries.length > 500) {
+      throw new Error('Archive contains too many entries (> 500). Aborting for safety.');
+    }
+
+    // Read manifest.json if present
+    let manifestMap = new Map();
+    const manifestEntry = zip.file('manifest.json');
+    if (manifestEntry) {
+      try {
+        const manifestText = await manifestEntry.async('string');
+        const manifest = JSON.parse(manifestText);
+        if (Array.isArray(manifest.attachments)) {
+          manifest.attachments.forEach(att => {
+            if (att.filename && att.id) manifestMap.set(att.filename.toLowerCase(), att.id);
+          });
+        }
+      } catch(e) {}
+    }
 
     for (const relPath of fileEntries) {
       const zipEntry = zip.files[relPath];
       const filename = relPath.split('/').pop().trim();
-      if (!filename || filename === '.htaccess') continue;
+      if (!filename || filename === '.htaccess' || !isAllowedAttachmentFile(filename)) continue;
 
       const ext = filename.split('.').pop().toLowerCase();
       let mime = 'application/octet-stream';
@@ -837,45 +1364,23 @@ async function importAttachmentsZipFile(file) {
       else if (ext === 'pdf') mime = 'application/pdf';
 
       const base64Content = await zipEntry.async('base64');
+      if (base64Content.length > 40 * 1024 * 1024) continue; // Skip oversized
+
       const dataUrl = `data:${mime};base64,${base64Content}`;
 
-      // Build aliases for robust matching across server backups and local apps:
-      const aliases = new Set();
-      aliases.add(filename);
+      let canonicalId = manifestMap.get(filename.toLowerCase()) ||
+                        extractCanonicalAttachmentId(filename);
 
-      // A) Strip server random hash prefix (e.g. att_1791635569_2f102dd1_...)
-      const cleanedServerName = filename.replace(/^att_\d+_[a-f0-9]+_/, '');
-      if (cleanedServerName && cleanedServerName !== filename) {
-        aliases.add(cleanedServerName);
-      }
+      if (!canonicalId) canonicalId = filename;
 
-      // B) Extract ticket ID (e.g. ticket_onward_1791635563947 or ticket_return_...)
-      const ticketMatch = filename.match(/(ticket_(?:onward|return)_\d+)/);
-      if (ticketMatch) {
-        const ticketId = ticketMatch[1];
-        aliases.add(ticketId);
-        // Also add remainder after ticket ID (e.g. 4558439399.pdf)
-        const subName = filename.slice(filename.indexOf(ticketId) + ticketId.length).replace(/^_+/, '');
-        if (subName) aliases.add(subName);
-      }
-
-      // C) Direct basename if not covered
-      const pureBaseName = filename.split('_').pop();
-      if (pureBaseName && pureBaseName.includes('.')) {
-        aliases.add(pureBaseName);
-      }
-
-      // Save under all alias keys in IndexedDB
-      for (const aliasKey of aliases) {
-        await saveAttachmentToIndexedDB(aliasKey, dataUrl);
-      }
-
+      await saveAttachmentToIndexedDB(canonicalId, dataUrl);
       importedCount++;
     }
 
     if (loadingToast) dismissToast(loadingToast);
     showToast(`✓ Successfully restored ${importedCount} attachment files into local storage!`, 'success', 5000);
     renderCurrentView();
+    await updateStorageStatsUI();
   } catch (err) {
     if (loadingToast) dismissToast(loadingToast);
     console.error('Error importing attachments zip:', err);
@@ -4367,6 +4872,7 @@ async function openServerSyncModal() {
   }
 
   await renderLocalSnapshotsList();
+  await updateStorageStatsUI();
 
   const delAllBtn = document.getElementById('deleteAllBackupsBtn');
   if (delAllBtn) {
@@ -4419,14 +4925,6 @@ function closeServerSyncModal() {
   if (modal) modal.classList.add('hidden');
 }
 
-async function forcePushLocalDbToServer() {
-  closeServerSyncModal();
-}
-
-async function forcePullServerDbToLocal() {
-  closeServerSyncModal();
-}
-
 async function purgeLocalDatabase() {
   if (!confirm("⚠️ Are you sure you want to PURGE the local database on this device?\n\nThis will wipe all locally stored schedules, notes, and transactions.")) {
     return;
@@ -4455,401 +4953,9 @@ async function purgeLocalDatabase() {
   }
 }
 
-async function uploadDbToServer(isSilent = false) {
-  if (!isSilent) showToast('Local DB mode: All data is saved on this device.', 'info');
-}
 
-async function downloadDbFromServer(isSilent = false) {
-  // Pure local mode
-}
 
-/* --------------------------------------------------------------------------
-   10B. GOOGLE DRIVE SYNC & OAUTH (FOLDER: CalendarApp)
-   -------------------------------------------------------------------------- */
 
-const DRIVE_FILE_NAME = 'SRG_Calendar.db';
-const DRIVE_FOLDER_NAME = 'CalendarApp';
-
-function initGoogleDriveAuth() {
-  const clientIdInput = document.getElementById('gdriveClientIdInput');
-  if (clientIdInput) clientIdInput.value = gdriveClientId;
-
-  if (typeof google === 'undefined' || !google.accounts || !google.accounts.oauth2) {
-    console.log('Google Identity Services SDK initializing...');
-    setTimeout(initGoogleDriveAuth, 400);
-    return;
-  }
-
-  try {
-    tokenClient = google.accounts.oauth2.initTokenClient({
-      client_id: gdriveClientId,
-      scope: 'https://www.googleapis.com/auth/drive.file',
-      callback: async (tokenResponse) => {
-        if (tokenResponse.error) {
-          console.warn('GIS Auth Error:', tokenResponse);
-          if (isManualSignIn) {
-            showToast('Google Drive authentication failed: ' + (tokenResponse.error_description || tokenResponse.error), 'error');
-          }
-          updateDriveUIStatus(false);
-          return;
-        }
-
-        if (tokenResponse && tokenResponse.access_token) {
-          gdriveToken = tokenResponse.access_token;
-          const expiresInSec = tokenResponse.expires_in || 3600;
-          const expiresAt = Date.now() + (expiresInSec * 1000) - (60 * 1000); // 1 min buffer
-
-          localStorage.setItem('srg_gdrive_access_token', gdriveToken);
-          localStorage.setItem('srg_gdrive_token_expires_at', expiresAt.toString());
-          localStorage.setItem('srg_gdrive_auto_sync', 'true');
-
-          updateDriveUIStatus(true);
-
-          if (isManualSignIn) {
-            showToast('Connected to Google Account successfully!', 'success');
-          }
-
-          await syncWithDriveOnLaunch(isManualSignIn);
-        }
-      }
-    });
-
-    // Persistent Login Check
-    const autoSync = localStorage.getItem('srg_gdrive_auto_sync') === 'true';
-    const savedToken = localStorage.getItem('srg_gdrive_access_token');
-    const expiresAt = parseInt(localStorage.getItem('srg_gdrive_token_expires_at') || '0');
-
-    if (autoSync && savedToken && Date.now() < expiresAt) {
-      gdriveToken = savedToken;
-      updateDriveUIStatus(true);
-      syncWithDriveOnLaunch(false);
-    } else if (autoSync) {
-      console.log('Refreshing Google Drive access token silently...');
-      isManualSignIn = false;
-      tokenClient.requestAccessToken({ prompt: '' });
-    }
-  } catch (err) {
-    console.error('Error initializing Google Drive Token Client:', err);
-  }
-}
-
-function updateDriveUIStatus(isConnected) {
-  const badge = document.getElementById('gdriveStatusBadge');
-  const uploadBtn = document.getElementById('gdriveUploadNowBtn');
-  const downloadBtn = document.getElementById('gdriveDownloadNowBtn');
-  const signInBtn = document.getElementById('gdriveSignInBtn');
-  const disconnectBtn = document.getElementById('gdriveDisconnectBtn');
-  const syncStatusText = document.getElementById('syncStatusText');
-
-  if (isConnected) {
-    if (badge) {
-      badge.textContent = 'Connected';
-      badge.className = 'status-pill status-connected';
-    }
-    if (uploadBtn) uploadBtn.disabled = false;
-    if (downloadBtn) downloadBtn.disabled = false;
-    if (signInBtn) signInBtn.classList.add('hidden');
-    if (disconnectBtn) disconnectBtn.classList.remove('hidden');
-    if (syncStatusText) syncStatusText.textContent = 'Drive Connected';
-    updateBadge('Drive Synced ✓', true);
-  } else {
-    if (badge) {
-      badge.textContent = 'Not Connected';
-      badge.className = 'status-pill status-disconnected';
-    }
-    if (uploadBtn) uploadBtn.disabled = true;
-    if (downloadBtn) downloadBtn.disabled = true;
-    if (signInBtn) signInBtn.classList.remove('hidden');
-    if (disconnectBtn) disconnectBtn.classList.add('hidden');
-    if (syncStatusText) syncStatusText.textContent = 'Drive Sync';
-    updateBadge('Offline Local DB', false);
-  }
-}
-
-function setSyncButtonSpinner(isSyncing) {
-  const icon = document.getElementById('syncDriveIcon');
-  if (icon) {
-    if (isSyncing) {
-      icon.className = 'fa-solid fa-spinner fa-spin';
-    } else {
-      icon.className = 'fa-brands fa-google-drive';
-    }
-  }
-}
-
-function handleSaveClientId() {
-  const val = document.getElementById('gdriveClientIdInput').value.trim();
-  if (val) {
-    localStorage.setItem('srg_gdrive_client_id', val);
-    gdriveClientId = val;
-    showToast('Google Client ID saved!', 'success');
-  }
-}
-
-function handleGoogleDriveSignIn() {
-  if (!gdriveClientId) {
-    const inputId = prompt('Please enter your Google Cloud OAuth Client ID:');
-    if (!inputId) return;
-    gdriveClientId = inputId.trim();
-    localStorage.setItem('srg_gdrive_client_id', gdriveClientId);
-  }
-
-  isManualSignIn = true;
-  if (!tokenClient) {
-    initGoogleDriveAuth();
-  }
-
-  if (tokenClient) {
-    tokenClient.requestAccessToken({ prompt: 'select_account' });
-  } else {
-    showToast('Google Identity Services SDK loading... Please retry in a moment.', 'warning');
-  }
-}
-
-function handleGoogleDriveDisconnect() {
-  if (confirm('Disconnect Google Drive sync? You can reconnect anytime.')) {
-    gdriveToken = null;
-    gdriveFileId = null;
-    gdriveFolderId = null;
-    localStorage.removeItem('srg_gdrive_access_token');
-    localStorage.removeItem('srg_gdrive_token_expires_at');
-    localStorage.removeItem('srg_gdrive_auto_sync');
-    updateDriveUIStatus(false);
-    showToast('Disconnected from Google Drive.', 'info');
-  }
-}
-
-async function getOrCreateDriveFolder() {
-  try {
-    const folderSearchUrl = `https://www.googleapis.com/drive/v3/files?q=name='${DRIVE_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
-    const fRes = await fetch(folderSearchUrl, {
-      headers: { Authorization: `Bearer ${gdriveToken}` }
-    });
-    const fData = await fRes.json();
-    if (fData.files && fData.files.length > 0) {
-      return fData.files[0].id;
-    } else {
-      const createFolderRes = await fetch('https://www.googleapis.com/drive/v3/files', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${gdriveToken}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          name: DRIVE_FOLDER_NAME,
-          mimeType: 'application/vnd.google-apps.folder'
-        })
-      });
-      const newFolder = await createFolderRes.json();
-      return newFolder.id;
-    }
-  } catch (err) {
-    console.error('Folder creation error:', err);
-    return null;
-  }
-}
-
-async function getDriveFileMeta() {
-  try {
-    const fileSearchUrl = `https://www.googleapis.com/drive/v3/files?q=name='${DRIVE_FILE_NAME}' and trashed=false&fields=files(id,name,modifiedTime,size)`;
-    const res = await fetch(fileSearchUrl, {
-      headers: { Authorization: `Bearer ${gdriveToken}` }
-    });
-    const data = await res.json();
-    if (data.files && data.files.length > 0) {
-      return data.files[0];
-    }
-    return null;
-  } catch (err) {
-    console.error('File search error:', err);
-    return null;
-  }
-}
-
-async function syncWithDriveOnLaunch(isUserTriggered = false) {
-  if (!gdriveToken) return;
-
-  const activeToast = isUserTriggered ? showToast('Syncing with Google Drive...', 'loading', 0) : null;
-  setSyncButtonSpinner(true);
-
-  try {
-    if (!gdriveFolderId) {
-      gdriveFolderId = await getOrCreateDriveFolder();
-    }
-
-    const fileMeta = await getDriveFileMeta();
-
-    if (fileMeta) {
-      gdriveFileId = fileMeta.id;
-      const remoteModifiedTime = new Date(fileMeta.modifiedTime).getTime();
-      const localLastModified = parseInt(localStorage.getItem('srg_db_last_modified') || '0');
-
-      if (remoteModifiedTime > localLastModified + 3000) {
-        console.log('Remote Drive database is newer. Downloading to update local app...');
-        await downloadDbFromDrive(true);
-        if (activeToast) dismissToast(activeToast);
-        showToast('Downloaded latest database from Google Drive!', 'success', 4000);
-      } else {
-        console.log('Local DB is up to date or newer. Uploading to Drive...');
-        await uploadDbToDrive(true);
-        if (activeToast) dismissToast(activeToast);
-        if (isUserTriggered) {
-          showToast('Google Drive synced! (Database is up to date)', 'success', 3500);
-        }
-      }
-    } else {
-      console.log('File not found on Drive. Creating initial database upload...');
-      await uploadDbToDrive(true);
-      if (activeToast) dismissToast(activeToast);
-      showToast('Database uploaded to Google Drive!', 'success', 4000);
-    }
-  } catch (err) {
-    console.error('Launch sync error:', err);
-    if (activeToast) dismissToast(activeToast);
-    if (isUserTriggered) {
-      showToast('Drive sync error: ' + err.message, 'error', 5000);
-    }
-  } finally {
-    setSyncButtonSpinner(false);
-  }
-}
-
-async function uploadDbToDrive(isSilent = false) {
-  if (!gdriveToken || !db) {
-    if (!isSilent) showToast('Google Drive is not connected.', 'warning');
-    return;
-  }
-
-  let loadingToast = null;
-  if (!isSilent) {
-    loadingToast = showToast('Uploading database to Google Drive...', 'loading', 0);
-  }
-  setSyncButtonSpinner(true);
-  updateBadge('Uploading to Drive...', true);
-
-  try {
-    if (!gdriveFolderId) {
-      gdriveFolderId = await getOrCreateDriveFolder();
-    }
-
-    const binaryData = db.export();
-    const metadata = {
-      name: DRIVE_FILE_NAME,
-      mimeType: 'application/x-sqlite3'
-    };
-    if (!gdriveFileId && gdriveFolderId) {
-      metadata.parents = [gdriveFolderId];
-    }
-
-    const form = new FormData();
-    form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-    form.append('file', new Blob([binaryData], { type: 'application/x-sqlite3' }));
-
-    let url = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,modifiedTime';
-    let method = 'POST';
-
-    if (gdriveFileId) {
-      url = `https://www.googleapis.com/upload/drive/v3/files/${gdriveFileId}?uploadType=multipart&fields=id,modifiedTime`;
-      if (gdriveFolderId) {
-        url += `&addParents=${gdriveFolderId}`;
-      }
-      method = 'PATCH';
-    }
-
-    const res = await fetch(url, {
-      method: method,
-      headers: { Authorization: `Bearer ${gdriveToken}` },
-      body: form
-    });
-
-    const result = await res.json();
-    if (result.id) {
-      gdriveFileId = result.id;
-      const modTime = result.modifiedTime ? new Date(result.modifiedTime).getTime() : Date.now();
-      localStorage.setItem('srg_db_last_modified', modTime.toString());
-
-      updateBadge('Drive Synced ✓', true);
-      if (loadingToast) dismissToast(loadingToast);
-      if (!isSilent) {
-        showToast('Database successfully uploaded to Google Drive!', 'success', 3500);
-      }
-      console.log('Uploaded DB to Google Drive (CalendarApp folder) successfully!');
-    } else {
-      throw new Error(result.error ? result.error.message : 'Unknown upload error');
-    }
-  } catch (err) {
-    console.error('Failed to upload to Google Drive:', err);
-    updateBadge('Drive Upload Failed', false);
-    if (loadingToast) dismissToast(loadingToast);
-    if (!isSilent) {
-      showToast('Failed to upload to Google Drive: ' + err.message, 'error', 5000);
-    }
-  } finally {
-    setSyncButtonSpinner(false);
-  }
-}
-
-async function downloadDbFromDrive(isSilent = false) {
-  if (!gdriveToken) {
-    if (!isSilent) showToast('Google Drive is not connected.', 'warning');
-    return;
-  }
-
-  let loadingToast = null;
-  if (!isSilent) {
-    loadingToast = showToast('Pulling latest database from Google Drive...', 'loading', 0);
-  }
-  setSyncButtonSpinner(true);
-  updateBadge('Pulling from Drive...', true);
-
-  try {
-    if (!gdriveFileId) {
-      const fileMeta = await getDriveFileMeta();
-      if (fileMeta) {
-        gdriveFileId = fileMeta.id;
-      } else {
-        throw new Error('Database file not found on Google Drive.');
-      }
-    }
-
-    const res = await fetch(`https://www.googleapis.com/drive/v3/files/${gdriveFileId}?alt=media`, {
-      headers: { Authorization: `Bearer ${gdriveToken}` }
-    });
-
-    if (!res.ok) {
-      throw new Error(`HTTP error ${res.status}: ${res.statusText}`);
-    }
-
-    const arrayBuffer = await res.arrayBuffer();
-    const u8 = new Uint8Array(arrayBuffer);
-
-    db = new SQL.Database(u8);
-    ensureSchemaUpToDate();
-    await saveDbToIndexedDB();
-
-    const nowTime = Date.now().toString();
-    localStorage.setItem('srg_db_last_modified', nowTime);
-
-    loadMasterDataFromDb();
-    populateTitlesDatalist();
-    renderCurrentView();
-
-    updateBadge('Drive Synced ✓', true);
-    if (loadingToast) dismissToast(loadingToast);
-    if (!isSilent) {
-      showToast('Latest database downloaded from Google Drive!', 'success', 3500);
-    }
-  } catch (err) {
-    console.error('Failed to download from Drive:', err);
-    updateBadge('Drive Download Failed', false);
-    if (loadingToast) dismissToast(loadingToast);
-    if (!isSilent) {
-      showToast('Failed to pull from Google Drive: ' + err.message, 'error', 5000);
-    }
-  } finally {
-    setSyncButtonSpinner(false);
-  }
-}
 
 
 /* ==========================================================================
@@ -5214,27 +5320,10 @@ function setupUIEventListeners() {
   document.getElementById('addTagBtn').addEventListener('click', handleAddTag);
   document.getElementById('addFieldBtn').addEventListener('click', handleAddField);
 
-  // Settings & Backup events
+  // Settings & Backup Modal events
   const openSettingsBtn = document.getElementById('openSettingsBtn');
   if (openSettingsBtn) {
     openSettingsBtn.addEventListener('click', openServerSyncModal);
-  }
-
-  const providerSelect = document.getElementById('syncProviderSelect');
-  if (providerSelect) {
-    providerSelect.addEventListener('change', (e) => {
-      syncProvider = e.target.value;
-      localStorage.setItem('srg_sync_provider', syncProvider);
-      toggleSyncSectionsUI();
-      if (syncProvider === 'server') {
-        syncWithServerOnLaunch(true);
-      } else if (syncProvider === 'gdrive') {
-        if (!gdriveToken) handleGoogleDriveSignIn();
-        else syncWithDriveOnLaunch(true);
-      } else {
-        updateBadge('Offline Local DB', false);
-      }
-    });
   }
 
   // Backup & Restore Header Button
@@ -5248,16 +5337,33 @@ function setupUIEventListeners() {
     closeServerSyncModalBtn.addEventListener('click', closeServerSyncModal);
   }
 
-  const forcePullBtn = document.getElementById('forcePullServerBtn');
-  if (forcePullBtn) {
-    forcePullBtn.addEventListener('click', forcePullServerDbToLocal);
+  // 1-Click Complete Backup (Database + Attachments)
+  const downloadFullBackupBtn = document.getElementById('downloadFullBackupBtn');
+  if (downloadFullBackupBtn) {
+    downloadFullBackupBtn.addEventListener('click', exportFullBackupZip);
+  }
+  const uploadFullBackupBtn = document.getElementById('uploadFullBackupBtn');
+  const restoreFullBackupInput = document.getElementById('restoreFullBackupInput');
+  if (uploadFullBackupBtn && restoreFullBackupInput) {
+    uploadFullBackupBtn.addEventListener('click', () => restoreFullBackupInput.click());
+    restoreFullBackupInput.addEventListener('change', async (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      try {
+        await importFullBackupZip(file);
+      } finally {
+        restoreFullBackupInput.value = '';
+      }
+    });
   }
 
-  const forcePushBtn = document.getElementById('forcePushLocalBtn');
-  if (forcePushBtn) {
-    forcePushBtn.addEventListener('click', forcePushLocalDbToServer);
+  // Storage Management & Orphan Cleanup
+  const purgeOrphansBtn = document.getElementById('purgeOrphansBtn');
+  if (purgeOrphansBtn) {
+    purgeOrphansBtn.addEventListener('click', purgeOrphanAttachments);
   }
 
+  // Advanced: Individual SQLite Database (.db) Backup & Restore
   const downloadBackupBtn = document.getElementById('downloadBackupBtn');
   if (downloadBackupBtn) {
     downloadBackupBtn.addEventListener('click', exportSqliteFile);
@@ -5313,7 +5419,7 @@ function setupUIEventListeners() {
     });
   }
 
-  // Attachments ZIP Backup & Restore
+  // Advanced: Individual Attachments ZIP Backup & Restore
   const downloadZipBtn = document.getElementById('downloadAttachmentsZipBtn');
   if (downloadZipBtn) {
     downloadZipBtn.addEventListener('click', exportAttachmentsZipFile);
@@ -5341,28 +5447,6 @@ function setupUIEventListeners() {
   if (importDbInput) {
     importDbInput.addEventListener('change', importSqliteFile);
   }
-
-  // Auto sync when leaving / minimizing app
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden' && db) {
-      if (syncProvider === 'server') {
-        syncWithServerOnLaunch(false);
-      } else if (syncProvider === 'gdrive' && gdriveToken) {
-        uploadDbToDrive(true);
-      }
-    }
-  });
-
-  // Auto sync when network reconnects
-  window.addEventListener('online', () => {
-    if (syncProvider === 'server') {
-      showToast('Network reconnected! Syncing with rathinagiri.in...', 'info', 3000);
-      syncWithServerOnLaunch(false);
-    } else if (syncProvider === 'gdrive' && gdriveToken) {
-      showToast('Network reconnected! Syncing with Drive...', 'info', 3000);
-      syncWithDriveOnLaunch(false);
-    }
-  });
 
   // Schedule Details Modal Events
   document.getElementById('closeScheduleDetailsBtn').addEventListener('click', closeScheduleDetailsModal);

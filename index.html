@@ -34,7 +34,7 @@
           <i class="fa-solid fa-calendar-days"></i>
         </div>
         <div class="brand-text">
-          <span class="brand-name">SRG Calendar <small id="appVersionBadge" style="font-size:0.7rem; font-weight:600; color:#38bdf8; background:rgba(56,189,248,0.15); padding:1px 6px; border-radius:4px; margin-left:4px;">v2.7.5</small></span>
+          <span class="brand-name">SRG Calendar <small id="appVersionBadge" style="font-size:0.7rem; font-weight:600; color:#38bdf8; background:rgba(56,189,248,0.15); padding:1px 6px; border-radius:4px; margin-left:4px;">v1.0.3</small></span>
           <span class="brand-badge" id="sourceBadge">Offline Local DB</span>
         </div>
       </div>
@@ -451,13 +451,13 @@
           <!-- ATTACHMENT FACILITY (TICKETS / IMAGES / DOCUMENTS AS BASE64) -->
           <div class="form-group">
             <label class="section-label"><i class="fa-solid fa-paperclip"></i> Attachments (Tickets, Bills, Boarding Passes)</label>
-            <div class="attachment-upload-zone">
-              <label class="btn-secondary btn-sm upload-label">
-                <i class="fa-solid fa-file-arrow-up"></i> Add Ticket / Document Image
-                <input type="file" id="ticketFileInput" accept="image/*,application/pdf" style="display:none;" multiple>
-              </label>
-              <span class="hint-small">Stored securely as base64 inside your SQLite database</span>
-            </div>
+              <div class="attachment-upload-zone">
+                <label class="btn-secondary btn-sm upload-label">
+                  <i class="fa-solid fa-file-arrow-up"></i> Add Ticket / Document Image
+                  <input type="file" id="ticketFileInput" accept="image/*,application/pdf" style="display:none;" multiple>
+                </label>
+                <span class="hint-small">Stored privately in device storage (IndexedDB) for fast offline access</span>
+              </div>
             <div id="attachmentsPreviewList" class="attachments-preview-list"></div>
           </div>
 
@@ -687,39 +687,87 @@
             </div>
           </div>
 
-          <!-- MAIN ACTION BUTTONS: DATABASE & ATTACHMENT ZIP BACKUP / RESTORE -->
-          <div style="margin-bottom: 12px;">
-            <div style="font-size: 0.78rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; margin-bottom: 6px; letter-spacing: 0.5px;">1. SQLite Database (.db)</div>
+          <!-- 1-CLICK COMPLETE BACKUP (DB + FILES) -->
+          <div style="background: linear-gradient(135deg, rgba(16, 185, 129, 0.08), rgba(99, 102, 241, 0.08)); border: 1px solid rgba(16, 185, 129, 0.35); border-radius: var(--radius-md); padding: 14px; margin-bottom: 14px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+              <div style="font-size: 0.85rem; font-weight: 700; color: var(--text-main);">
+                <i class="fa-solid fa-box-archive" style="color: #10b981;"></i> Full Backup (Database & Files)
+              </div>
+              <span style="font-size: 0.7rem; font-weight: 600; background: rgba(16, 185, 129, 0.2); color: #10b981; padding: 2px 6px; border-radius: 4px;">Recommended</span>
+            </div>
+            <div style="font-size: 0.76rem; color: var(--text-muted); margin-bottom: 10px; line-height: 1.4;">
+              Atomic archive (.zip) containing your SQLite database, manifest, and all ticket attachments.
+            </div>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-              <button id="downloadBackupBtn" class="btn-primary" style="justify-content: center; background: #10b981; padding: 10px; font-size: 0.85rem; font-weight: 600;">
-                <i class="fa-solid fa-download"></i> 📥 Download DB (.db)
+              <button id="downloadFullBackupBtn" class="btn-primary" style="justify-content: center; background: #10b981; padding: 10px; font-size: 0.84rem; font-weight: 600;">
+                <i class="fa-solid fa-file-zipper"></i> 📦 Export Full (.zip)
               </button>
-              <button id="uploadRestoreBtn" class="btn-primary" style="justify-content: center; background: #8b5cf6; padding: 10px; font-size: 0.85rem; font-weight: 600;">
-                <i class="fa-solid fa-upload"></i> 📤 Restore DB (.db)
+              <button id="uploadFullBackupBtn" class="btn-primary" style="justify-content: center; background: #6366f1; padding: 10px; font-size: 0.84rem; font-weight: 600;">
+                <i class="fa-solid fa-file-import"></i> 📥 Restore Full (.zip)
               </button>
             </div>
-            <input type="file" id="restoreFileInput" accept=".db,application/x-sqlite3" style="display:none;">
+            <input type="file" id="restoreFullBackupInput" accept=".zip,application/zip" style="display:none;">
           </div>
 
-          <div style="margin-bottom: 8px;">
-            <div style="font-size: 0.78rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; margin-bottom: 6px; letter-spacing: 0.5px;">2. Files & Ticket Attachments (.zip)</div>
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-              <button id="downloadAttachmentsZipBtn" class="btn-primary" style="justify-content: center; background: #0284c7; padding: 10px; font-size: 0.85rem; font-weight: 600;">
-                <i class="fa-solid fa-file-zipper"></i> 📦 Backup Files (.zip)
-              </button>
-              <button id="uploadAttachmentsZipBtn" class="btn-primary" style="justify-content: center; background: #d97706; padding: 10px; font-size: 0.85rem; font-weight: 600;">
-                <i class="fa-solid fa-file-import"></i> 📥 Restore Files (.zip)
+          <!-- STORAGE MANAGEMENT & ORPHAN ATTACHMENTS CLEANUP -->
+          <div style="background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 12px 14px; margin-bottom: 14px; font-size: 0.82rem;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+              <div>
+                <span style="color: var(--text-muted);">Local Attachments:</span>
+                <strong id="storageAttachmentsStats" style="color: #38bdf8; margin-left: 4px;">Checking...</strong>
+              </div>
+              <button id="purgeOrphansBtn" class="btn-secondary btn-sm" style="font-size: 0.74rem; padding: 3px 8px; color: #f59e0b; border-color: rgba(245, 158, 11, 0.4);">
+                <i class="fa-solid fa-broom"></i> Clean Orphan Files
               </button>
             </div>
-            <input type="file" id="restoreAttachmentsZipInput" accept=".zip,application/zip" style="display:none;">
+            <div style="font-size: 0.72rem; color: var(--text-muted); line-height: 1.3;">
+              Safely removes unreferenced ticket files from deleted/edited schedules to keep storage lean.
+            </div>
           </div>
 
-          <div style="margin-top: 18px; border-top: 1px solid var(--border-color); padding-top: 14px;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-              <h4 style="font-size: 0.85rem; color: var(--text-muted); margin: 0;"><i class="fa-solid fa-clock-rotate-left"></i> Local Snapshots & History</h4>
-              <button id="deleteAllBackupsBtn" class="btn-secondary btn-sm" style="font-size: 0.72rem; padding: 2px 8px; color: #fb7185; border-color: rgba(251,113,133,0.3);"><i class="fa-solid fa-trash-can"></i> Clean Up Old Snapshots</button>
+          <!-- ADVANCED INDIVIDUAL EXPORTS -->
+          <details style="margin-bottom: 14px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 8px 12px;">
+            <summary style="font-size: 0.8rem; font-weight: 600; color: var(--text-muted); cursor: pointer; user-select: none;">
+              <i class="fa-solid fa-sliders"></i> Advanced: Individual Database / Files Export
+            </summary>
+            <div style="margin-top: 10px; display: flex; flex-direction: column; gap: 10px;">
+              <div>
+                <div style="font-size: 0.75rem; font-weight: 600; color: var(--text-muted); margin-bottom: 4px;">1. SQLite Database Only (.db)</div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                  <button id="downloadBackupBtn" class="btn-secondary btn-sm" style="justify-content: center; font-size: 0.78rem;">
+                    <i class="fa-solid fa-download"></i> Download DB (.db)
+                  </button>
+                  <button id="uploadRestoreBtn" class="btn-secondary btn-sm" style="justify-content: center; font-size: 0.78rem;">
+                    <i class="fa-solid fa-upload"></i> Restore DB (.db)
+                  </button>
+                </div>
+                <input type="file" id="restoreFileInput" accept=".db,application/x-sqlite3" style="display:none;">
+              </div>
+              <div>
+                <div style="font-size: 0.75rem; font-weight: 600; color: var(--text-muted); margin-bottom: 4px;">2. Attachments Only (.zip)</div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                  <button id="downloadAttachmentsZipBtn" class="btn-secondary btn-sm" style="justify-content: center; font-size: 0.78rem;">
+                    <i class="fa-solid fa-file-zipper"></i> Backup Files (.zip)
+                  </button>
+                  <button id="uploadAttachmentsZipBtn" class="btn-secondary btn-sm" style="justify-content: center; font-size: 0.78rem;">
+                    <i class="fa-solid fa-file-import"></i> Restore Files (.zip)
+                  </button>
+                </div>
+                <input type="file" id="restoreAttachmentsZipInput" accept=".zip,application/zip" style="display:none;">
+              </div>
             </div>
-            <div id="serverBackupsList" style="display: flex; flex-direction: column; gap: 8px; max-height: 180px; overflow-y: auto;"></div>
+          </details>
+
+          <!-- LOCAL SNAPSHOTS & HISTORY (DATABASE-ONLY) -->
+          <div style="margin-top: 14px; border-top: 1px solid var(--border-color); padding-top: 12px;">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px;">
+              <div>
+                <h4 style="font-size: 0.85rem; color: var(--text-main); margin: 0;"><i class="fa-solid fa-clock-rotate-left"></i> Local Snapshots & History</h4>
+                <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 2px;">(Database-only safety snapshots; excludes attachments)</div>
+              </div>
+              <button id="deleteAllBackupsBtn" class="btn-secondary btn-sm" style="font-size: 0.72rem; padding: 2px 8px; color: #fb7185; border-color: rgba(251,113,133,0.3);"><i class="fa-solid fa-trash-can"></i> Clean Old</button>
+            </div>
+            <div id="serverBackupsList" style="display: flex; flex-direction: column; gap: 8px; max-height: 160px; overflow-y: auto;"></div>
           </div>
 
           <div style="margin-top: 16px; border-top: 1px solid var(--border-color); padding-top: 14px;">
@@ -835,7 +883,7 @@
           </div>
           <h2 style="font-size: 1.45rem; font-weight: 700; margin-bottom: 4px; color: var(--text-main);">SRG Calendar Pro</h2>
           <div style="display: inline-block; font-size: 0.8rem; font-weight: 600; color: #38bdf8; background: rgba(56,189,248,0.12); padding: 3px 10px; border-radius: 12px; margin-bottom: 16px; border: 1px solid rgba(56,189,248,0.3);">
-            Version <span id="aboutModalVersion">v1.0.0 (Local DB PWA)</span>
+            Version <span id="aboutModalVersion">v1.0.3 (Local DB PWA)</span>
           </div>
 
           <div style="background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 14px 16px; text-align: left; font-size: 0.88rem; line-height: 1.55; margin-bottom: 16px;">
