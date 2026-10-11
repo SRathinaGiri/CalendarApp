@@ -81,8 +81,17 @@ Then visit [http://localhost:8080](http://localhost:8080).
 
 ---
 
-## 💾 Backup & Data Safety
+## 💾 Backup, Restore & Migrating Data Between Devices / Server
 
-- Your calendar data is stored in the browser's IndexedDB database named `SRGCalendarDB`.
-- **Regular Backups:** Click **"Backup & Restore"** (database icon in the top header) and click **"Download SQLite File (.db)"** to keep a portable `.db` file on your PC or flash drive.
-- **Restore:** In the same dialog, click **"Upload & Restore Database (.db)"** to restore your data on any device or new browser anytime.
+All your data is stored in the browser's persistent IndexedDB database (`SRGCalendarDB`). The app includes separate one-click tools for the database and all ticket attachments:
+
+### 1. Database Backup & Restore (`.db`)
+- **To Backup:** Click the **database icon** in the top header -> Click **"📥 Download DB (.db)"**. This downloads your full relational SQLite file containing all schedules, notes, tags, and accounts.
+- **To Restore:** Click **"📤 Restore DB (.db)"** -> Select your `.db` file. The app validates the SQLite format, creates an automatic safety snapshot of your previous state, and restores your calendar instantly.
+- **From Server-Based App:** You can take the `SRG_Calendar.db` file from your hosted server (or `api.php?action=download_db`) and restore it here directly with **"📤 Restore DB (.db)"**.
+
+### 2. File & Ticket Attachments Backup & Restore (`.zip`)
+- **To Backup:** In the same dialog, click **"📦 Backup Files (.zip)"**. This packages all uploaded ticket PDFs and images from IndexedDB into a single compressed `.zip` file.
+- **To Restore in Another Device:** On the new device, click **"📥 Restore Files (.zip)"** -> Select your `.zip` file. All attachments will be extracted and saved into local storage.
+- **From Server-Based App:** If you have an `uploads/` folder or a zip of attachments from your server, upload that `.zip` file using **"📥 Restore Files (.zip)"**. The app extracts and links the tickets automatically to their corresponding journeys.
+

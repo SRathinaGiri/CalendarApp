@@ -1,4 +1,4 @@
-const CACHE_NAME = 'srg-calendar-localdb-v1.0.0';
+const CACHE_NAME = 'srg-calendar-localdb-v1.0.1';
 const CORE_ASSETS = [
   './',
   './index.html',
@@ -8,6 +8,7 @@ const CORE_ASSETS = [
   './icon-192.png',
   './icon-512.png',
   './pako.min.js',
+  './jszip.min.js',
   './sql-wasm.js',
   './sql-wasm.wasm',
   './pdf.min.js',

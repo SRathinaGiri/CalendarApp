@@ -15,9 +15,10 @@
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
   
-  <!-- SQL.js WASM & Pako & PDF.js (Local offline bundles with CDN fallback) -->
+  <!-- SQL.js WASM & Pako & JSZip & PDF.js (Local offline bundles with CDN fallback) -->
   <script src="sql-wasm.js"></script>
   <script src="pako.min.js"></script>
+  <script src="jszip.min.js"></script>
   <script src="pdf.min.js"></script>
   <script src="taxonomy_seed.js"></script>
 
@@ -686,16 +687,32 @@
             </div>
           </div>
 
-          <!-- ONLY 2 MAIN ACTION BUTTONS: BACKUP & RESTORE -->
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 4px;">
-            <button id="downloadBackupBtn" class="btn-primary" style="justify-content: center; background: #10b981; padding: 12px; font-size: 0.9rem; font-weight: 600;">
-              <i class="fa-solid fa-download"></i> 📥 Download Backup (.db)
-            </button>
-            <button id="uploadRestoreBtn" class="btn-primary" style="justify-content: center; background: #8b5cf6; padding: 12px; font-size: 0.9rem; font-weight: 600;">
-              <i class="fa-solid fa-upload"></i> 📤 Upload / Restore (.db)
-            </button>
+          <!-- MAIN ACTION BUTTONS: DATABASE & ATTACHMENT ZIP BACKUP / RESTORE -->
+          <div style="margin-bottom: 12px;">
+            <div style="font-size: 0.78rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; margin-bottom: 6px; letter-spacing: 0.5px;">1. SQLite Database (.db)</div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+              <button id="downloadBackupBtn" class="btn-primary" style="justify-content: center; background: #10b981; padding: 10px; font-size: 0.85rem; font-weight: 600;">
+                <i class="fa-solid fa-download"></i> 📥 Download DB (.db)
+              </button>
+              <button id="uploadRestoreBtn" class="btn-primary" style="justify-content: center; background: #8b5cf6; padding: 10px; font-size: 0.85rem; font-weight: 600;">
+                <i class="fa-solid fa-upload"></i> 📤 Restore DB (.db)
+              </button>
+            </div>
+            <input type="file" id="restoreFileInput" accept=".db,application/x-sqlite3" style="display:none;">
           </div>
-          <input type="file" id="restoreFileInput" accept=".db,application/x-sqlite3" style="display:none;">
+
+          <div style="margin-bottom: 8px;">
+            <div style="font-size: 0.78rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; margin-bottom: 6px; letter-spacing: 0.5px;">2. Files & Ticket Attachments (.zip)</div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+              <button id="downloadAttachmentsZipBtn" class="btn-primary" style="justify-content: center; background: #0284c7; padding: 10px; font-size: 0.85rem; font-weight: 600;">
+                <i class="fa-solid fa-file-zipper"></i> 📦 Backup Files (.zip)
+              </button>
+              <button id="uploadAttachmentsZipBtn" class="btn-primary" style="justify-content: center; background: #d97706; padding: 10px; font-size: 0.85rem; font-weight: 600;">
+                <i class="fa-solid fa-file-import"></i> 📥 Restore Files (.zip)
+              </button>
+            </div>
+            <input type="file" id="restoreAttachmentsZipInput" accept=".zip,application/zip" style="display:none;">
+          </div>
 
           <div style="margin-top: 18px; border-top: 1px solid var(--border-color); padding-top: 14px;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">

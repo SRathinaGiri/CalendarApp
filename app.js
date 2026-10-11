@@ -106,10 +106,12 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA
-const APP_VERSION = 'v1.0.0 (Local DB)';
+const APP_VERSION = 'v1.0.1 (Local DB)';
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').then((reg) => {
     console.log('SRG Calendar Local DB SW Registered');
+    // Check for updates on load
+    reg.update().catch(() => {});
   }).catch(err => console.log('SW registration error:', err));
 }
 
@@ -119,7 +121,9 @@ if (localStorage.getItem('srg_installed_version') !== APP_VERSION) {
   if ('caches' in window) {
     caches.keys().then(names => {
       names.forEach(name => {
-        if (!name.includes('localdb')) caches.delete(name);
+        if (!name.includes('v1.0.1')) {
+          caches.delete(name);
+        }
       });
     });
   }
@@ -648,7 +652,161 @@ async function getAttachmentData(att) {
     }
   }
 
+  // 3. Try fallback combinations: att.id + '_' + att.name, or att.name
+  if (att.id && att.name) {
+    const fn1 = att.id + '_' + att.name.replace(/[^a-zA-Z0-9_\-\.]/g, '_');
+    data = await loadAttachmentFromIndexedDB(fn1);
+    if (data) {
+      att.data = data;
+      return data;
+    }
+  }
+  if (att.name) {
+    const fn2 = att.name.replace(/[^a-zA-Z0-9_\-\.]/g, '_');
+    data = await loadAttachmentFromIndexedDB(fn2);
+    if (data) {
+      att.data = data;
+      return data;
+    }
+  }
+
   return null;
+}
+
+/**
+ * Export all local attachments from IndexedDB into a single .zip file.
+ */
+async function exportAttachmentsZipFile() {
+  if (typeof JSZip === 'undefined') {
+    showToast('Zip library not loaded. Please refresh the app.', 'error');
+    return;
+  }
+
+  const loadingToast = showToast('Packaging attachments into ZIP archive...', 'info', 0);
+  try {
+    const idb = await openSRGDatabase();
+    const tx = idb.transaction('files', 'readonly');
+    const store = tx.objectStore('files');
+
+    const zip = new JSZip();
+    let fileCount = 0;
+
+    await new Promise((resolve, reject) => {
+      const cursorReq = store.openCursor();
+      cursorReq.onsuccess = (e) => {
+        const cursor = e.target.result;
+        if (cursor) {
+          const key = String(cursor.key);
+          // Only package attachments (keys starting with 'att_')
+          if (key.startsWith('att_')) {
+            const rawKey = key.slice(4); // Remove 'att_' prefix
+            const val = cursor.value;
+            if (val) {
+              if (typeof val === 'string' && val.startsWith('data:')) {
+                // Convert data URL to binary for zip
+                const commaIdx = val.indexOf(',');
+                const b64 = commaIdx > -1 ? val.slice(commaIdx + 1) : val;
+                zip.file(rawKey, b64, { base64: true });
+                fileCount++;
+              } else if (val instanceof ArrayBuffer || val instanceof Uint8Array) {
+                zip.file(rawKey, val);
+                fileCount++;
+              }
+            }
+          }
+          cursor.continue();
+        } else {
+          resolve();
+        }
+      };
+      cursorReq.onerror = () => reject(cursorReq.error);
+    });
+
+    if (loadingToast) dismissToast(loadingToast);
+
+    if (fileCount === 0) {
+      showToast('No ticket attachments found in local storage to export.', 'info', 4000);
+      return;
+    }
+
+    const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+    const nowStr = new Date().toISOString().slice(0, 10);
+    const filename = `SRG_Calendar_Attachments_${nowStr}.zip`;
+
+    const url = URL.createObjectURL(zipBlob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    showToast(`✓ Exported ${fileCount} attachment files to ${filename}!`, 'success', 5000);
+  } catch (err) {
+    if (loadingToast) dismissToast(loadingToast);
+    console.error('Error generating attachments zip:', err);
+    showToast('Failed to export attachments zip: ' + err.message, 'error', 5000);
+  }
+}
+
+/**
+ * Import a .zip file containing attachments (from this app or server's uploads folder)
+ * into IndexedDB local storage.
+ */
+async function importAttachmentsZipFile(file) {
+  if (!file) return;
+  if (typeof JSZip === 'undefined') {
+    showToast('Zip library not loaded. Please refresh the app.', 'error');
+    return;
+  }
+
+  const loadingToast = showToast(`Unpacking "${file.name}" into local storage...`, 'info', 0);
+  try {
+    const zip = await JSZip.loadAsync(file);
+    const idb = await openSRGDatabase();
+    let importedCount = 0;
+
+    const fileEntries = Object.keys(zip.files).filter(k => !zip.files[k].dir && !k.startsWith('__MACOSX'));
+
+    for (const relPath of fileEntries) {
+      const zipEntry = zip.files[relPath];
+      const filename = relPath.split('/').pop().trim();
+      if (!filename || filename === '.htaccess') continue;
+
+      const ext = filename.split('.').pop().toLowerCase();
+      let mime = 'application/octet-stream';
+      if (['jpg', 'jpeg'].includes(ext)) mime = 'image/jpeg';
+      else if (ext === 'png') mime = 'image/png';
+      else if (ext === 'gif') mime = 'image/gif';
+      else if (ext === 'webp') mime = 'image/webp';
+      else if (ext === 'pdf') mime = 'application/pdf';
+
+      const base64Content = await zipEntry.async('base64');
+      const dataUrl = `data:${mime};base64,${base64Content}`;
+
+      // Store in IndexedDB under multiple accessible keys:
+      // 1) att_<filename>
+      await saveAttachmentToIndexedDB(filename, dataUrl);
+
+      // 2) If filename has ticket ID prefix (e.g., ticket_onward_123456_myphoto.jpg), also index by ticket ID
+      const parts = filename.split('_');
+      if (parts.length >= 3 && parts[0] === 'ticket') {
+        const ticketId = parts[0] + '_' + parts[1] + '_' + parts[2];
+        await saveAttachmentToIndexedDB(ticketId, dataUrl);
+      }
+
+      importedCount++;
+    }
+
+    if (loadingToast) dismissToast(loadingToast);
+    showToast(`✓ Successfully restored ${importedCount} attachment files into local storage!`, 'success', 5000);
+    renderCurrentView();
+  } catch (err) {
+    if (loadingToast) dismissToast(loadingToast);
+    console.error('Error importing attachments zip:', err);
+    showToast('Failed to restore attachments zip: ' + err.message, 'error', 5000);
+  }
 }
 
 
@@ -5078,6 +5236,26 @@ function setupUIEventListeners() {
         }
       };
       reader.readAsArrayBuffer(file);
+    });
+  }
+
+  // Attachments ZIP Backup & Restore
+  const downloadZipBtn = document.getElementById('downloadAttachmentsZipBtn');
+  if (downloadZipBtn) {
+    downloadZipBtn.addEventListener('click', exportAttachmentsZipFile);
+  }
+  const uploadZipBtn = document.getElementById('uploadAttachmentsZipBtn');
+  const restoreZipInput = document.getElementById('restoreAttachmentsZipInput');
+  if (uploadZipBtn && restoreZipInput) {
+    uploadZipBtn.addEventListener('click', () => restoreZipInput.click());
+    restoreZipInput.addEventListener('change', async (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      try {
+        await importAttachmentsZipFile(file);
+      } finally {
+        restoreZipInput.value = '';
+      }
     });
   }
 
