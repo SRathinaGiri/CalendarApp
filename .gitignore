@@ -5,19 +5,29 @@ client_secret*.json
 *.env
 *.pem
 *.key
+config.php
 
-# Data & Database Backups (personal data)
+# Personal data, PDFs, and archives
 *.db
 *.sqlite
 *.sqlite3
 *.xlsx
 *.csv
+*.zip
+*.pdf
 
 # Python scripts/caches
 __pycache__/
 *.py[cod]
 import_excel.py
+generate_icons.py
 scratch*.*
+
+# Temporary / Server migration files
+.htaccess
+api.php
+deploy/
+localdb/
 
 # OS generated files
 .DS_Store

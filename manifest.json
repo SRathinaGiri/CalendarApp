@@ -1,7 +1,7 @@
 {
-  "name": "SRG Calendar Pro",
+  "name": "SRG Calendar Pro (Local DB)",
   "short_name": "SRG Calendar",
-  "description": "Multi-device personal PWA Calendar with Google Drive SQLite sync",
+  "description": "Single-device offline PWA Calendar with local SQLite & IndexedDB storage",
   "start_url": "./index.html",
   "display": "standalone",
   "background_color": "#0f172a",

@@ -2,23 +2,24 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>SRG Calendar Pro</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SRG Calendar Pro (Local DB)</title>
   <link rel="manifest" href="manifest.json">
   <meta name="theme-color" content="#1e293b">
+  <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
   <link rel="apple-touch-icon" href="icon-192.png">
   
   <!-- Fonts & Icons -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
   
-  <!-- SQL.js WASM & Pako & Google API & PDF.js -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js"></script>
+  <!-- SQL.js WASM & Pako & PDF.js (Local offline bundles with CDN fallback) -->
+  <script src="sql-wasm.js"></script>
   <script src="pako.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="pdf.min.js"></script>
+  <script src="taxonomy_seed.js"></script>
 
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -32,7 +33,7 @@
           <i class="fa-solid fa-calendar-days"></i>
         </div>
         <div class="brand-text">
-          <span class="brand-name">SRG Calendar</span>
+          <span class="brand-name">SRG Calendar <small id="appVersionBadge" style="font-size:0.7rem; font-weight:600; color:#38bdf8; background:rgba(56,189,248,0.15); padding:1px 6px; border-radius:4px; margin-left:4px;">v2.7.5</small></span>
           <span class="brand-badge" id="sourceBadge">Offline Local DB</span>
         </div>
       </div>
@@ -49,15 +50,39 @@
       <div class="header-actions">
         <!-- View selector -->
         <div class="view-switchers">
-          <button class="view-btn active" data-view="month">Month</button>
+          <button class="view-btn active" data-view="calendar" title="Calendar Grid View">Calendar</button>
+          <button class="view-btn" data-view="month" title="Portrait 30-Day Table View">Month</button>
           <button class="view-btn" data-view="day">Day</button>
           <button class="view-btn" data-view="agenda">Agenda</button>
         </div>
 
-        <!-- Google Drive Sync Button -->
-        <button id="syncDriveBtn" class="btn-sync" title="Sync with Google Drive">
-          <i class="fa-brands fa-google-drive"></i>
-          <span id="syncStatusText">Drive Sync</span>
+        <!-- Light / Dark Theme Switcher -->
+        <button id="themeToggleBtn" class="btn-icon" title="Toggle Light / Dark Theme">
+          <i class="fa-solid fa-sun" id="themeToggleIcon"></i>
+        </button>
+
+        <!-- Daily Note Quick Button -->
+        <button id="headerNoteBtn" class="btn-secondary btn-sm" title="View / Add Daily Note">
+          <i class="fa-solid fa-book-bookmark"></i>
+          <span class="btn-label">Note</span>
+        </button>
+
+        <!-- Daily Finance Quick Button -->
+        <button id="headerFinanceBtn" class="btn-secondary btn-sm" title="View / Add Daily Finance">
+          <i class="fa-solid fa-coins"></i>
+          <span class="btn-label">Finance</span>
+        </button>
+
+        <!-- Reports & Statements Button -->
+        <button id="openReportsModalBtn" class="btn-secondary btn-sm" title="View Reports & Financial Statements">
+          <i class="fa-solid fa-chart-column"></i>
+          <span class="btn-label">Reports</span>
+        </button>
+
+        <!-- Database Backup & Restore Button -->
+        <button id="syncDriveBtn" class="btn-sync" title="Backup & Restore Database">
+          <i class="fa-solid fa-database" id="syncDriveIcon"></i>
+          <span id="syncStatusText">Backup & Restore</span>
         </button>
 
         <!-- Manage Tags Button -->
@@ -66,12 +91,32 @@
           <span class="btn-label">Tags</span>
         </button>
 
-        <!-- Backup & Settings -->
-        <button id="openSettingsBtn" class="btn-icon" title="Database Backup & Settings">
-          <i class="fa-solid fa-gear"></i>
+        <!-- Reset Cache Button -->
+        <button id="resetCacheBtn" class="btn-icon" title="Purge Cache & Hard Reload App">
+          <i class="fa-solid fa-arrows-rotate"></i>
+        </button>
+
+        <!-- About App -->
+        <button id="openAboutBtn" class="btn-icon" title="About SRG Calendar Pro">
+          <i class="fa-solid fa-circle-info"></i>
+        </button>
+
+        <!-- Change Security PIN -->
+        <button id="openChangePinBtn" class="btn-icon" title="Change Security PIN / Access Key">
+          <i class="fa-solid fa-key"></i>
+        </button>
+
+        <!-- Lock Security -->
+        <button id="lockAppBtn" class="btn-icon" title="Lock App Security">
+          <i class="fa-solid fa-lock"></i>
         </button>
       </div>
     </header>
+
+    <!-- OFFLINE READ-ONLY WARNING BANNER -->
+    <div id="offlineReadOnlyBanner" class="offline-readonly-banner hidden">
+      <i class="fa-solid fa-lock"></i> Server Offline / Disconnected &mdash; App is running in <strong>Read-Only Mode</strong>. (Connect to network to edit schedules, notes & finance)
+    </div>
 
     <!-- MULTI-SELECT FLOATING ACTION BAR -->
     <div id="selectionActionBar" class="selection-action-bar hidden">
@@ -108,6 +153,26 @@
         <div id="calendarGrid" class="calendar-grid"></div>
       </section>
 
+      <!-- PORTRAIT 30-DAY MONTHLY TABLE VIEW (ONE ROW PER DAY) -->
+      <section id="portraitMonthView" class="portrait-month-container">
+        <div id="portraitMonthTableWrapper" class="portrait-table-wrapper">
+          <table id="portraitMonthTable" class="portrait-month-table">
+            <thead>
+              <tr>
+                <th style="width: 140px;">Date & Day</th>
+                <th>Schedules & Events</th>
+                <th style="width: 180px;">Diary Note</th>
+                <th style="width: 180px;">Daily Finance</th>
+                <th style="width: 110px; text-align: center;">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="portraitMonthTbody">
+              <!-- Dynamically populated 30/31 day rows -->
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       <!-- DAY VIEW (24-HOUR HOURLY SCHEDULE) -->
       <section id="dayView" class="day-view-container">
         <!-- Day View Header / Date Selector -->
@@ -121,6 +186,8 @@
             <label for="dayViewDatePicker" class="day-picker-label"><i class="fa-regular fa-calendar"></i> Jump to Date:</label>
             <input type="date" id="dayViewDatePicker" class="day-picker-input">
             <button id="dayViewTodayBtn" class="btn-secondary btn-sm"><i class="fa-solid fa-calendar-day"></i> Today</button>
+            <button id="dayViewNoteBtn" class="btn-secondary btn-sm" style="color: #fbbf24; border-color: rgba(251, 191, 36, 0.4);"><i class="fa-solid fa-note-sticky"></i> Daily Note</button>
+            <button id="dayViewFinanceBtn" class="btn-secondary btn-sm" style="color: #34d399; border-color: rgba(52, 211, 153, 0.4);"><i class="fa-solid fa-coins"></i> Daily Finance</button>
           </div>
         </div>
 
@@ -146,6 +213,7 @@
             <select id="categoryFilter">
               <option value="all">All Tag Categories</option>
             </select>
+            <button id="agendaTodayBtn" class="btn-secondary btn-sm" title="Jump to Today in Agenda" style="white-space: nowrap;"><i class="fa-solid fa-calendar-day"></i> Today</button>
           </div>
         </div>
         <div id="agendaList" class="agenda-list"></div>
@@ -427,9 +495,12 @@
         <div class="schedule-details-body" id="scheduleDetailsBody" style="padding: 20px; overflow-y: auto; max-height: 70vh;">
           <!-- Dynamically populated -->
         </div>
-        <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 10px; padding: 12px 20px; background: var(--bg-primary); border-top: 1px solid var(--border-color);">
-          <button type="button" id="detailsEditBtn" class="btn-primary btn-sm"><i class="fa-solid fa-pen-to-square"></i> Edit</button>
-          <button type="button" id="detailsCloseBtn" class="btn-secondary btn-sm">Close</button>
+        <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 12px 20px; background: var(--bg-primary); border-top: 1px solid var(--border-color);">
+          <button type="button" id="detailsDeleteBtn" class="btn-danger btn-sm"><i class="fa-solid fa-trash"></i> Delete</button>
+          <div style="display: flex; gap: 10px;">
+            <button type="button" id="detailsEditBtn" class="btn-primary btn-sm"><i class="fa-solid fa-pen-to-square"></i> Edit</button>
+            <button type="button" id="detailsCloseBtn" class="btn-secondary btn-sm">Close</button>
+          </div>
         </div>
       </div>
     </div>
@@ -468,72 +539,342 @@
       </div>
     </div>
 
-    <!-- MODAL: GOOGLE DRIVE & SETTINGS -->
-    <div id="settingsModal" class="modal-backdrop hidden">
-      <div class="modal-card">
+
+
+    <!-- MODAL: DAILY PERSONAL DIARY NOTE -->
+    <div id="dailyNoteModal" class="modal-backdrop hidden">
+      <div class="modal-card" style="max-width: 520px;">
         <div class="modal-header">
-          <h3><i class="fa-solid fa-gear"></i> Google Drive Sync & Database</h3>
-          <button class="modal-close-btn" id="closeSettingsBtn"><i class="fa-solid fa-xmark"></i></button>
+          <h3><i class="fa-solid fa-note-sticky" style="color: #fbbf24;"></i> <span id="dailyNoteModalTitle">Daily Note</span></h3>
+          <button class="modal-close-btn" id="closeDailyNoteModalBtn"><i class="fa-solid fa-xmark"></i></button>
         </div>
-
-        <div class="settings-content">
-          <!-- Google Drive Status Card -->
-          <div class="settings-section">
-            <h4><i class="fa-brands fa-google-drive"></i> Google Drive Connection</h4>
-            <p class="settings-hint">Sync your SQLite single-source-of-truth database (<code>SRG_Calendar.db</code>) with your personal Google Drive.</p>
-            
-            <div class="drive-auth-box">
-              <div class="auth-status-row">
-                <span>Drive Status:</span>
-                <span id="gdriveStatusBadge" class="status-pill status-disconnected">Not Connected</span>
-              </div>
-              <div class="drive-folder-row">
-                <span>Target File:</span>
-                <code>Google Drive > CalendarApp > SRG_Calendar.db</code>
-              </div>
-              <div class="auth-buttons-row">
-                <button id="gdriveSignInBtn" class="btn-primary">
-                  <i class="fa-brands fa-google"></i> Connect Google Account
-                </button>
-                <button id="gdriveUploadNowBtn" class="btn-secondary" disabled>
-                  <i class="fa-solid fa-cloud-arrow-up"></i> Upload DB to Drive
-                </button>
-                <button id="gdriveDownloadNowBtn" class="btn-secondary" disabled>
-                  <i class="fa-solid fa-cloud-arrow-down"></i> Pull DB from Drive
-                </button>
-              </div>
-            </div>
+        <div class="modal-body" style="padding: 16px 20px;">
+          <input type="hidden" id="dailyNoteDateInput">
+          <div class="form-group" style="margin-bottom: 12px;">
+            <label style="font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 6px;" id="dailyNoteModalSubhead">Date Note</label>
+            <textarea id="dailyNoteTextInput" rows="8" placeholder="Write down your thoughts, happenings, or diary entry for this day..." style="width: 100%; box-sizing: border-box; padding: 12px; border-radius: var(--radius-md); border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-main); font-family: inherit; font-size: 0.95rem; line-height: 1.5; resize: vertical;"></textarea>
           </div>
-
-          <!-- Local SQLite Backup & Restore -->
-          <div class="settings-section">
-            <h4><i class="fa-solid fa-database"></i> SQLite File Backup & Restore</h4>
-            <p class="settings-hint">Directly export the live SQLite database or import a new SQLite file anytime.</p>
-            <div class="db-actions-row">
-              <button id="exportDbBtn" class="btn-secondary">
-                <i class="fa-solid fa-download"></i> Download .db File
-              </button>
-              <label class="btn-secondary upload-label">
-                <i class="fa-solid fa-upload"></i> Restore .db File
-                <input type="file" id="importDbInput" accept=".db,.sqlite,.sqlite3" style="display:none;">
-              </label>
-            </div>
-          </div>
-
-          <!-- Client ID Settings -->
-          <div class="settings-section">
-            <h4><i class="fa-solid fa-key"></i> Google OAuth Client ID</h4>
-            <p class="settings-hint">Enter your Google Cloud Web Client ID to authorize Drive access from this app.</p>
-            <div class="form-group">
-              <input type="text" id="gdriveClientIdInput" placeholder="your-client-id.apps.googleusercontent.com">
-            </div>
-            <button id="saveClientIdBtn" class="btn-secondary btn-sm">Save Client ID</button>
+        </div>
+        <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center; padding: 12px 20px; background: var(--bg-primary); border-top: 1px solid var(--border-color);">
+          <button type="button" id="deleteDailyNoteBtn" class="btn-danger btn-sm"><i class="fa-solid fa-trash"></i> Delete Note</button>
+          <div style="display: flex; gap: 10px;">
+            <button type="button" id="cancelDailyNoteBtn" class="btn-secondary btn-sm">Cancel</button>
+            <button type="button" id="saveDailyNoteBtn" class="btn-primary btn-sm"><i class="fa-solid fa-floppy-disk"></i> Save Note</button>
           </div>
         </div>
       </div>
     </div>
 
+    <!-- MODAL: ATTACHMENT VIEWER -->
+    <div id="attachmentViewerModal" class="modal-backdrop hidden">
+      <div class="modal-card wide" style="max-width: 850px; max-height: 90vh;">
+        <div class="modal-header">
+          <h3><i class="fa-solid fa-paperclip"></i> <span id="attachmentViewerTitle">Ticket / Document Viewer</span></h3>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <a id="attachmentDownloadLink" class="btn-secondary btn-sm" download target="_blank"><i class="fa-solid fa-download"></i> Download</a>
+            <button class="modal-close-btn" id="closeAttachmentViewerBtn"><i class="fa-solid fa-xmark"></i></button>
+          </div>
+        </div>
+        <div class="modal-body" id="attachmentViewerBody" style="padding: 16px; text-align: center; overflow: auto; max-height: 75vh;">
+          <!-- Dynamically populated -->
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL: DAILY PERSONAL FINANCE / ACCOUNTING -->
+    <div id="dailyFinanceModal" class="modal-backdrop hidden">
+      <div class="modal-card" style="max-width: 560px;">
+        <div class="modal-header">
+          <h3><i class="fa-solid fa-coins" style="color: #34d399;"></i> <span id="dailyFinanceModalTitle">Daily Receipts & Payments</span></h3>
+          <button class="modal-close-btn" id="closeDailyFinanceModalBtn"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="modal-body" style="padding: 16px 20px; overflow-y: auto; max-height: 75vh;">
+          <input type="hidden" id="financeTxnId">
+          <input type="hidden" id="financeTxnDate">
+          
+          <!-- Summary Cards -->
+          <div class="finance-summary-grid" style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 16px;">
+            <div style="background: var(--badge-green-bg); border: 1px solid var(--badge-green-border); border-radius: var(--radius-md); padding: 10px; text-align: center;">
+              <span style="font-size: 0.75rem; color: var(--receipt-color); display: block; font-weight: 600;">Total Receipts</span>
+              <strong id="dayTotalReceipts" style="font-size: 1rem; color: var(--receipt-color);">₹0.00</strong>
+            </div>
+            <div style="background: var(--badge-red-bg); border: 1px solid var(--badge-red-border); border-radius: var(--radius-md); padding: 10px; text-align: center;">
+              <span style="font-size: 0.75rem; color: var(--payment-color); display: block; font-weight: 600;">Total Payments</span>
+              <strong id="dayTotalPayments" style="font-size: 1rem; color: var(--payment-color);">₹0.00</strong>
+            </div>
+            <div style="background: var(--badge-blue-bg); border: 1px solid var(--badge-blue-border); border-radius: var(--radius-md); padding: 10px; text-align: center;">
+              <span style="font-size: 0.75rem; color: var(--net-positive); display: block; font-weight: 600;">Net Flow</span>
+              <strong id="dayNetBalance" style="font-size: 1rem; color: var(--net-positive);">₹0.00</strong>
+            </div>
+          </div>
+
+          <!-- Existing Transactions List -->
+          <div style="margin-bottom: 16px;">
+            <h4 style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px;"><i class="fa-solid fa-list-check"></i> Transactions for this date</h4>
+            <div id="financeTxnList" style="display: flex; flex-direction: column; gap: 8px; max-height: 200px; overflow-y: auto;"></div>
+          </div>
+
+          <hr style="border-color: var(--border-color); margin: 16px 0;">
+
+          <!-- Add / Edit Transaction Form -->
+          <form id="financeTxnForm">
+            <h4 id="financeFormTitle" style="font-size: 0.9rem; margin-bottom: 10px;"><i class="fa-solid fa-plus"></i> Add New Transaction</h4>
+            
+            <div class="form-row-2" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+              <div class="form-group">
+                <label for="financeType">Type *</label>
+                <select id="financeType" required style="width: 100%; padding: 8px; border-radius: var(--radius-md); background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color);">
+                  <option value="receipt">🟢 Receipt (Income In)</option>
+                  <option value="payment">🔴 Payment (Expense Out)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="financeAmount">Amount (₹) *</label>
+                <input type="number" id="financeAmount" required step="0.01" min="0.01" placeholder="e.g. 500.00" style="width: 100%; padding: 8px; border-radius: var(--radius-md); background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color);">
+              </div>
+            </div>
+
+            <div class="form-row-2" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+              <div class="form-group">
+                <label for="financeDebitAccount">Debit Account *</label>
+                <input type="text" id="financeDebitAccount" list="debitAccountsDatalist" required placeholder="e.g. Cash, SBI Bank" style="width: 100%; padding: 8px; border-radius: var(--radius-md); background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color);">
+                <datalist id="debitAccountsDatalist"></datalist>
+              </div>
+              <div class="form-group">
+                <label for="financeCreditAccount">Credit Account *</label>
+                <input type="text" id="financeCreditAccount" list="creditAccountsDatalist" required placeholder="e.g. Salary, Travel Fee" style="width: 100%; padding: 8px; border-radius: var(--radius-md); background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color);">
+                <datalist id="creditAccountsDatalist"></datalist>
+              </div>
+            </div>
+
+            <div class="form-group" style="margin-bottom: 12px;">
+              <label for="financeDescription">Description / Remarks</label>
+              <input type="text" id="financeDescription" placeholder="e.g. Ticket reimbursement, Dinner bill" style="width: 100%; padding: 8px; border-radius: var(--radius-md); background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color);">
+            </div>
+
+            <div style="display: flex; justify-content: flex-end; gap: 8px;">
+              <button type="button" id="resetFinanceFormBtn" class="btn-secondary btn-sm" style="display:none;">Clear Edit</button>
+              <button type="submit" class="btn-primary btn-sm"><i class="fa-solid fa-floppy-disk"></i> Save Transaction</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- DATABASE BACKUP & RESTORE MODAL -->
+    <div id="serverSyncModal" class="modal-backdrop hidden">
+      <div class="modal-card" style="max-width: 480px;">
+        <div class="modal-header">
+          <h3><i class="fa-solid fa-database" style="color:#38bdf8;"></i> Database Backup & Restore</h3>
+          <button id="closeServerSyncModalBtn" class="btn-icon"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="modal-body" style="padding: 20px;">
+          
+          <div id="syncRecommendationBanner" style="padding: 12px; border-radius: var(--radius-md); font-size: 0.88rem; margin-bottom: 16px; background: rgba(16, 185, 129, 0.15); border: 1px solid #10b981; color: #6ee7b7; line-height: 1.4;">
+            💾 <strong>Local Single-Device Database Active</strong><br>
+            All schedules, notes, and transactions are stored locally on this device in private IndexedDB storage.
+          </div>
+
+          <div style="background: var(--bg-tertiary); padding: 14px; border-radius: var(--radius-md); border: 1px solid var(--border-color); margin-bottom: 16px; font-size: 0.85rem;">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+              <span>Local SQLite Records:</span>
+              <strong id="serverDbCounts" style="color:#38bdf8;">Checking...</strong>
+            </div>
+            <div style="display: flex; justify-content: space-between;">
+              <span>Database Last Saved:</span>
+              <strong id="serverDbTime" style="color:#38bdf8;">Checking...</strong>
+            </div>
+          </div>
+
+          <!-- ONLY 2 MAIN ACTION BUTTONS: BACKUP & RESTORE -->
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 4px;">
+            <button id="downloadBackupBtn" class="btn-primary" style="justify-content: center; background: #10b981; padding: 12px; font-size: 0.9rem; font-weight: 600;">
+              <i class="fa-solid fa-download"></i> 📥 Download Backup (.db)
+            </button>
+            <button id="uploadRestoreBtn" class="btn-primary" style="justify-content: center; background: #8b5cf6; padding: 12px; font-size: 0.9rem; font-weight: 600;">
+              <i class="fa-solid fa-upload"></i> 📤 Upload / Restore (.db)
+            </button>
+          </div>
+          <input type="file" id="restoreFileInput" accept=".db,application/x-sqlite3" style="display:none;">
+
+          <div style="margin-top: 18px; border-top: 1px solid var(--border-color); padding-top: 14px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+              <h4 style="font-size: 0.85rem; color: var(--text-muted); margin: 0;"><i class="fa-solid fa-clock-rotate-left"></i> Local Snapshots & History</h4>
+              <button id="deleteAllBackupsBtn" class="btn-secondary btn-sm" style="font-size: 0.72rem; padding: 2px 8px; color: #fb7185; border-color: rgba(251,113,133,0.3);"><i class="fa-solid fa-trash-can"></i> Clean Up Old Snapshots</button>
+            </div>
+            <div id="serverBackupsList" style="display: flex; flex-direction: column; gap: 8px; max-height: 180px; overflow-y: auto;"></div>
+          </div>
+
+          <div style="margin-top: 16px; border-top: 1px solid var(--border-color); padding-top: 14px;">
+            <button type="button" id="openChangePinFromSyncBtn" class="btn-secondary btn-sm" style="width: 100%; justify-content: center; gap: 8px; font-weight: 500;">
+              <i class="fa-solid fa-key" style="color: #fbbf24;"></i> Change Security PIN / Access Key
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL: REPORTS & STATEMENTS -->
+    <div id="reportsModal" class="modal-backdrop hidden">
+      <div class="modal-card wide" style="max-width: 980px; max-height: 90vh; display: flex; flex-direction: column;">
+        <div class="modal-header">
+          <h3><i class="fa-solid fa-chart-column" style="color: #60a5fa;"></i> Reports & Financial Statements</h3>
+          <button class="modal-close-btn" id="closeReportsModalBtn"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+
+        <div class="modal-body" style="padding: 16px 20px; overflow-y: auto; flex: 1;">
+          
+          <!-- Report Type Selection Tabs -->
+          <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; border-bottom: 1px solid var(--border-color); padding-bottom: 12px;">
+            <button class="btn-secondary report-tab-btn active" data-report="free_days"><i class="fa-solid fa-umbrella-beach"></i> 1. Free Days List</button>
+            <button class="btn-secondary report-tab-btn" data-report="journal"><i class="fa-solid fa-book"></i> 2. Journal Statement</button>
+            <button class="btn-secondary report-tab-btn" data-report="ledger"><i class="fa-solid fa-scale-balanced"></i> 3. Account Ledger</button>
+            <button class="btn-secondary report-tab-btn" data-report="schedules"><i class="fa-solid fa-calendar-check"></i> 4. Schedules & Travel</button>
+            <button class="btn-secondary report-tab-btn" data-report="ticket_cost"><i class="fa-solid fa-ticket"></i> 5. Ticket Cost</button>
+            <button class="btn-secondary report-tab-btn" data-report="ticket_claim"><i class="fa-solid fa-file-invoice-dollar"></i> 6. Statement of Claim (Tickets)</button>
+          </div>
+
+          <!-- Dynamic Filter Controls -->
+          <div style="background: var(--bg-tertiary); padding: 12px 16px; border-radius: var(--radius-md); border: 1px solid var(--border-color); margin-bottom: 16px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center;">
+            
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <label style="font-size: 0.82rem; color: var(--text-muted);">From:</label>
+              <input type="date" id="reportFromDate" style="padding: 6px; border-radius: 4px; background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color); font-size: 0.85rem;">
+              <label style="font-size: 0.82rem; color: var(--text-muted);">To:</label>
+              <input type="date" id="reportToDate" style="padding: 6px; border-radius: 4px; background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color); font-size: 0.85rem;">
+            </div>
+
+            <!-- Particular Account Select (For Ledger) -->
+            <div id="reportAccountGroup" class="hidden" style="display: flex; gap: 8px; align-items: center;">
+              <label style="font-size: 0.82rem; color: var(--text-muted);">Account:</label>
+              <select id="reportAccountSelect" style="padding: 6px; border-radius: 4px; background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color); font-size: 0.85rem; min-width: 160px;"></select>
+            </div>
+
+            <!-- Tag Filter Select (For Reports 4 & 5) -->
+            <div id="reportTagGroup" class="hidden" style="display: flex; gap: 8px; align-items: center;">
+              <label style="font-size: 0.82rem; color: var(--text-muted);">Tag Filter:</label>
+              <select id="reportTagSelect" style="padding: 6px; border-radius: 4px; background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color); font-size: 0.85rem; min-width: 160px;">
+                <option value="all">All Tags</option>
+              </select>
+            </div>
+
+            <button id="generateReportBtn" class="btn-primary btn-sm"><i class="fa-solid fa-play"></i> Generate Report</button>
+            <button id="printReportBtn" class="btn-secondary btn-sm" style="margin-left: auto;"><i class="fa-solid fa-print"></i> Print / Save PDF</button>
+          </div>
+
+          <!-- Report Results Container -->
+          <div id="reportOutputContainer" style="background: var(--bg-primary); padding: 16px; border-radius: var(--radius-md); border: 1px solid var(--border-color); min-height: 250px;">
+            <div style="text-align: center; color: var(--text-muted); padding: 40px;">Select a report type and date range, then click <strong>Generate Report</strong>.</div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL: CHANGE SECURITY PIN -->
+    <div id="changePinModal" class="modal-backdrop hidden">
+      <div class="modal-card" style="max-width: 420px;">
+        <div class="modal-header">
+          <h3><i class="fa-solid fa-key" style="color: #fbbf24;"></i> Change Security PIN</h3>
+          <button class="modal-close-btn" id="closeChangePinModalBtn"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="modal-body" style="padding: 20px;">
+          <p style="font-size: 0.88rem; color: var(--text-muted); margin-bottom: 16px; line-height: 1.4;">
+            Update your Security PIN / Access Key. Your new PIN will be securely saved in your local database on this device.
+          </p>
+          <form id="changePinForm" style="display: flex; flex-direction: column; gap: 14px;">
+            <div class="form-group">
+              <label for="currentPinInput" style="font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 6px;">Current PIN / Access Key *</label>
+              <input type="password" id="currentPinInput" required placeholder="Enter current PIN" autocomplete="current-password" style="width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: var(--radius-md); border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-main); font-family: inherit;">
+            </div>
+            <div class="form-group">
+              <label for="newPinInput" style="font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 6px;">New PIN (Minimum 4 characters) *</label>
+              <input type="password" id="newPinInput" required minlength="4" placeholder="Enter new PIN" autocomplete="new-password" style="width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: var(--radius-md); border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-main); font-family: inherit;">
+            </div>
+            <div class="form-group">
+              <label for="confirmPinInput" style="font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 6px;">Confirm New PIN *</label>
+              <input type="password" id="confirmPinInput" required minlength="4" placeholder="Re-enter new PIN" autocomplete="new-password" style="width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: var(--radius-md); border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-main); font-family: inherit;">
+            </div>
+            <div id="changePinErrorMsg" style="color: #fb7185; font-size: 0.85rem; line-height: 1.3;" class="hidden"></div>
+            <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 6px;">
+              <button type="button" id="cancelChangePinBtn" class="btn-secondary btn-sm">Cancel</button>
+              <button type="submit" id="saveNewPinBtn" class="btn-primary btn-sm"><i class="fa-solid fa-check"></i> Update PIN</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL: ABOUT SRG CALENDAR PRO -->
+    <div id="aboutModal" class="modal-backdrop hidden">
+      <div class="modal-card" style="max-width: 480px;">
+        <div class="modal-header">
+          <h3><i class="fa-solid fa-circle-info" style="color: #38bdf8;"></i> About SRG Calendar Pro</h3>
+          <button class="modal-close-btn" id="closeAboutModalBtn"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="modal-body" style="padding: 24px; text-align: center;">
+          <div style="width: 68px; height: 68px; background: linear-gradient(135deg, #0284c7, #2563eb); border-radius: 18px; display: inline-flex; align-items: center; justify-content: center; font-size: 2rem; color: #fff; margin-bottom: 16px; box-shadow: 0 8px 20px rgba(2, 132, 199, 0.35);">
+            <i class="fa-solid fa-calendar-days"></i>
+          </div>
+          <h2 style="font-size: 1.45rem; font-weight: 700; margin-bottom: 4px; color: var(--text-main);">SRG Calendar Pro</h2>
+          <div style="display: inline-block; font-size: 0.8rem; font-weight: 600; color: #38bdf8; background: rgba(56,189,248,0.12); padding: 3px 10px; border-radius: 12px; margin-bottom: 16px; border: 1px solid rgba(56,189,248,0.3);">
+            Version <span id="aboutModalVersion">v1.0.0 (Local DB PWA)</span>
+          </div>
+
+          <div style="background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 14px 16px; text-align: left; font-size: 0.88rem; line-height: 1.55; margin-bottom: 16px;">
+            <p style="margin-bottom: 8px;">
+              <strong>SRG Calendar Pro (Local DB)</strong> is a standalone, single-device Progressive Web App featuring full offline scheduling (Month, 30-Day Portrait Table, Day, Agenda), travel transit tracking, daily notes, double-entry financial statements, and local attachment archives.
+            </p>
+            <p style="margin: 0; color: var(--text-muted); font-size: 0.83rem;">
+              Built with SQLite WASM and browser IndexedDB storage. Operates 100% offline on any device without requiring PHP or an external server.
+            </p>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 8px; font-size: 0.86rem; color: var(--text-muted); padding: 12px 14px; background: var(--bg-hover); border-radius: var(--radius-md); text-align: left;">
+            <div style="display: flex; justify-content: space-between;">
+              <span><strong>Developer:</strong></span>
+              <span style="color: var(--text-main); font-weight: 600;">S. Rathinagiri</span>
+            </div>
+            <div style="display: flex; justify-content: space-between;">
+              <span><strong>Storage:</strong></span>
+              <span style="color: var(--text-main);">Local SQLite WASM & IndexedDB</span>
+            </div>
+            <div style="display: flex; justify-content: space-between;">
+              <span><strong>Platform:</strong></span>
+              <span style="color: var(--text-main);">Offline PWA (Single-Device)</span>
+            </div>
+          </div>
+
+          <div style="margin-top: 20px; display: flex; justify-content: center;">
+            <button type="button" id="closeAboutModalOkBtn" class="btn-primary" style="min-width: 120px; justify-content: center;">
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- FULL-SCREEN SECURITY ACCESS KEY LOCK -->
+    <div id="appLockOverlay" class="modal-backdrop hidden" style="z-index: 10000; background: rgba(15, 23, 42, 0.98); backdrop-filter: blur(16px); display: flex; align-items: center; justify-content: center;">
+      <div class="modal-card" style="max-width: 400px; text-align: center; padding: 30px 24px; border: 1px solid var(--border-color);">
+        <div style="width: 60px; height: 60px; background: linear-gradient(135deg, #3b82f6, #6366f1); border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 1.8rem; color: #fff; margin-bottom: 16px; box-shadow: 0 4px 15px rgba(59, 130, 246, 0.4);">
+          <i class="fa-solid fa-shield-halved"></i>
+        </div>
+        <h3 style="font-size: 1.3rem; margin-bottom: 8px;">SRG Calendar Lock</h3>
+        <p style="font-size: 0.88rem; color: var(--text-muted); margin-bottom: 20px;">Enter your Security Access Key / PIN to unlock your personal calendar.</p>
+        
+        <form id="appUnlockForm" style="display: flex; flex-direction: column; gap: 12px;">
+          <input type="password" id="appLockKeyInput" placeholder="Enter Access Key / PIN" required style="width: 100%; box-sizing: border-box; padding: 12px; font-size: 1rem; text-align: center; border-radius: var(--radius-md); border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-main); font-family: inherit;">
+          <button type="submit" class="btn-primary" style="width: 100%; justify-content: center; padding: 12px; font-size: 1rem;"><i class="fa-solid fa-key"></i> Unlock Calendar</button>
+        </form>
+        <div id="appLockErrorMsg" style="color: #fb7185; font-size: 0.85rem; margin-top: 10px;" class="hidden">Incorrect Access Key. Access Denied.</div>
+      </div>
+    </div>
+
   </div>
+
+  <!-- Toast Notification Container -->
+  <div id="toastContainer" class="toast-container"></div>
 
   <script src="app.js"></script>
 </body>

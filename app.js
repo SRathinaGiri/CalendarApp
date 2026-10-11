@@ -7,60 +7,180 @@
 let SQL = null;
 let db = null;
 let currentDate = new Date(); // Viewing month
-let selectedDates = new Set(); // Multi-date selection
-let currentView = 'month'; // 'month' | 'agenda'
+let currentView = localStorage.getItem('srg_current_view') || 'calendar'; // 'calendar' | 'month' | 'day' | 'agenda'
 let tagMasterCategories = [];
 let tagMasterTags = [];
 let tagMasterFields = [];
+let selectedDates = new Set(); // Multi-date selection set
+
+// App Theme, Security Lock, and Read-Only State
+let currentTheme = localStorage.getItem('srg_theme') || 'dark';
+let isReadOnly = false;
+let isAppUnlocked = sessionStorage.getItem('srg_app_unlocked') === 'true';
 
 // Current attachments for modal (array of { name, type, data: base64 })
 let currentModalAttachments = [];
 
-// Google Drive OAuth state
-const DEFAULT_GOOGLE_CLIENT_ID = '693082654931-vcpqrjj1v35ej4phap9juu5reir5rnpf.apps.googleusercontent.com';
-let gdriveToken = null;
-let gdriveFileId = null;
-let gdriveFolderId = null;
-let gdriveClientId = localStorage.getItem('srg_gdrive_client_id') || DEFAULT_GOOGLE_CLIENT_ID;
+// Sync Provider Choice: 'local' (Pure Single-Device Offline PWA)
+let syncProvider = 'local';
+localStorage.setItem('srg_sync_provider', 'local');
+let serverApiUrl = '';
+let serverApiKey = '';
 
 // Tamil day of week mapping
 const TAMIL_DAYS = ['ஞாயிறு', 'திங்கள்', 'செவ்வாய்', 'புதன்', 'வியாழன்', 'வெள்ளி', 'சனி'];
 
-// Register Service Worker
+/* ==========================================================================
+   0. TOAST NOTIFICATION SYSTEM & UTILITIES
+   ========================================================================== */
+async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const fetchOptions = {
+      credentials: 'include',
+      ...options,
+      signal: controller.signal
+    };
+    if (serverApiKey && !fetchOptions.headers?.['X-API-Key']) {
+      fetchOptions.headers = { ...(fetchOptions.headers || {}), 'X-API-Key': serverApiKey };
+    }
+    const response = await fetch(url, fetchOptions);
+    return response;
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(id);
+  }
+}
+
+function showToast(message, type = 'info', duration = 3500) {
+  let container = document.getElementById('toastContainer');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'toastContainer';
+    container.className = 'toast-container';
+    document.body.appendChild(container);
+  }
+
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+
+  let iconHtml = '<i class="fa-solid fa-circle-info"></i>';
+  if (type === 'success') iconHtml = '<i class="fa-solid fa-circle-check"></i>';
+  if (type === 'error') iconHtml = '<i class="fa-solid fa-triangle-exclamation"></i>';
+  if (type === 'warning') iconHtml = '<i class="fa-solid fa-triangle-exclamation"></i>';
+  if (type === 'loading') iconHtml = '<i class="fa-solid fa-spinner fa-spin"></i>';
+
+  toast.innerHTML = `${iconHtml}<span>${message}</span>`;
+  container.appendChild(toast);
+
+  if (type !== 'loading' && duration > 0) {
+    setTimeout(() => {
+      dismissToast(toast);
+    }, duration);
+  } else if (type === 'loading') {
+    // Safety auto-dismiss for loading toasts if not explicitly dismissed within safety limit (default 8 seconds)
+    const safetyMs = duration > 0 ? duration : 8000;
+    toast._safetyTimer = setTimeout(() => {
+      dismissToast(toast);
+    }, safetyMs);
+  }
+
+  return toast;
+}
+
+function dismissToast(toastEl) {
+  if (toastEl) {
+    if (toastEl._safetyTimer) clearTimeout(toastEl._safetyTimer);
+    if (toastEl.parentNode) {
+      toastEl.classList.add('toast-hide');
+      setTimeout(() => {
+        if (toastEl.parentNode) toastEl.parentNode.removeChild(toastEl);
+      }, 300);
+    }
+  }
+}
+
+// Register Service Worker for Offline PWA
+const APP_VERSION = 'v1.0.0 (Local DB)';
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('sw.js').then(() => {
-    console.log('SRG Calendar SW Registered');
+  navigator.serviceWorker.register('sw.js').then((reg) => {
+    console.log('SRG Calendar Local DB SW Registered');
   }).catch(err => console.log('SW registration error:', err));
+}
+
+// Automatic cache invalidation on version update
+if (localStorage.getItem('srg_installed_version') !== APP_VERSION) {
+  localStorage.setItem('srg_installed_version', APP_VERSION);
+  if ('caches' in window) {
+    caches.keys().then(names => {
+      names.forEach(name => {
+        if (!name.includes('localdb')) caches.delete(name);
+      });
+    });
+  }
 }
 
 // Initialization on DOM Loaded
 document.addEventListener('DOMContentLoaded', async () => {
+  const vBadge = document.getElementById('appVersionBadge');
+  if (vBadge) vBadge.textContent = APP_VERSION;
+  initAppTheme();
   setupUIEventListeners();
   await initSqliteDatabase();
+  await checkAppSecurityLock();
   loadMasterDataFromDb();
   populateTitlesDatalist();
-  renderCurrentView();
-  initGoogleDriveAuth();
+  switchToView(currentView, currentDate);
 });
 
 /* ==========================================================================
-   1. SQLITE & WASM PERSISTENCE
+   1. SQLITE & WASM PERSISTENCE (PURE LOCAL SINGLE-DEVICE)
    ========================================================================== */
 
 async function initSqliteDatabase() {
   updateBadge('Initializing DB...');
   try {
-    SQL = await initSqlJs({
-      locateFile: file => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${file}`
-    });
+    try {
+      SQL = await initSqlJs({
+        locateFile: file => file
+      });
+    } catch(e) {
+      console.warn('Local sql-wasm.wasm load fallback to CDN:', e);
+      SQL = await initSqlJs({
+        locateFile: file => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${file}`
+      });
+    }
 
     const cachedDbBytes = await loadDbFromIndexedDB();
     if (cachedDbBytes) {
       db = new SQL.Database(cachedDbBytes);
-      // Migration check
       ensureSchemaUpToDate();
     } else {
-      await initDbFromSeedJson();
+      // First run: Try loading bundled SRG_Calendar.db if available
+      let loadedFromBundle = false;
+      try {
+        const resp = await fetch('SRG_Calendar.db');
+        if (resp.ok) {
+          const buf = await resp.arrayBuffer();
+          if (buf && buf.byteLength > 0) {
+            db = new SQL.Database(new Uint8Array(buf));
+            ensureSchemaUpToDate();
+            await saveDbToIndexedDB(false);
+            loadedFromBundle = true;
+            console.log('Initialized database from bundled SRG_Calendar.db');
+          }
+        }
+      } catch (e) {
+        console.warn('Could not fetch bundled SRG_Calendar.db:', e);
+      }
+      if (!loadedFromBundle) {
+        await initDbFromSeedJson();
+      }
     }
     updateBadge('Local SQLite Active');
   } catch (err) {
@@ -71,7 +191,81 @@ async function initSqliteDatabase() {
 }
 
 function ensureSchemaUpToDate() {
+  if (!db) return;
   try {
+    // Ensure all core SQLite tables exist
+    db.run(`
+      CREATE TABLE IF NOT EXISTS tag_categories (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        color TEXT,
+        icon TEXT,
+        sort_order INTEGER
+      );
+      CREATE TABLE IF NOT EXISTS tags (
+        id TEXT PRIMARY KEY,
+        category_id TEXT,
+        name TEXT NOT NULL,
+        sort_order INTEGER,
+        FOREIGN KEY(category_id) REFERENCES tag_categories(id)
+      );
+      CREATE TABLE IF NOT EXISTS tag_field_definitions (
+        id TEXT PRIMARY KEY,
+        tag_id TEXT,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL,
+        options TEXT,
+        is_required INTEGER DEFAULT 0,
+        sort_order INTEGER,
+        FOREIGN KEY(tag_id) REFERENCES tags(id)
+      );
+      CREATE TABLE IF NOT EXISTS schedules (
+        id TEXT PRIMARY KEY,
+        group_id TEXT,
+        schedule_date TEXT NOT NULL,
+        from_time TEXT NOT NULL,
+        to_time TEXT NOT NULL,
+        delivery_mode TEXT DEFAULT 'offline',
+        location TEXT,
+        title TEXT NOT NULL,
+        notes TEXT,
+        attachments TEXT,
+        travel_info TEXT,
+        status TEXT DEFAULT 'confirmed',
+        created_at TEXT,
+        updated_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS schedule_tags (
+        id TEXT PRIMARY KEY,
+        schedule_id TEXT NOT NULL,
+        tag_id TEXT NOT NULL,
+        field_values TEXT,
+        notes TEXT,
+        FOREIGN KEY(schedule_id) REFERENCES schedules(id),
+        FOREIGN KEY(tag_id) REFERENCES tags(id)
+      );
+      CREATE TABLE IF NOT EXISTS app_metadata (
+        key TEXT PRIMARY KEY,
+        value TEXT
+      );
+      CREATE TABLE IF NOT EXISTS daily_notes (
+        note_date TEXT PRIMARY KEY,
+        content TEXT,
+        updated_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS daily_transactions (
+        id TEXT PRIMARY KEY,
+        txn_date TEXT NOT NULL,
+        type TEXT NOT NULL,
+        debit_account TEXT,
+        credit_account TEXT,
+        amount REAL NOT NULL,
+        description TEXT,
+        created_at TEXT,
+        updated_at TEXT
+      );
+    `);
+
     const tableInfo = db.exec("PRAGMA table_info(schedules)");
     const colNames = tableInfo.length > 0 ? tableInfo[0].values.map(v => v[1]) : [];
     
@@ -88,98 +282,29 @@ function ensureSchemaUpToDate() {
       db.run("ALTER TABLE schedules ADD COLUMN travel_info TEXT");
     }
 
-    // Auto-migrate: Backfill missing arrival travel entries for existing overnight travel records
-    backfillMissingOvernightArrivalEntries();
-    console.log('Database schema verified & columns updated.');
+    // Safe schema migrations for tags, categories, and field definitions
+    try { db.run("ALTER TABLE tags ADD COLUMN sort_order INTEGER;"); } catch(e) {}
+    try { db.run("ALTER TABLE tags ADD COLUMN color TEXT;"); } catch(e) {}
+    try { db.run("ALTER TABLE tags ADD COLUMN description TEXT;"); } catch(e) {}
+    try { db.run("ALTER TABLE tag_categories ADD COLUMN sort_order INTEGER;"); } catch(e) {}
+    try { db.run("ALTER TABLE tag_field_definitions ADD COLUMN sort_order INTEGER;"); } catch(e) {}
+    try { db.run("ALTER TABLE tag_field_definitions ADD COLUMN category_id TEXT;"); } catch(e) {}
+    try { db.run("ALTER TABLE tag_field_definitions ADD COLUMN field_key TEXT;"); } catch(e) {}
+    try { db.run("ALTER TABLE tag_field_definitions ADD COLUMN field_label TEXT;"); } catch(e) {}
+    try { db.run("ALTER TABLE tag_field_definitions ADD COLUMN field_type TEXT;"); } catch(e) {}
+
   } catch (e) {
     console.warn('Schema upgrade note:', e);
   }
 }
 
-function backfillMissingOvernightArrivalEntries() {
-  try {
-    // Find all overnight departure schedules
-    const query = `
-      SELECT id, title, schedule_date, from_time, to_time, location, notes, attachments, travel_info, status, created_at, updated_at
-      FROM schedules
-      WHERE (title LIKE 'Travel:%' OR title LIKE 'Return Travel:%')
-        AND (notes LIKE '%[Overnight:%' OR title LIKE '%[Overnight:%' OR notes LIKE '%Arrival: %')
-    `;
-    const res = db.exec(query);
-    if (!res || res.length === 0) return;
-
-    let insertedCount = 0;
-    const nowIso = new Date().toISOString();
-
-    res[0].values.forEach(row => {
-      const [id, title, schDate, fromTime, toTime, location, notes, attachments, travelInfoStr, status, createdAt, updatedAt] = row;
-      
-      // Extract arrival date & time from notes or title
-      // Format in notes: "Departure: 01-11-2026 at 21:15 | Arrival: 02-11-2026 at 08:38"
-      const arrMatch = (notes || '').match(/Arrival:\s*(\d{1,2}-\d{1,2}-\d{4})\s*at\s*(\d{2}:\d{2})/i) ||
-                       (title || '').match(/Arr\s*(\d{1,2}-\d{1,2}-\d{4})/i);
-      
-      let arrYmd = null;
-      let arrTime = '08:00';
-
-      if (arrMatch) {
-        const parts = arrMatch[1].split('-');
-        if (parts.length === 3) {
-          arrYmd = `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
-        }
-        if (arrMatch[2]) arrTime = arrMatch[2];
-      }
-
-      // Check travel_info JSON if present
-      if (!arrYmd && travelInfoStr) {
-        try {
-          const tObj = JSON.parse(travelInfoStr);
-          const tData = tObj.return || tObj.onward;
-          if (tData && tData.toDate && tData.toDate !== schDate) {
-            arrYmd = tData.toDate;
-            if (tData.arrTime) arrTime = tData.arrTime;
-          }
-        } catch(e){}
-      }
-
-      // If this is an overnight journey arriving on a different date:
-      if (arrYmd && arrYmd !== schDate) {
-        // Check if an arrival schedule already exists for this date
-        const checkRes = db.exec("SELECT id FROM schedules WHERE schedule_date = ? AND (title LIKE 'Travel Arrival:%' OR title LIKE 'Return Travel Arrival:%' OR id LIKE ?)", [arrYmd, `%${id}%`]);
-        if (!checkRes || checkRes.length === 0 || checkRes[0].values.length === 0) {
-          const isReturn = title.toLowerCase().startsWith('return');
-          const prefix = isReturn ? 'Return Travel Arrival:' : 'Travel Arrival:';
-          
-          // Generate clean arrival title
-          const titleDetails = title.replace(/^(Return Travel|Travel):\s*/i, '').replace(/\s*\[Overnight:.*?\]/i, '');
-          const arrTitle = `${prefix} ${titleDetails}`;
-          const arrId = `sch_${arrYmd}_travel_${isReturn ? 'return' : 'onward'}_arr_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`;
-          const arrNotes = `Arrival day: In-transit train arrival | Dep: ${formatDateIndian(schDate)} at ${fromTime} | Arr: ${formatDateIndian(arrYmd)} at ${arrTime}`;
-
-          db.run(`
-            INSERT INTO schedules (id, group_id, schedule_date, from_time, to_time, delivery_mode, location, title, notes, attachments, travel_info, status, created_at, updated_at)
-            VALUES (?, null, ?, '00:00', ?, 'offline', ?, ?, ?, ?, ?, ?, ?, ?)
-          `, [arrId, arrYmd, arrTime, location || '', arrTitle, arrNotes, attachments || '[]', travelInfoStr || null, status || 'confirmed', nowIso, nowIso]);
-
-          insertedCount++;
-        }
-      }
-    });
-
-    if (insertedCount > 0) {
-      console.log(`Successfully backfilled ${insertedCount} missing overnight arrival travel entries!`);
-      saveDbToIndexedDB();
-    }
-  } catch (err) {
-    console.warn('Overnight backfill notice:', err);
-  }
-}
+// Pure pull architecture: No client-side database write operations permitted.
+function migrateAndCompressDatabase() {}
+function cleanupOrphanTravelEntries() {}
+function backfillMissingOvernightArrivalEntries() {}
 
 async function initDbFromSeedJson() {
-  console.log('Loading initial data from seed_data.json...');
-  const res = await fetch('seed_data.json');
-  const data = await res.json();
-
+  console.log('Initializing fresh SQLite database schema...');
   db = new SQL.Database();
   
   db.run(`
@@ -238,84 +363,294 @@ async function initDbFromSeedJson() {
       key TEXT PRIMARY KEY,
       value TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS daily_notes (
+      note_date TEXT PRIMARY KEY,
+      content TEXT,
+      updated_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS daily_transactions (
+      id TEXT PRIMARY KEY,
+      txn_date TEXT NOT NULL,
+      type TEXT NOT NULL,
+      debit_account TEXT,
+      credit_account TEXT,
+      amount REAL NOT NULL,
+      description TEXT,
+      created_at TEXT,
+      updated_at TEXT
+    );
   `);
 
-  const catStmt = db.prepare('INSERT INTO tag_categories (id, name, color, icon, sort_order) VALUES (?, ?, ?, ?, ?)');
-  for (const c of data.tag_categories) {
-    catStmt.run([c.id, c.name, c.color, c.icon, c.sort_order]);
-  }
-  catStmt.free();
+  ensureSchemaUpToDate();
 
-  const tagStmt = db.prepare('INSERT INTO tags (id, category_id, name, color, description) VALUES (?, ?, ?, ?, ?)');
-  for (const t of data.tags) {
-    tagStmt.run([t.id, t.category_id, t.name, t.color, t.description]);
+  // Seed default taxonomy master tags, categories & custom fields if provided
+  try {
+    const seedData = (typeof DEFAULT_TAXONOMY_SEED !== 'undefined') ? DEFAULT_TAXONOMY_SEED : null;
+    if (seedData) {
+      if (Array.isArray(seedData.categories)) {
+        for (const cat of seedData.categories) {
+          db.run(
+            "INSERT OR IGNORE INTO tag_categories (id, name, color, icon, sort_order) VALUES (?, ?, ?, ?, ?)",
+            cat
+          );
+        }
+      }
+      if (Array.isArray(seedData.tags)) {
+        for (const tag of seedData.tags) {
+          db.run(
+            "INSERT OR IGNORE INTO tags (id, category_id, name, color, description) VALUES (?, ?, ?, ?, ?)",
+            tag
+          );
+        }
+      }
+      if (Array.isArray(seedData.fields)) {
+        for (const fld of seedData.fields) {
+          db.run(
+            "INSERT OR IGNORE INTO tag_field_definitions (id, tag_id, category_id, field_key, field_label, field_type) VALUES (?, ?, ?, ?, ?, ?)",
+            fld
+          );
+        }
+      }
+    }
+  } catch(e) {
+    console.warn('Could not populate initial taxonomy seed:', e);
   }
-  tagStmt.free();
 
-  const fldStmt = db.prepare('INSERT INTO tag_field_definitions (id, tag_id, category_id, field_key, field_label, field_type) VALUES (?, ?, ?, ?, ?, ?)');
-  for (const f of data.tag_field_definitions) {
-    fldStmt.run([f.id, f.tag_id, f.category_id, f.field_key, f.field_label, f.field_type]);
-  }
-  fldStmt.free();
+  // Set default app PIN '1234' into metadata
+  try {
+    db.run("INSERT OR REPLACE INTO app_metadata (key, value) VALUES ('app_pin', '1234')");
+  } catch(e) {}
 
-  const schStmt = db.prepare('INSERT INTO schedules (id, group_id, schedule_date, from_time, to_time, delivery_mode, location, title, notes, attachments, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
-  for (const s of data.schedules) {
-    schStmt.run([s.id, s.group_id || null, s.schedule_date, s.from_time, s.to_time, s.delivery_mode, s.location, s.title, s.notes, s.attachments || '[]', s.status, s.created_at, s.updated_at]);
-  }
-  schStmt.free();
-
-  const stStmt = db.prepare('INSERT INTO schedule_tags (id, schedule_id, tag_id, field_values, notes) VALUES (?, ?, ?, ?, ?)');
-  for (const st of data.schedule_tags) {
-    stStmt.run([st.id, st.schedule_id, st.tag_id, st.field_values, st.notes]);
-  }
-  stStmt.free();
-
-  await saveDbToIndexedDB();
+  await saveDbToIndexedDB(false);
 }
 
-function saveDbToIndexedDB() {
+function openSRGDatabase() {
   return new Promise((resolve, reject) => {
-    if (!db) return resolve();
-    const binaryArray = db.export();
-    const req = indexedDB.open('SRGCalendarDB', 1);
+    const req = indexedDB.open('SRGCalendarDB', 2);
     req.onupgradeneeded = (e) => {
       const idb = e.target.result;
       if (!idb.objectStoreNames.contains('files')) {
         idb.createObjectStore('files');
       }
+      if (!idb.objectStoreNames.contains('snapshots')) {
+        idb.createObjectStore('snapshots', { keyPath: 'id' });
+      }
     };
-    req.onsuccess = (e) => {
-      const idb = e.target.result;
+    req.onsuccess = (e) => resolve(e.target.result);
+    req.onerror = (e) => reject(req.error);
+  });
+}
+
+function saveDbToIndexedDB(updateTimestamp = true) {
+  if (updateTimestamp) {
+    localStorage.setItem('srg_db_last_modified', Date.now().toString());
+  }
+  return new Promise(async (resolve, reject) => {
+    if (!db) return resolve();
+    try {
+      const binaryArray = db.export();
+      const idb = await openSRGDatabase();
       const tx = idb.transaction('files', 'readwrite');
       const store = tx.objectStore('files');
       store.put(binaryArray, 'active_sqlite');
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
-    };
-    req.onerror = () => reject(req.error);
+    } catch(err) {
+      reject(err);
+    }
   });
 }
 
 function loadDbFromIndexedDB() {
-  return new Promise((resolve) => {
-    const req = indexedDB.open('SRGCalendarDB', 1);
-    req.onupgradeneeded = (e) => {
-      const idb = e.target.result;
-      if (!idb.objectStoreNames.contains('files')) {
-        idb.createObjectStore('files');
-      }
-    };
-    req.onsuccess = (e) => {
-      const idb = e.target.result;
+  return new Promise(async (resolve) => {
+    try {
+      const idb = await openSRGDatabase();
       const tx = idb.transaction('files', 'readonly');
       const store = tx.objectStore('files');
       const getReq = store.get('active_sqlite');
       getReq.onsuccess = () => resolve(getReq.result || null);
       getReq.onerror = () => resolve(null);
-    };
-    req.onerror = () => resolve(null);
+    } catch(e) {
+      resolve(null);
+    }
   });
 }
+
+/* Local Snapshots History in IndexedDB */
+async function saveLocalDbSnapshot(customLabel = null) {
+  if (!db) return;
+  try {
+    const idb = await openSRGDatabase();
+    const binary = db.export();
+    const now = Date.now();
+    const label = customLabel || `Snapshot ${formatFullDateTime(now)}`;
+    const snapshot = {
+      id: now,
+      name: `SRG_Calendar_${formatDateYMD(new Date())}_${now.toString().slice(-4)}.db`,
+      label: label,
+      timestamp: now,
+      size: binary.byteLength,
+      data: binary
+    };
+
+    const tx = idb.transaction('snapshots', 'readwrite');
+    const store = tx.objectStore('snapshots');
+    store.put(snapshot);
+    await new Promise(r => { tx.oncomplete = r; tx.onerror = r; });
+
+    // Keep max 15 snapshots
+    const getAllTx = idb.transaction('snapshots', 'readwrite');
+    const sStore = getAllTx.objectStore('snapshots');
+    const allReq = sStore.getAll();
+    allReq.onsuccess = () => {
+      const all = allReq.result || [];
+      if (all.length > 15) {
+        all.sort((a, b) => b.timestamp - a.timestamp);
+        const toDelete = all.slice(15);
+        toDelete.forEach(item => sStore.delete(item.id));
+      }
+    };
+  } catch(e) {
+    console.warn('Snapshot error:', e);
+  }
+}
+
+async function listLocalDbSnapshots() {
+  try {
+    const idb = await openSRGDatabase();
+    return new Promise((resolve) => {
+      const tx = idb.transaction('snapshots', 'readonly');
+      const store = tx.objectStore('snapshots');
+      const req = store.getAll();
+      req.onsuccess = () => {
+        const list = req.result || [];
+        list.sort((a, b) => b.timestamp - a.timestamp);
+        resolve(list);
+      };
+      req.onerror = () => resolve([]);
+    });
+  } catch(e) {
+    return [];
+  }
+}
+
+async function restoreLocalDbSnapshot(snapId) {
+  try {
+    const idb = await openSRGDatabase();
+    const snap = await new Promise((resolve) => {
+      const tx = idb.transaction('snapshots', 'readonly');
+      const store = tx.objectStore('snapshots');
+      const req = store.get(snapId);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => resolve(null);
+    });
+    if (!snap || !snap.data) {
+      showToast('Snapshot data not found', 'error');
+      return;
+    }
+
+    // Safety backup of current database before restore
+    await saveLocalDbSnapshot('Pre-restore Safety Backup');
+
+    db = new SQL.Database(new Uint8Array(snap.data));
+    ensureSchemaUpToDate();
+    await saveDbToIndexedDB();
+    loadMasterDataFromDb();
+    populateTitlesDatalist();
+    renderCurrentView();
+    closeServerSyncModal();
+    showToast('✓ Local snapshot restored successfully!', 'success', 4000);
+  } catch(e) {
+    showToast('Error restoring snapshot: ' + e.message, 'error');
+  }
+}
+
+async function deleteLocalDbSnapshot(snapId) {
+  try {
+    const idb = await openSRGDatabase();
+    const tx = idb.transaction('snapshots', 'readwrite');
+    const store = tx.objectStore('snapshots');
+    store.delete(snapId);
+    await new Promise(r => { tx.oncomplete = r; tx.onerror = r; });
+  } catch(e) {}
+}
+
+async function deleteAllLocalDbSnapshots() {
+  try {
+    const idb = await openSRGDatabase();
+    const tx = idb.transaction('snapshots', 'readwrite');
+    const store = tx.objectStore('snapshots');
+    store.clear();
+    await new Promise(r => { tx.oncomplete = r; tx.onerror = r; });
+  } catch(e) {}
+}
+
+/* Decoupled File Storage Helpers (IndexedDB Local Storage) */
+function saveAttachmentToIndexedDB(attId, dataBase64) {
+  return new Promise(async (resolve) => {
+    if (!attId || !dataBase64) return resolve();
+    try {
+      const idb = await openSRGDatabase();
+      const tx = idb.transaction('files', 'readwrite');
+      const store = tx.objectStore('files');
+      store.put(dataBase64, 'att_' + attId);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    } catch(e) {
+      resolve();
+    }
+  });
+}
+
+function loadAttachmentFromIndexedDB(attId) {
+  return new Promise(async (resolve) => {
+    if (!attId) return resolve(null);
+    try {
+      const idb = await openSRGDatabase();
+      const tx = idb.transaction('files', 'readonly');
+      const store = tx.objectStore('files');
+      const getReq = store.get('att_' + attId);
+      getReq.onsuccess = () => resolve(getReq.result || null);
+      getReq.onerror = () => resolve(null);
+    } catch(e) {
+      resolve(null);
+    }
+  });
+}
+
+async function uploadAttachmentFileToServer(attId, filename, dataBase64) {
+  // Pure local mode: Attachment is already securely saved to IndexedDB
+}
+
+async function downloadAttachmentFileFromServer(filename) {
+  return null;
+}
+
+async function getAttachmentData(att) {
+  if (!att) return null;
+  if (att.data) return att.data;
+
+  // 1. Try local IndexedDB store by att.id
+  let data = await loadAttachmentFromIndexedDB(att.id);
+  if (data) {
+    att.data = data;
+    return data;
+  }
+
+  // 2. Try exact stored filename
+  if (att.filename) {
+    data = await loadAttachmentFromIndexedDB(att.filename);
+    if (data) {
+      att.data = data;
+      return data;
+    }
+  }
+
+  return null;
+}
+
 
 /* ==========================================================================
    2. MASTER DATA & TITLE AUTOCOMPLETE
@@ -384,10 +719,18 @@ function updateBadge(text, isDrive = false) {
    3. CALENDAR & AGENDA VIEWS RENDERING
    ========================================================================== */
 
+function autoCompletePastSchedules() {
+  // Pure pull architecture: No local DB write operations.
+  // Completed/past schedule state is rendered dynamically from timestamps.
+}
+
 function renderCurrentView() {
+  autoCompletePastSchedules();
   updateNavHeader();
-  if (currentView === 'month') {
+  if (currentView === 'calendar') {
     renderMonthView();
+  } else if (currentView === 'month') {
+    renderPortraitMonthView();
   } else if (currentView === 'day') {
     renderDayView();
   } else {
@@ -396,12 +739,19 @@ function renderCurrentView() {
   updateSelectionBar();
 }
 
-function switchToView(viewName) {
+function switchToView(viewName, targetDate = null) {
   currentView = viewName;
+  localStorage.setItem('srg_current_view', viewName);
+  if (targetDate) {
+    currentDate = targetDate;
+  } else {
+    currentDate = new Date(); // Default to Today on view switch per user request!
+  }
   document.querySelectorAll('.view-btn').forEach(b => {
     b.classList.toggle('active', b.dataset.view === viewName);
   });
-  document.getElementById('monthView').classList.toggle('active', viewName === 'month');
+  document.getElementById('monthView').classList.toggle('active', viewName === 'calendar');
+  document.getElementById('portraitMonthView').classList.toggle('active', viewName === 'month');
   document.getElementById('dayView').classList.toggle('active', viewName === 'day');
   document.getElementById('agendaView').classList.toggle('active', viewName === 'agenda');
   renderCurrentView();
@@ -423,6 +773,564 @@ function updateNavHeader() {
   }
 }
 
+/* ==========================================================================
+   THEME & SECURITY LOCK & READONLY MODE MANAGEMENT
+   ========================================================================== */
+
+function initAppTheme() {
+  document.documentElement.setAttribute('data-theme', currentTheme);
+  const icon = document.getElementById('themeToggleIcon');
+  if (icon) {
+    icon.className = currentTheme === 'light' ? 'fa-solid fa-moon' : 'fa-solid fa-sun';
+  }
+}
+
+function toggleAppTheme() {
+  currentTheme = currentTheme === 'light' ? 'dark' : 'light';
+  localStorage.setItem('srg_theme', currentTheme);
+  initAppTheme();
+  showToast(`Switched to ${currentTheme.toUpperCase()} theme`, 'info');
+}
+
+function getStoredAppPin() {
+  if (!db) return localStorage.getItem('srg_app_pin') || '1234';
+  try {
+    const res = db.exec("SELECT value FROM app_metadata WHERE key = 'app_pin' LIMIT 1");
+    if (res.length > 0 && res[0].values.length > 0 && res[0].values[0][0]) {
+      return String(res[0].values[0][0]);
+    }
+  } catch(e) {}
+  return localStorage.getItem('srg_app_pin') || '1234';
+}
+
+async function checkAppSecurityLock() {
+  const overlay = document.getElementById('appLockOverlay');
+  if (!overlay) return;
+
+  if (!isAppUnlocked) {
+    overlay.classList.remove('hidden');
+    const keyInp = document.getElementById('appLockKeyInput');
+    if (keyInp) keyInp.focus();
+  } else {
+    overlay.classList.add('hidden');
+  }
+}
+
+async function unlockAppWithKey(enteredKey) {
+  const trimmedKey = (enteredKey || '').trim();
+  const errEl = document.getElementById('appLockErrorMsg');
+
+  if (!trimmedKey) {
+    if (errEl) {
+      errEl.textContent = 'Please enter your Security PIN / Access Key';
+      errEl.classList.remove('hidden');
+    }
+    return;
+  }
+
+  const storedPin = getStoredAppPin();
+  if (trimmedKey === storedPin) {
+    isAppUnlocked = true;
+    sessionStorage.setItem('srg_app_unlocked', 'true');
+    localStorage.setItem('srg_app_pin', trimmedKey);
+    const overlay = document.getElementById('appLockOverlay');
+    if (overlay) overlay.classList.add('hidden');
+    if (errEl) errEl.classList.add('hidden');
+    showToast('✓ Calendar Authenticated & Unlocked', 'success');
+  } else {
+    if (errEl) {
+      errEl.textContent = 'Incorrect Security PIN. Access Denied.';
+      errEl.classList.remove('hidden');
+    }
+    showToast('❌ Authentication Failed: Invalid PIN', 'error', 3000);
+  }
+}
+
+async function lockAppSecurity() {
+  isAppUnlocked = false;
+  sessionStorage.removeItem('srg_app_unlocked');
+
+  const overlay = document.getElementById('appLockOverlay');
+  if (overlay) overlay.classList.remove('hidden');
+  const keyInp = document.getElementById('appLockKeyInput');
+  if (keyInp) {
+    keyInp.value = '';
+    keyInp.focus();
+  }
+  showToast('Calendar Locked', 'info');
+}
+
+/* ==========================================================================
+   ABOUT SRG CALENDAR PRO HANDLERS
+   ========================================================================== */
+function openAboutModal() {
+  const modal = document.getElementById('aboutModal');
+  if (!modal) return;
+  const verEl = document.getElementById('aboutModalVersion');
+  if (verEl) verEl.textContent = APP_VERSION;
+  modal.classList.remove('hidden');
+}
+
+function closeAboutModal() {
+  const modal = document.getElementById('aboutModal');
+  if (modal) modal.classList.add('hidden');
+}
+
+/* ==========================================================================
+   CHANGE SECURITY PIN HANDLERS
+   ========================================================================== */
+function openChangePinModal() {
+  const modal = document.getElementById('changePinModal');
+  if (!modal) return;
+  const currentPinInput = document.getElementById('currentPinInput');
+  const newPinInput = document.getElementById('newPinInput');
+  const confirmPinInput = document.getElementById('confirmPinInput');
+  if (currentPinInput) currentPinInput.value = '';
+  if (newPinInput) newPinInput.value = '';
+  if (confirmPinInput) confirmPinInput.value = '';
+
+  const errEl = document.getElementById('changePinErrorMsg');
+  if (errEl) {
+    errEl.textContent = '';
+    errEl.classList.add('hidden');
+  }
+  modal.classList.remove('hidden');
+  if (currentPinInput) currentPinInput.focus();
+}
+
+function closeChangePinModal() {
+  const modal = document.getElementById('changePinModal');
+  if (modal) modal.classList.add('hidden');
+}
+
+async function handleChangePinSubmit(e) {
+  e.preventDefault();
+  const currentPin = (document.getElementById('currentPinInput')?.value || '').trim();
+  const newPin = (document.getElementById('newPinInput')?.value || '').trim();
+  const confirmPin = (document.getElementById('confirmPinInput')?.value || '').trim();
+  const errEl = document.getElementById('changePinErrorMsg');
+
+  const storedPin = getStoredAppPin();
+  if (currentPin !== storedPin) {
+    if (errEl) {
+      errEl.textContent = 'Current PIN is incorrect.';
+      errEl.classList.remove('hidden');
+    }
+    return;
+  }
+  if (!newPin || newPin.length < 4) {
+    if (errEl) {
+      errEl.textContent = 'New PIN must be at least 4 characters long.';
+      errEl.classList.remove('hidden');
+    }
+    return;
+  }
+  if (newPin !== confirmPin) {
+    if (errEl) {
+      errEl.textContent = 'New PIN and confirmation PIN do not match.';
+      errEl.classList.remove('hidden');
+    }
+    return;
+  }
+
+  const saveBtn = document.getElementById('saveNewPinBtn');
+  const originalBtnText = saveBtn ? saveBtn.innerHTML : '';
+  if (saveBtn) {
+    saveBtn.disabled = true;
+    saveBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Updating...';
+  }
+
+  try {
+    if (db) {
+      db.run("INSERT OR REPLACE INTO app_metadata (key, value) VALUES ('app_pin', ?)", [newPin]);
+      await saveDbToIndexedDB();
+    }
+    localStorage.setItem('srg_app_pin', newPin);
+    closeChangePinModal();
+    showToast('✓ Security PIN changed successfully!', 'success');
+  } catch (err) {
+    console.error('Error changing PIN:', err);
+    if (errEl) {
+      errEl.textContent = 'Error updating PIN: ' + err.message;
+      errEl.classList.remove('hidden');
+    }
+    showToast('Error updating PIN', 'error');
+  } finally {
+    if (saveBtn) {
+      saveBtn.disabled = false;
+      saveBtn.innerHTML = originalBtnText;
+    }
+  }
+}
+
+function updateReadOnlyState(forceReadOnly = false) {
+  isReadOnly = false;
+  const banner = document.getElementById('offlineReadOnlyBanner');
+  if (banner) banner.classList.add('hidden');
+}
+
+async function checkServerSyncOnStartup() {
+  updateReadOnlyState(false);
+}
+
+/* ==========================================================================
+   ATTACHMENT VIEWER MODAL FUNCTION
+   ========================================================================== */
+
+async function openAttachmentViewer(att) {
+  if (!att) return;
+  const modal = document.getElementById('attachmentViewerModal');
+  const body = document.getElementById('attachmentViewerBody');
+  const title = document.getElementById('attachmentViewerTitle');
+  const downloadLink = document.getElementById('attachmentDownloadLink');
+
+  if (!modal || !body) return;
+
+  if (title) title.textContent = att.name || 'Attachment Viewer';
+  body.innerHTML = '<div style="padding:40px; color:var(--text-muted);"><i class="fa-solid fa-spinner fa-spin fa-2x"></i><br><br>Loading attachment...</div>';
+  modal.classList.remove('hidden');
+
+  const dataUrl = await getAttachmentData(att);
+  if (!dataUrl) {
+    body.innerHTML = '<div style="padding:40px; color:#fb7185;"><i class="fa-solid fa-triangle-exclamation fa-2x"></i><br><br>Unable to load attachment file. File may not exist on server or device is offline.</div>';
+    return;
+  }
+
+  if (downloadLink) {
+    downloadLink.href = dataUrl;
+    downloadLink.download = att.filename || att.name || 'attachment';
+  }
+
+  const mime = att.type || '';
+  if (mime.startsWith('image/') || (dataUrl.startsWith('data:image/'))) {
+    body.innerHTML = `<img src="${dataUrl}" style="max-width:100%; max-height:70vh; border-radius:var(--radius-md); box-shadow:var(--shadow-md);">`;
+  } else if (mime.includes('pdf') || dataUrl.includes('pdf')) {
+    body.innerHTML = `<iframe src="${dataUrl}" style="width:100%; height:70vh; border:none; border-radius:var(--radius-md);"></iframe>`;
+  } else {
+    body.innerHTML = `<div style="padding:40px;"><a href="${dataUrl}" download="${att.name}" class="btn-primary"><i class="fa-solid fa-download"></i> Download ${att.name}</a></div>`;
+  }
+}
+
+function closeAttachmentViewer() {
+  const modal = document.getElementById('attachmentViewerModal');
+  if (modal) modal.classList.add('hidden');
+}
+
+/* ==========================================================================
+   DAILY PERSONAL FINANCE FUNCTIONS
+   ========================================================================== */
+
+function getDailyTransactionsForDate(dateStr) {
+  if (!db || !dateStr) return [];
+  try {
+    const res = db.exec("SELECT * FROM daily_transactions WHERE txn_date = ? ORDER BY created_at ASC", [dateStr]);
+    if (res && res.length > 0) {
+      return rowsToObjects(res[0]);
+    }
+  } catch (e) {
+    console.warn("Error getting daily transactions:", e);
+  }
+  return [];
+}
+
+function getDailyTransactionsMap() {
+  const map = {};
+  if (!db) return map;
+  try {
+    const res = db.exec("SELECT txn_date, type, amount, description FROM daily_transactions ORDER BY created_at ASC");
+    if (res && res.length > 0) {
+      const rows = rowsToObjects(res[0]);
+      rows.forEach(r => {
+        if (!map[r.txn_date]) map[r.txn_date] = { receipts: 0, payments: 0, count: 0 };
+        if (r.type === 'receipt') map[r.txn_date].receipts += Number(r.amount || 0);
+        else map[r.txn_date].payments += Number(r.amount || 0);
+        map[r.txn_date].count++;
+      });
+    }
+  } catch (e) {
+    console.warn("Error reading daily transactions map:", e);
+  }
+  return map;
+}
+
+async function saveDailyTransaction(txn) {
+  if (!db || !txn || !txn.txn_date) return;
+  const id = txn.id || ('txn_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6));
+  const dateStr = txn.txn_date;
+  const type = txn.type;
+  const debit = (txn.debit_account || '').trim();
+  const credit = (txn.credit_account || '').trim();
+  const amount = parseFloat(txn.amount) || 0;
+  const desc = (txn.description || '').trim();
+  const now = new Date().toISOString();
+
+  try {
+    db.run(`
+      INSERT OR REPLACE INTO daily_transactions 
+      (id, txn_date, type, debit_account, credit_account, amount, description, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [id, dateStr, type, debit, credit, amount, desc, now, now]);
+
+    await saveDbToIndexedDB();
+    renderCurrentView();
+    renderFinanceTransactionsList(dateStr);
+    populateFinanceAccountsDatalists();
+    showToast('✓ Financial transaction saved locally!', 'success', 3000);
+  } catch(err) {
+    console.error('Error saving transaction:', err);
+    showToast('❌ Error saving transaction: ' + err.message, 'error', 4000);
+  }
+}
+
+async function deleteDailyTransaction(txnId, dateStr) {
+  if (!db || !txnId) return;
+  try {
+    db.run("DELETE FROM daily_transactions WHERE id = ?", [txnId]);
+    await saveDbToIndexedDB();
+    renderCurrentView();
+    renderFinanceTransactionsList(dateStr);
+    populateFinanceAccountsDatalists();
+    showToast('✓ Transaction deleted!', 'success', 3000);
+  } catch(err) {
+    console.error('Error deleting transaction:', err);
+    showToast('❌ Error deleting transaction: ' + err.message, 'error', 4000);
+  }
+}
+
+function openDailyFinanceModal(dateStr) {
+  const modal = document.getElementById('dailyFinanceModal');
+  const dateInput = document.getElementById('financeTxnDate');
+  const modalTitle = document.getElementById('dailyFinanceModalTitle');
+  
+  if (!modal || !dateStr) return;
+
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dObj = new Date(y, m - 1, d);
+  const formattedDate = formatDateIndian(dObj);
+
+  if (dateInput) dateInput.value = dateStr;
+  if (modalTitle) modalTitle.textContent = `Daily Receipts & Payments (${formattedDate})`;
+
+  resetFinanceForm();
+  renderFinanceTransactionsList(dateStr);
+  populateFinanceAccountsDatalists();
+
+  modal.classList.remove('hidden');
+}
+
+function closeDailyFinanceModal() {
+  const modal = document.getElementById('dailyFinanceModal');
+  if (modal) modal.classList.add('hidden');
+}
+
+function resetFinanceForm() {
+  const form = document.getElementById('financeTxnForm');
+  if (form) form.reset();
+  document.getElementById('financeTxnId').value = '';
+  document.getElementById('financeFormTitle').innerHTML = '<i class="fa-solid fa-plus"></i> Add New Transaction';
+  const resetBtn = document.getElementById('resetFinanceFormBtn');
+  if (resetBtn) resetBtn.style.display = 'none';
+}
+
+function renderFinanceTransactionsList(dateStr) {
+  const container = document.getElementById('financeTxnList');
+  const receiptsEl = document.getElementById('dayTotalReceipts');
+  const paymentsEl = document.getElementById('dayTotalPayments');
+  const netEl = document.getElementById('dayNetBalance');
+
+  if (!container) return;
+  container.innerHTML = '';
+
+  const txns = getDailyTransactionsForDate(dateStr);
+  let totalReceipts = 0;
+  let totalPayments = 0;
+
+  if (txns.length === 0) {
+    container.innerHTML = '<div style="font-size:0.85rem; color:var(--text-muted); text-align:center; padding:12px;">No financial transactions for this date.</div>';
+  } else {
+    txns.forEach(t => {
+      const amt = Number(t.amount || 0);
+      if (t.type === 'receipt') totalReceipts += amt;
+      else totalPayments += amt;
+
+      const card = document.createElement('div');
+      card.style.cssText = 'background:var(--bg-primary); border:1px solid var(--border-color); border-radius:var(--radius-md); padding:10px 12px; display:flex; justify-content:space-between; align-items:center; font-size:0.88rem;';
+      card.innerHTML = `
+        <div>
+          <span style="font-weight:600; color:${t.type === 'receipt' ? 'var(--receipt-color)' : 'var(--payment-color)'};">
+            ${t.type === 'receipt' ? '🟢 Receipt' : '🔴 Payment'} &mdash; ₹${amt.toFixed(2)}
+          </span>
+          <div style="font-size:0.78rem; color:var(--text-muted); margin-top:2px;">
+            Dr: <strong>${escapeHtml(t.debit_account || '')}</strong> | Cr: <strong>${escapeHtml(t.credit_account || '')}</strong>
+            ${t.description ? ` | ${escapeHtml(t.description)}` : ''}
+          </div>
+        </div>
+        <div style="display:flex; gap:6px;">
+          <button type="button" class="btn-xs btn-secondary edit-txn-btn" title="Edit"><i class="fa-solid fa-pen"></i></button>
+          <button type="button" class="btn-xs btn-danger del-txn-btn" title="Delete"><i class="fa-solid fa-trash"></i></button>
+        </div>
+      `;
+
+      const editBtn = card.querySelector('.edit-txn-btn');
+      if (editBtn) {
+        editBtn.addEventListener('click', () => {
+          document.getElementById('financeTxnId').value = t.id;
+          document.getElementById('financeType').value = t.type;
+          document.getElementById('financeAmount').value = t.amount;
+          document.getElementById('financeDebitAccount').value = t.debit_account || '';
+          document.getElementById('financeCreditAccount').value = t.credit_account || '';
+          document.getElementById('financeDescription').value = t.description || '';
+          document.getElementById('financeFormTitle').innerHTML = '<i class="fa-solid fa-pen-to-square"></i> Edit Transaction';
+          const rBtn = document.getElementById('resetFinanceFormBtn');
+          if (rBtn) rBtn.style.display = 'inline-block';
+        });
+      }
+
+      const delBtn = card.querySelector('.del-txn-btn');
+      if (delBtn) {
+        delBtn.addEventListener('click', () => {
+          if (confirm('Delete this financial transaction?')) {
+            deleteDailyTransaction(t.id, dateStr);
+          }
+        });
+      }
+
+      container.appendChild(card);
+    });
+  }
+
+  const net = totalReceipts - totalPayments;
+  if (receiptsEl) receiptsEl.textContent = `₹${totalReceipts.toFixed(2)}`;
+  if (paymentsEl) paymentsEl.textContent = `₹${totalPayments.toFixed(2)}`;
+  if (netEl) {
+    netEl.textContent = `₹${net.toFixed(2)}`;
+    netEl.style.color = net >= 0 ? 'var(--net-positive)' : 'var(--payment-color)';
+  }
+}
+
+function populateFinanceAccountsDatalists() {
+  if (!db) return;
+  const drList = document.getElementById('debitAccountsDatalist');
+  const crList = document.getElementById('creditAccountsDatalist');
+  if (!drList || !crList) return;
+
+  try {
+    const drRes = db.exec("SELECT DISTINCT debit_account FROM daily_transactions WHERE debit_account IS NOT NULL AND debit_account != ''");
+    const crRes = db.exec("SELECT DISTINCT credit_account FROM daily_transactions WHERE credit_account IS NOT NULL AND credit_account != ''");
+
+    drList.innerHTML = drRes.length > 0 ? drRes[0].values.map(v => `<option value="${escapeHtml(v[0])}">`).join('') : '';
+    crList.innerHTML = crRes.length > 0 ? crRes[0].values.map(v => `<option value="${escapeHtml(v[0])}">`).join('') : '';
+  } catch (e) {}
+}
+
+/* ==========================================================================
+   DAILY DIARY NOTES FUNCTIONS
+   ========================================================================== */
+
+function getDailyNoteForDate(dateStr) {
+  if (!db || !dateStr) return null;
+  try {
+    const res = db.exec("SELECT content FROM daily_notes WHERE note_date = ?", [dateStr]);
+    if (res && res.length > 0 && res[0].values.length > 0) {
+      return res[0].values[0][0] || null;
+    }
+  } catch (e) {
+    console.warn("Error getting daily note:", e);
+  }
+  return null;
+}
+
+function getDailyNotesMap() {
+  const map = {};
+  if (!db) return map;
+  try {
+    const res = db.exec("SELECT note_date, content FROM daily_notes WHERE content IS NOT NULL AND content != ''");
+    if (res && res.length > 0) {
+      const rows = res[0].values;
+      for (const row of rows) {
+        map[row[0]] = row[1];
+      }
+    }
+  } catch (e) {
+    console.warn("Error reading daily notes map:", e);
+  }
+  return map;
+}
+
+async function saveDailyNote(dateStr, content) {
+  if (!db || !dateStr) return;
+  const trimmed = (content || '').trim();
+  const now = new Date().toISOString();
+
+  try {
+    if (trimmed) {
+      db.run("INSERT OR REPLACE INTO daily_notes (note_date, content, updated_at) VALUES (?, ?, ?)", [dateStr, trimmed, now]);
+    } else {
+      db.run("DELETE FROM daily_notes WHERE note_date = ?", [dateStr]);
+    }
+    await saveDbToIndexedDB();
+    renderCurrentView();
+    showToast(trimmed ? '✓ Daily note saved locally!' : '✓ Daily note removed!', 'success', 3000);
+  } catch(err) {
+    console.error('Error saving note:', err);
+    showToast('❌ Error saving note: ' + err.message, 'error', 4000);
+  }
+}
+
+async function deleteDailyNote(dateStr) {
+  if (!db || !dateStr) return;
+  try {
+    db.run("DELETE FROM daily_notes WHERE note_date = ?", [dateStr]);
+    await saveDbToIndexedDB();
+    renderCurrentView();
+    showToast('✓ Daily note deleted!', 'success', 3000);
+  } catch(err) {
+    console.error('Error deleting note:', err);
+    showToast('❌ Error deleting note: ' + err.message, 'error', 4000);
+  }
+}
+
+function openDailyNoteModal(dateStr) {
+  const modal = document.getElementById('dailyNoteModal');
+  const dateInput = document.getElementById('dailyNoteDateInput');
+  const textInput = document.getElementById('dailyNoteTextInput');
+  const modalTitle = document.getElementById('dailyNoteModalTitle');
+  const subhead = document.getElementById('dailyNoteModalSubhead');
+  const deleteBtn = document.getElementById('deleteDailyNoteBtn');
+
+  if (!modal || !dateStr) return;
+
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dObj = new Date(y, m - 1, d);
+  const formattedDate = formatDateIndian(dObj);
+  const dayName = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][dObj.getDay()];
+
+  dateInput.value = dateStr;
+  if (modalTitle) modalTitle.textContent = `Daily Diary Note`;
+  if (subhead) subhead.textContent = `${dayName}, ${formattedDate} (${dateStr})`;
+
+  const existingNote = getDailyNoteForDate(dateStr) || '';
+  textInput.value = existingNote;
+
+  if (deleteBtn) {
+    if (existingNote) {
+      deleteBtn.classList.remove('hidden');
+      deleteBtn.style.display = 'inline-flex';
+    } else {
+      deleteBtn.classList.add('hidden');
+      deleteBtn.style.display = 'none';
+    }
+  }
+
+  modal.classList.remove('hidden');
+  setTimeout(() => textInput.focus(), 100);
+}
+
+function closeDailyNoteModal() {
+  const modal = document.getElementById('dailyNoteModal');
+  if (modal) modal.classList.add('hidden');
+}
+
 function renderMonthView() {
   const grid = document.getElementById('calendarGrid');
   grid.innerHTML = '';
@@ -439,13 +1347,15 @@ function renderMonthView() {
   const endDateStr = formatDateYMD(new Date(year, month + 1, 14));
 
   const schedulesByDate = getSchedulesMap(startDateStr, endDateStr);
+  const dailyNotesMap = getDailyNotesMap();
+  const dailyTxnsMap = getDailyTransactionsMap();
   const todayStr = formatDateYMD(new Date());
 
   for (let i = startingDay - 1; i >= 0; i--) {
     const dNum = prevMonthDays - i;
     const dObj = new Date(year, month - 1, dNum);
     const dStr = formatDateYMD(dObj);
-    const cell = createDayCell(dStr, dNum, true, schedulesByDate[dStr] || [], dObj.getDay());
+    const cell = createDayCell(dStr, dNum, true, schedulesByDate[dStr] || [], dObj.getDay(), false, dailyNotesMap, dailyTxnsMap);
     grid.appendChild(cell);
   }
 
@@ -453,7 +1363,7 @@ function renderMonthView() {
     const dObj = new Date(year, month, d);
     const dStr = formatDateYMD(dObj);
     const isToday = (dStr === todayStr);
-    const cell = createDayCell(dStr, d, false, schedulesByDate[dStr] || [], dObj.getDay(), isToday);
+    const cell = createDayCell(dStr, d, false, schedulesByDate[dStr] || [], dObj.getDay(), isToday, dailyNotesMap, dailyTxnsMap);
     grid.appendChild(cell);
   }
 
@@ -463,12 +1373,166 @@ function renderMonthView() {
   for (let d = 1; d <= nextDays; d++) {
     const dObj = new Date(year, month + 1, d);
     const dStr = formatDateYMD(dObj);
-    const cell = createDayCell(dStr, d, true, schedulesByDate[dStr] || [], dObj.getDay());
+    const cell = createDayCell(dStr, d, true, schedulesByDate[dStr] || [], dObj.getDay(), false, dailyNotesMap, dailyTxnsMap);
     grid.appendChild(cell);
   }
 }
 
-function createDayCell(dateStr, dayNum, isOtherMonth, schedules, dayOfWeekIdx, isToday = false) {
+function renderPortraitMonthView() {
+  const tbody = document.getElementById('portraitMonthTbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+
+  const year = currentDate.getFullYear();
+  const month = currentDate.getMonth(); // 0-indexed
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+  const todayYmd = formatDateYMD(new Date());
+  const selectedYmd = formatDateYMD(currentDate);
+
+  const startYmd = `${year}-${String(month + 1).padStart(2, '0')}-01`;
+  const endYmd = `${year}-${String(month + 1).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`;
+
+  const schedulesMap = getSchedulesMap(startYmd, endYmd);
+
+  let targetRowEl = null;
+
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dObj = new Date(year, month, d);
+    const dateYmd = formatDateYMD(dObj);
+    const isToday = (dateYmd === todayYmd);
+    const indianDateStr = formatDateIndian(dObj);
+    const dayOfWeekStr = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][dObj.getDay()];
+    const tamilDayStr = TAMIL_DAYS[dObj.getDay()];
+
+    const tr = document.createElement('tr');
+    tr.className = 'portrait-day-row';
+    tr.dataset.date = dateYmd;
+    if (isToday) tr.classList.add('today-row');
+
+    if (dateYmd === selectedYmd || (isToday && !targetRowEl)) {
+      targetRowEl = tr;
+    }
+
+    // 1. Date Cell
+    const tdDate = document.createElement('td');
+    tdDate.innerHTML = `
+      <div class="portrait-day-cell-date">${indianDateStr} ${isToday ? '<span class="today-badge">TODAY</span>' : ''}</div>
+      <div class="portrait-day-cell-sub">${dayOfWeekStr} (${tamilDayStr})</div>
+    `;
+
+    // 2. Schedules Cell
+    const tdSch = document.createElement('td');
+    const daySchedules = schedulesMap[dateYmd] || [];
+    if (daySchedules.length > 0) {
+      const schContainer = document.createElement('div');
+      schContainer.style.cssText = 'display:flex; flex-direction:column; gap:6px;';
+
+      daySchedules.forEach(s => {
+        const isTravelArr = s.title && (s.title.toLowerCase().startsWith('travel arrival:') || s.title.toLowerCase().startsWith('return travel arrival:'));
+        const isTravelDep = s.title && (s.title.toLowerCase().startsWith('travel:') || s.title.toLowerCase().startsWith('return travel:') || s.title.toLowerCase() === 'travel');
+
+        let borderCol = '#3b82f6';
+        let badgeStr = 'Event';
+        if (isTravelArr) { borderCol = '#10b981'; badgeStr = '🏁 Travel Arrival'; }
+        else if (isTravelDep) { borderCol = '#8b5cf6'; badgeStr = '🚆 Travel'; }
+        else if (s.delivery_mode === 'online') { borderCol = '#06b6d4'; badgeStr = '🌐 Online'; }
+
+        const timeStr = formatTimeRange(s.from_time, s.to_time);
+
+        const schItem = document.createElement('div');
+        schItem.className = 'portable-schedule-item';
+        schItem.style.borderLeftColor = borderCol;
+        schItem.innerHTML = `
+          <div>
+            <div class="portable-schedule-title">${escapeHtml(s.title)} <span style="font-size:0.72rem; color:var(--text-muted);">(${badgeStr})</span></div>
+            <div class="portable-schedule-time"><i class="fa-regular fa-clock"></i> ${timeStr} ${s.location ? ` • <i class="fa-solid fa-location-dot"></i> ${escapeHtml(s.location)}` : ''}</div>
+          </div>
+          <button type="button" class="btn-xs btn-secondary"><i class="fa-solid fa-eye"></i></button>
+        `;
+
+        schItem.addEventListener('click', () => openScheduleDetailsModal(s));
+        schContainer.appendChild(schItem);
+      });
+      tdSch.appendChild(schContainer);
+    } else {
+      tdSch.innerHTML = `<span class="no-schedule-placeholder">No schedule</span>`;
+    }
+
+    // 3. Diary Note Cell
+    const tdNote = document.createElement('td');
+    const noteContent = getDailyNoteForDate(dateYmd);
+    if (noteContent) {
+      tdNote.innerHTML = `
+        <div class="portrait-note-badge">
+          <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:140px;" title="${escapeHtml(noteContent)}">📝 ${escapeHtml(noteContent)}</span>
+          <button type="button" class="btn-xs btn-secondary edit-note-btn"><i class="fa-solid fa-pen-to-square"></i></button>
+        </div>
+      `;
+      tdNote.querySelector('.edit-note-btn').addEventListener('click', () => openDailyNoteModal(dateYmd));
+    } else {
+      tdNote.innerHTML = `<span class="no-schedule-placeholder">-</span>`;
+    }
+
+    // 4. Daily Finance Cell
+    const tdFin = document.createElement('td');
+    const txns = getDailyTransactionsForDate(dateYmd);
+    if (txns.length > 0) {
+      let rec = 0, pay = 0;
+      txns.forEach(t => {
+        if (t.type === 'receipt') rec += Number(t.amount || 0);
+        else pay += Number(t.amount || 0);
+      });
+      const net = rec - pay;
+      tdFin.innerHTML = `
+        <div class="portrait-finance-badge">
+          <span>💰 In: <strong class="fin-in">₹${rec.toFixed(0)}</strong> | Out: <strong class="fin-out">₹${pay.toFixed(0)}</strong></span>
+          <button type="button" class="btn-xs btn-secondary edit-fin-btn"><i class="fa-solid fa-pen-to-square"></i></button>
+        </div>
+      `;
+      tdFin.querySelector('.edit-fin-btn').addEventListener('click', () => openDailyFinanceModal(dateYmd));
+    } else {
+      tdFin.innerHTML = `<span class="no-schedule-placeholder">-</span>`;
+    }
+
+    // 5. Actions Cell (+ Schedule, + Note, + Finance)
+    const tdAct = document.createElement('td');
+    tdAct.style.textAlign = 'center';
+    tdAct.innerHTML = `
+      <div class="portrait-actions">
+        <button type="button" class="btn-xs btn-secondary add-sch-btn" title="Add Schedule"><i class="fa-solid fa-plus"></i></button>
+        <button type="button" class="btn-xs btn-secondary add-note-btn" title="Add Note"><i class="fa-solid fa-note-sticky"></i></button>
+        <button type="button" class="btn-xs btn-secondary add-fin-btn" title="Add Finance"><i class="fa-solid fa-coins"></i></button>
+      </div>
+    `;
+
+    tdAct.querySelector('.add-sch-btn').addEventListener('click', () => {
+      selectedDates.clear();
+      selectedDates.add(dateYmd);
+      openScheduleModal();
+    });
+
+    tdAct.querySelector('.add-note-btn').addEventListener('click', () => openDailyNoteModal(dateYmd));
+    tdAct.querySelector('.add-fin-btn').addEventListener('click', () => openDailyFinanceModal(dateYmd));
+
+    tr.appendChild(tdDate);
+    tr.appendChild(tdSch);
+    tr.appendChild(tdNote);
+    tr.appendChild(tdFin);
+    tr.appendChild(tdAct);
+
+    tbody.appendChild(tr);
+  }
+
+  // Smooth scroll to target date row
+  if (targetRowEl) {
+    setTimeout(() => {
+      targetRowEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }, 150);
+  }
+}
+
+function createDayCell(dateStr, dayNum, isOtherMonth, schedules, dayOfWeekIdx, isToday = false, dailyNotesMap = {}, dailyTxnsMap = {}) {
   const cell = document.createElement('div');
   cell.className = 'day-cell';
   if (isOtherMonth) cell.classList.add('other-month');
@@ -492,16 +1556,70 @@ function createDayCell(dateStr, dayNum, isOtherMonth, schedules, dayOfWeekIdx, i
     switchToView('day');
   });
 
+  const noteContent = dailyNotesMap ? dailyNotesMap[dateStr] : null;
+  const hasNote = Boolean(noteContent);
+
+  const txnSummary = dailyTxnsMap ? dailyTxnsMap[dateStr] : null;
+  const hasFinance = Boolean(txnSummary && txnSummary.count > 0);
+
+  // Note button
+  const noteBtn = document.createElement('button');
+  noteBtn.type = 'button';
+  noteBtn.className = 'day-note-btn' + (hasNote ? ' has-note' : '');
+  noteBtn.title = hasNote ? 'View/Edit Daily Note' : 'Add Daily Note';
+  noteBtn.innerHTML = hasNote ? '<i class="fa-solid fa-note-sticky"></i>' : '<i class="fa-regular fa-note-sticky"></i>';
+  noteBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openDailyNoteModal(dateStr);
+  });
+
+  // Finance button
+  const financeBtn = document.createElement('button');
+  financeBtn.type = 'button';
+  financeBtn.className = 'day-finance-btn' + (hasFinance ? ' has-finance' : '');
+  financeBtn.title = hasFinance ? 'View/Edit Daily Receipts & Payments' : 'Add Daily Finance Entry';
+  financeBtn.innerHTML = hasFinance ? '<i class="fa-solid fa-coins"></i>' : '<i class="fa-solid fa-coins" style="opacity:0.4;"></i>';
+  financeBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openDailyFinanceModal(dateStr);
+  });
+
   const tamilSpan = document.createElement('span');
   tamilSpan.className = 'day-tamil';
   tamilSpan.textContent = TAMIL_DAYS[dayOfWeekIdx];
 
   header.appendChild(numSpan);
+  header.appendChild(noteBtn);
+  header.appendChild(financeBtn);
   header.appendChild(tamilSpan);
   cell.appendChild(header);
 
   const list = document.createElement('div');
   list.className = 'day-schedules-list';
+
+  if (hasNote) {
+    const notePill = document.createElement('div');
+    notePill.className = 'day-note-pill';
+    notePill.title = noteContent;
+    notePill.innerHTML = `<i class="fa-solid fa-note-sticky"></i> ${escapeHtml(noteContent)}`;
+    notePill.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openDailyNoteModal(dateStr);
+    });
+    list.appendChild(notePill);
+  }
+
+  if (hasFinance) {
+    const finPill = document.createElement('div');
+    finPill.className = 'day-finance-pill';
+    finPill.title = `Receipts: ₹${txnSummary.receipts.toFixed(2)} | Payments: ₹${txnSummary.payments.toFixed(2)}`;
+    finPill.innerHTML = `<i class="fa-solid fa-coins"></i> +₹${txnSummary.receipts} / -₹${txnSummary.payments}`;
+    finPill.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openDailyFinanceModal(dateStr);
+    });
+    list.appendChild(finPill);
+  }
 
   schedules.forEach(s => {
     const isTravelArr = s.title && (s.title.toLowerCase().startsWith('travel arrival:') || s.title.toLowerCase().startsWith('return travel arrival:'));
@@ -558,16 +1676,16 @@ function createDayCell(dateStr, dayNum, isOtherMonth, schedules, dayOfWeekIdx, i
     if (isTravel) {
       if (s.title.toLowerCase().startsWith('return travel arrival:')) {
         titleDiv.textContent = 'Return Arrival';
-        titleDiv.style.color = '#34d399';
+        titleDiv.style.color = 'var(--badge-green-text)';
       } else if (s.title.toLowerCase().startsWith('travel arrival:')) {
         titleDiv.textContent = 'Travel Arrival';
-        titleDiv.style.color = '#34d399';
+        titleDiv.style.color = 'var(--badge-green-text)';
       } else if (s.title.toLowerCase().startsWith('return travel:')) {
         titleDiv.textContent = 'Return Travel';
-        titleDiv.style.color = '#fbbf24';
+        titleDiv.style.color = 'var(--badge-amber-text)';
       } else {
         titleDiv.textContent = 'Travel';
-        titleDiv.style.color = '#fbbf24';
+        titleDiv.style.color = 'var(--badge-amber-text)';
       }
       titleDiv.style.fontWeight = '600';
     } else {
@@ -752,11 +1870,93 @@ function renderDayView() {
   const fullDateEl = document.getElementById('dayViewFullDate');
   const tamilEl = document.getElementById('dayViewTamil');
   const pickerInput = document.getElementById('dayViewDatePicker');
+  const dayNoteBtn = document.getElementById('dayViewNoteBtn');
 
   if (dayNameEl) dayNameEl.textContent = dayName;
   if (fullDateEl) fullDateEl.textContent = indianDate;
   if (tamilEl) tamilEl.textContent = tamilDay;
   if (pickerInput) pickerInput.value = dateYmd;
+
+  const noteContent = getDailyNoteForDate(dateYmd);
+  if (dayNoteBtn) {
+    if (noteContent) {
+      dayNoteBtn.classList.add('has-note');
+      dayNoteBtn.style.background = 'var(--badge-amber-bg)';
+      dayNoteBtn.style.color = 'var(--badge-amber-text)';
+      dayNoteBtn.style.borderColor = 'var(--badge-amber-border)';
+      dayNoteBtn.innerHTML = '<i class="fa-solid fa-book-bookmark"></i> Daily Note ✓';
+    } else {
+      dayNoteBtn.classList.remove('has-note');
+      dayNoteBtn.style.background = '';
+      dayNoteBtn.style.color = 'var(--badge-amber-text)';
+      dayNoteBtn.style.borderColor = 'var(--badge-amber-border)';
+      dayNoteBtn.innerHTML = '<i class="fa-solid fa-book-bookmark"></i> Daily Note';
+    }
+  }
+
+  if (noteContent) {
+    const noteBanner = document.createElement('div');
+    noteBanner.className = 'daily-note-banner';
+    noteBanner.innerHTML = `
+      <div class="daily-note-banner-header">
+        <span class="daily-note-banner-title"><i class="fa-solid fa-note-sticky"></i> Personal Diary / Day Note</span>
+        <button type="button" class="btn-xs btn-secondary edit-note-btn"><i class="fa-solid fa-pen-to-square"></i> Edit Note</button>
+      </div>
+      <div class="daily-note-banner-content">${escapeHtml(noteContent)}</div>
+    `;
+    const editBtn = noteBanner.querySelector('.edit-note-btn');
+    if (editBtn) {
+      editBtn.addEventListener('click', () => openDailyNoteModal(dateYmd));
+    }
+    timeline.appendChild(noteBanner);
+  }
+
+  // Check financial transactions for this day
+  const txns = getDailyTransactionsForDate(dateYmd);
+  const dayFinanceBtn = document.getElementById('dayViewFinanceBtn');
+  if (dayFinanceBtn) {
+    if (txns.length > 0) {
+      dayFinanceBtn.classList.add('has-finance');
+      dayFinanceBtn.style.background = 'var(--badge-green-bg)';
+      dayFinanceBtn.style.color = 'var(--badge-green-text)';
+      dayFinanceBtn.style.borderColor = 'var(--badge-green-border)';
+      dayFinanceBtn.innerHTML = '<i class="fa-solid fa-coins"></i> Finance ✓';
+    } else {
+      dayFinanceBtn.classList.remove('has-finance');
+      dayFinanceBtn.style.background = '';
+      dayFinanceBtn.style.color = 'var(--badge-green-text)';
+      dayFinanceBtn.style.borderColor = 'var(--badge-green-border)';
+      dayFinanceBtn.innerHTML = '<i class="fa-solid fa-coins"></i> Daily Finance';
+    }
+  }
+
+  if (txns.length > 0) {
+    let receipts = 0, payments = 0;
+    txns.forEach(t => {
+      if (t.type === 'receipt') receipts += Number(t.amount || 0);
+      else payments += Number(t.amount || 0);
+    });
+    const net = receipts - payments;
+
+    const finBanner = document.createElement('div');
+    finBanner.className = 'daily-finance-banner';
+    finBanner.innerHTML = `
+      <div class="daily-finance-banner-header">
+        <span class="daily-finance-banner-title"><i class="fa-solid fa-coins"></i> Daily Finance (Receipts & Payments)</span>
+        <button type="button" class="btn-xs btn-secondary edit-fin-btn"><i class="fa-solid fa-pen-to-square"></i> Manage Finance</button>
+      </div>
+      <div style="font-size:0.9rem; display:flex; gap:16px; flex-wrap:wrap;">
+        <span>Receipts: <strong style="color:var(--receipt-color);">₹${receipts.toFixed(2)}</strong></span>
+        <span>Payments: <strong style="color:var(--payment-color);">₹${payments.toFixed(2)}</strong></span>
+        <span>Net Flow: <strong style="color:${net >= 0 ? 'var(--net-positive)' : 'var(--net-negative)'};">₹${net.toFixed(2)}</strong></span>
+      </div>
+    `;
+    const editFinBtn = finBanner.querySelector('.edit-fin-btn');
+    if (editFinBtn) {
+      editFinBtn.addEventListener('click', () => openDailyFinanceModal(dateYmd));
+    }
+    timeline.appendChild(finBanner);
+  }
 
   // Retrieve all schedules for this single day
   const schedulesMap = getSchedulesMap(dateYmd, dateYmd);
@@ -825,8 +2025,35 @@ function renderDayView() {
 
     if (matchingSchedules.length > 0) {
       matchingSchedules.forEach(s => {
+        const sStartMin = s.from_time ? timeToMinutes(s.from_time) : 0;
+        const isStartHour = (!s.from_time && hour === 0) || (sStartMin >= hourStartMin && sStartMin < hourEndMin);
+
         const isTravelArr = s.title && (s.title.toLowerCase().startsWith('travel arrival:') || s.title.toLowerCase().startsWith('return travel arrival:'));
         const isTravelDep = s.title && (s.title.toLowerCase().startsWith('travel:') || s.title.toLowerCase().startsWith('return travel:') || s.title.toLowerCase() === 'travel');
+
+        // Display clean title for travel
+        let displayTitle = s.title;
+        if (isTravelArr) {
+          displayTitle = s.title.toLowerCase().startsWith('return') ? 'Return Travel Arrival' : 'Travel Arrival';
+        } else if (isTravelDep) {
+          displayTitle = s.title.toLowerCase().startsWith('return') ? 'Return Travel' : 'Travel';
+        }
+
+        if (!isStartHour) {
+          // Render compact continuation pill instead of repeating the large card every hour
+          const contCard = document.createElement('div');
+          contCard.className = 'day-event-continuation';
+          const accentColor = isTravelArr ? '#10b981' : (isTravelDep ? '#f59e0b' : (s.delivery_mode === 'online' ? '#0ea5e9' : '#3b82f6'));
+          contCard.style.cssText = `display:flex; align-items:center; gap:6px; padding:3px 8px; border-radius:4px; background:rgba(255,255,255,0.03); border-left:3px solid ${accentColor}; font-size:0.75rem; color:var(--text-muted); cursor:pointer; margin-bottom:3px;`;
+          contCard.innerHTML = `<i class="fa-solid fa-arrow-down" style="font-size:0.65rem; color:${accentColor};"></i> <span>${escapeHtml(displayTitle)} <small style="opacity:0.75;">(until ${s.to_time || 'end'})</small></span>`;
+          contCard.title = `${s.title} (${formatTimeRange(s.from_time, s.to_time)}) - Click for details`;
+          contCard.addEventListener('click', (e) => {
+            e.stopPropagation();
+            openScheduleDetailsModal(s);
+          });
+          eventsCol.appendChild(contCard);
+          return;
+        }
 
         const card = document.createElement('div');
         card.className = 'day-event-card';
@@ -845,37 +2072,33 @@ function renderDayView() {
           if (s.delivery_mode === 'online') {
             card.classList.add('event-online');
             badgeText = '🌐 Online';
+            badgeClass = 'type-badge-online';
           } else if (s.delivery_mode === 'hybrid') {
             card.classList.add('event-hybrid');
             badgeText = '🔄 Hybrid';
+            badgeClass = 'type-badge-hybrid';
           } else {
+            card.classList.add('event-offline');
             badgeText = '🏢 Offline';
+            badgeClass = 'type-badge-offline';
           }
         }
 
-        // Display clean title for travel
-        let displayTitle = s.title;
-        if (isTravelArr) {
-          displayTitle = s.title.toLowerCase().startsWith('return') ? 'Return Travel Arrival' : 'Travel Arrival';
-        } else if (isTravelDep) {
-          displayTitle = s.title.toLowerCase().startsWith('return') ? 'Return Travel' : 'Travel';
-        }
-
         const tagPillsHtml = (s.tags || []).map(t => 
-          `<span class="chip-tag-pill" style="background:${t.color || 'rgba(255,255,255,0.1)'}">${t.name}</span>`
+          `<span class="chip-tag-pill">${escapeHtml(t.name)}</span>`
         ).join('');
 
         card.innerHTML = `
           <div class="day-event-main">
             <div class="day-event-title-row">
-              <span class="day-event-title">${displayTitle}</span>
+              <span class="day-event-title">${escapeHtml(displayTitle)}</span>
               <span class="day-event-type-badge ${badgeClass}">${badgeText}</span>
               ${s.group_id ? '<span style="font-size:0.75rem; color:#a5b4fc;" title="Batch / Group Schedule">👥</span>' : ''}
               ${s.attachments && s.attachments !== '[]' ? '<span style="font-size:0.75rem; color:#94a3b8;" title="Has Attachments">📎</span>' : ''}
             </div>
             <div class="day-event-details-row">
               <span class="day-event-time"><i class="fa-regular fa-clock"></i> ${formatTimeRange(s.from_time, s.to_time)}</span>
-              ${s.location ? `<span class="day-event-location"><i class="fa-solid fa-location-dot"></i> ${s.location}</span>` : ''}
+              ${s.location ? `<span class="day-event-location"><i class="fa-solid fa-location-dot"></i> ${escapeHtml(s.location)}</span>` : ''}
               ${tagPillsHtml ? `<div class="day-event-tag-pills">${tagPillsHtml}</div>` : ''}
             </div>
           </div>
@@ -905,17 +2128,21 @@ function renderDayView() {
   }
 }
 
-/* ==========================================================================
-   5. AGENDA / SEARCH VIEW
-   ========================================================================== */
+let agendaPageSize = 60;
+let agendaRenderLimit = 60;
 
-function renderAgendaView() {
+function renderAgendaView(resetPagination = true) {
   const list = document.getElementById('agendaList');
+  if (!list) return;
+
+  if (resetPagination) {
+    agendaRenderLimit = agendaPageSize;
+  }
   list.innerHTML = '';
 
-  const searchText = document.getElementById('agendaSearchInput').value.toLowerCase().trim();
-  const modeVal = document.getElementById('modeFilter').value;
-  const catVal = document.getElementById('categoryFilter').value;
+  const searchText = (document.getElementById('agendaSearchInput')?.value || '').toLowerCase().trim();
+  const modeVal = document.getElementById('modeFilter')?.value || 'all';
+  const catVal = document.getElementById('categoryFilter')?.value || 'all';
 
   let query = `
     SELECT 
@@ -933,7 +2160,7 @@ function renderAgendaView() {
     params.push(modeVal);
   }
 
-  query += ` GROUP BY s.id ORDER BY s.schedule_date DESC, s.from_time ASC LIMIT 300`;
+  query += ` GROUP BY s.id ORDER BY s.schedule_date ASC, s.from_time ASC`;
 
   const stmt = db.prepare(query);
   stmt.bind(params);
@@ -972,17 +2199,38 @@ function renderAgendaView() {
     return;
   }
 
-  results.forEach(s => {
+  const targetYmd = formatDateYMD(currentDate);
+  const todayYmd = formatDateYMD(new Date());
+  let targetCardEl = null;
+
+  const visibleResults = results.slice(0, agendaRenderLimit);
+
+  visibleResults.forEach(s => {
     const card = document.createElement('div');
     card.className = 'agenda-card';
+    card.dataset.date = s.schedule_date;
 
     const dObj = new Date(s.schedule_date + 'T00:00:00');
     const dStrIndian = formatDateIndian(s.schedule_date);
     const dayTamil = TAMIL_DAYS[dObj.getDay()];
+    const isToday = (s.schedule_date === todayYmd);
+
+    if (isToday) {
+      card.classList.add('today-agenda-card');
+    }
+
+    // Determine target card to scroll into view (matches targetYmd or first date >= targetYmd)
+    if (s.schedule_date === targetYmd) {
+      if (!targetCardEl || targetCardEl.dataset.date !== targetYmd) {
+        targetCardEl = card;
+      }
+    } else if (!targetCardEl && s.schedule_date > targetYmd) {
+      targetCardEl = card;
+    }
 
     card.innerHTML = `
       <div class="agenda-card-date">
-        <span class="agenda-day-str">${dStrIndian}</span>
+        <span class="agenda-day-str">${dStrIndian} ${isToday ? '<span class="today-badge">TODAY</span>' : ''}</span>
         <span class="agenda-day-name">${dayTamil} (${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dObj.getDay()]})</span>
       </div>
       <div class="agenda-card-details">
@@ -992,10 +2240,10 @@ function renderAgendaView() {
           <span class="chip-mode-badge ${s.delivery_mode}">${s.delivery_mode.toUpperCase()}</span>
           ${s.location ? `<span><i class="fa-solid fa-location-dot"></i> ${escapeHtml(s.location)}</span>` : ''}
           ${s.notes ? `<span><i class="fa-regular fa-note-sticky"></i> ${escapeHtml(s.notes)}</span>` : ''}
-          ${s.attachments && s.attachments !== '[]' ? `<span style="color:#60a5fa;"><i class="fa-solid fa-paperclip"></i> Attached</span>` : ''}
+          ${s.attachments && s.attachments !== '[]' ? `<span style="color:var(--accent-blue);"><i class="fa-solid fa-paperclip"></i> Attached</span>` : ''}
         </div>
         <div class="chip-tags-row">
-          ${s.tags.map(t => `<span class="chip-tag-pill" style="background:${t.color || '#3b82f6'}30; border:1px solid ${t.color || '#3b82f6'}">${escapeHtml(t.name)}</span>`).join('')}
+          ${s.tags.map(t => `<span class="chip-tag-pill">${escapeHtml(t.name)}</span>`).join('')}
         </div>
       </div>
     `;
@@ -1006,6 +2254,34 @@ function renderAgendaView() {
 
     list.appendChild(card);
   });
+
+  // Load more button if there are remaining results
+  if (results.length > agendaRenderLimit) {
+    const remaining = results.length - agendaRenderLimit;
+    const loadMoreContainer = document.createElement('div');
+    loadMoreContainer.style.cssText = 'text-align: center; padding: 16px 0;';
+    const loadMoreBtn = document.createElement('button');
+    loadMoreBtn.className = 'btn-secondary';
+    loadMoreBtn.style.cssText = 'padding: 10px 24px; font-weight: 600; font-size: 0.88rem;';
+    loadMoreBtn.innerHTML = `<i class="fa-solid fa-angles-down"></i> Load More Schedules (${remaining} remaining)`;
+    loadMoreBtn.addEventListener('click', () => {
+      agendaRenderLimit += agendaPageSize;
+      renderAgendaView(false);
+    });
+    loadMoreContainer.appendChild(loadMoreBtn);
+    list.appendChild(loadMoreContainer);
+  }
+
+  // Auto-scroll to target card (today / target date)
+  if (!targetCardEl && list.firstElementChild && list.firstElementChild.classList.contains('agenda-card')) {
+    targetCardEl = list.firstElementChild;
+  }
+
+  if (targetCardEl && resetPagination) {
+    setTimeout(() => {
+      targetCardEl.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    }, 100);
+  }
 }
 
 function escapeHtml(str) {
@@ -1075,19 +2351,23 @@ function openScheduleModal(existingSchedule = null) {
     if (existingSchedule.group_id) {
       activeEditingGroupId = existingSchedule.group_id;
       // Get all dates in this group (excluding travel entries)
-      const res = db.exec("SELECT schedule_date FROM schedules WHERE group_id = ? AND title NOT LIKE 'Travel:%' AND title NOT LIKE 'Return Travel:%' ORDER BY schedule_date ASC", [activeEditingGroupId]);
+      const res = db.exec("SELECT schedule_date FROM schedules WHERE group_id = ? AND title NOT LIKE 'Travel:%' AND title NOT LIKE 'Return Travel:%' AND title NOT LIKE 'Travel Arrival:%' AND title NOT LIKE 'Return Travel Arrival:%' ORDER BY schedule_date ASC", [activeEditingGroupId]);
       if (res.length > 0) {
         datesToApply = res[0].values.map(v => v[0]);
       } else {
         datesToApply = [existingSchedule.schedule_date];
       }
       groupBadgeContainer.classList.remove('hidden');
-      document.getElementById('groupInfoText').textContent = `Batch Group (${datesToApply.length} Days linked)`;
-      document.getElementById('applyAsGroupCheckbox').checked = true;
+      document.getElementById('groupInfoText').textContent = `Batch Group (${datesToApply.length} Days linked - All edits apply to full batch)`;
+      const chk = document.getElementById('applyAsGroupCheckbox');
+      chk.checked = true;
+      chk.disabled = true; // Locked: Batch schedules cannot be edited individually
       deleteGroupBtn.classList.remove('hidden');
     } else {
       datesToApply = [existingSchedule.schedule_date];
       groupBadgeContainer.classList.add('hidden');
+      const chk = document.getElementById('applyAsGroupCheckbox');
+      chk.disabled = false;
       deleteGroupBtn.classList.add('hidden');
     }
 
@@ -1327,9 +2607,11 @@ async function handleQuickAddTagInline(catId, catName) {
   const id = 'tag_' + Date.now();
 
   try {
-    db.run('INSERT INTO tags (id, category_id, name, color, description) VALUES (?, ?, ?, ?, ?)',
-           [id, catId, name.trim(), color, '']);
-    await saveDbToIndexedDB();
+    if (db) {
+      db.run('INSERT INTO tags (id, category_id, name, color, description) VALUES (?, ?, ?, ?, ?)', [id, catId, name.trim(), color, '']);
+      await saveDbToIndexedDB();
+    }
+
     loadMasterDataFromDb();
     
     // Automatically select the newly created tag in modal
@@ -1425,13 +2707,16 @@ function renderAttachmentsPreview() {
       img.className = 'attachment-thumbnail';
       img.title = 'Click to open full image';
       img.addEventListener('click', () => {
-        const w = window.open('');
-        w.document.write(`<img src="${att.data}" style="max-width:100%; height:auto;">`);
+        openAttachmentViewer(att);
       });
       card.appendChild(img);
     } else {
       const icon = document.createElement('i');
       icon.className = 'fa-solid fa-file-pdf attachment-file-icon';
+      icon.style.cursor = 'pointer';
+      icon.addEventListener('click', () => {
+        openAttachmentViewer(att);
+      });
       card.appendChild(icon);
     }
 
@@ -1487,6 +2772,31 @@ function parseCMap(cmapString) {
     }
   }
   return cmap;
+}
+
+async function extractTextFromPdf(arrayBuffer) {
+  if (typeof pdfjsLib === 'undefined') {
+    console.warn('pdfjsLib is not loaded');
+    return [];
+  }
+
+  try {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+    const pdf = await loadingTask.promise;
+    const allTokens = [];
+
+    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+      const page = await pdf.getPage(pageNum);
+      const textContent = await page.getTextContent();
+      const pageTokens = textContent.items.map(item => item.str).filter(s => s && s.trim().length > 0);
+      allTokens.push(...pageTokens);
+    }
+    return allTokens;
+  } catch (err) {
+    console.warn('pdfjsLib extraction error:', err);
+    return [];
+  }
 }
 
 function extractPdfTokens(uint8Array) {
@@ -1593,52 +2903,139 @@ function extractPdfTokens(uint8Array) {
 }
 
 function parseIrctcData(tokens) {
-  const fullText = tokens.join('\n');
+  const fullText = Array.isArray(tokens) ? tokens.join(' ') : tokens;
 
+  // 1. PNR: 10 digits
   let pnr = '';
   const pnrMatch = fullText.match(/\b(\d{10})\b/);
   if (pnrMatch) pnr = pnrMatch[1];
 
+  // 2. Train No & Name: e.g. "16102/QLN MS EXPRESS"
   let train = '';
-  const trainMatch = fullText.match(/\b(\d{5}\s*\/[^\n\r]+)/);
-  if (trainMatch) train = trainMatch[1].trim();
+  const trainMatch = fullText.match(/\b(\d{5}\s*\/\s*[A-Za-z0-9\s\-]+?)(?=\s+(?:Booked|Boarding|From|To|SECOND|FIRST|THIRD|AC|SL|2A|3A|1A|CC|EC|GENERAL|Quota|\d{2}-)|$)/i) ||
+                     fullText.match(/\b(\d{5}\s*\/\s*[^\s]+(?:\s+[^\s]+){1,3})/i);
+  if (trainMatch) {
+    train = trainMatch[1].trim();
+  }
 
+  // 3. Station Names: Booked from / Boarding At / To
   let fromStation = '';
   let toStation = '';
-  for (let i = 0; i < tokens.length; i++) {
-    const tok = tokens[i].toLowerCase();
-    if (tok === 'booked from') {
-      if (tokens[i + 1] && tokens[i + 1].toLowerCase() === 'to' && tokens[i + 2]) {
-        fromStation = tokens[i + 2];
-        if (tokens[i + 3] === tokens[i + 2] && tokens[i + 4]) {
-          toStation = tokens[i + 4];
-        } else if (tokens[i + 3]) {
-          toStation = tokens[i + 3];
+
+  const nonStationWords = [
+    'GENERAL', 'TATKAL', 'PREMIUM', 'LOWER BERTH', 'SENIOR CITIZEN', 'LADIES', 'DUTY PASS', 'FOREIGN TOURIST',
+    'INDIAN RAILWAYS', 'IRCTC', 'STATE', 'GST', 'TAX', 'CGST', 'SGST', 'IGST',
+    'ELECTRONIC RESERVATION', 'RESERVATION SLIP', 'CONSUMER HELPLINE', 'CERTIFICATE', 'USER', 'PASSENGER',
+    'FARE', 'DISTANCE', 'WAITLIST', 'CONFIRMED', 'TOTAL', 'INSURANCE', 'CONVENIENCE', 'CHARGES'
+  ];
+  const nonStationCodes = new Set([
+    'GN', 'TQ', 'PT', 'LD', 'HO', 'DP', 'SS', 'HP', 'DF', 'FT', 'SL', 'CC', 'EC', 'EA', 'EV', 'FC', '2S', '3E',
+    'ERS', 'NCH', 'IT', 'GST', 'PG', 'KM', 'PRS', 'UTS', 'SMS', 'VRM', 'GGM', 'IRCTC', 'CRIS', 'SBI', 'UPI', 'PNR'
+  ]);
+
+  function cleanStationName(raw) {
+    if (!raw) return '';
+    // If the regex matched across newlines or multiline tokens, take the last line containing the station name
+    const lines = raw.split(/[\r\n]+/);
+    const lastLine = lines[lines.length - 1] || '';
+    return lastLine
+      .replace(/^(?:(?:Booked\s*from|Boarding\s*At|From\s*Station|From|To\s*Station|To)\s*[:\-]?\s*)+/gi, '')
+      .trim();
+  }
+
+  // Extract station matches with strictly 2-5 uppercase letters in parenthesis
+  const rawMatches = Array.from(fullText.matchAll(/([A-Za-z\s\.'\-]{2,35}\s*\(([A-Z]{2,5})\))/g));
+  const validStations = [];
+
+  for (const m of rawMatches) {
+    const rawMatch = m[1].trim();
+    const code = m[2].trim();
+    const cleaned = cleanStationName(rawMatch);
+    const textBefore = cleaned.split('(')[0].trim().toUpperCase();
+
+    if (nonStationCodes.has(code)) continue;
+    if (nonStationWords.some(w => textBefore.includes(w) || textBefore === w)) continue;
+    if (cleaned.length < 3) continue;
+
+    validStations.push(cleaned);
+  }
+
+  // 3a. Explicit keyword matching for From & To with punctuation (: or -)
+  const explicitFrom = fullText.match(/(?:Booked\s*from|Boarding\s*At|From\s*Station|\bFrom)\s*[:\-]\s*([A-Za-z\s\.'\-]{2,35}\s*\([A-Z]{2,5}\))/i);
+  const explicitTo = fullText.match(/(?:To\s*Station|\bTo)\s*[:\-]\s*([A-Za-z\s\.'\-]{2,35}\s*\([A-Z]{2,5}\))/i);
+
+  if (explicitFrom && explicitTo) {
+    fromStation = cleanStationName(explicitFrom[1]);
+    toStation = cleanStationName(explicitTo[1]);
+  }
+
+  // 3b. If explicit matching is missing or both resolved to the same station, extract from validStations
+  if (!fromStation || !toStation || fromStation === toStation) {
+    if (validStations.length >= 2) {
+      fromStation = validStations[0];
+      // In IRCTC tickets: table shows [Booked From, Boarding At, To]
+      // Destination is the first station with a different station code/name from origin:
+      const fromCode = (fromStation.match(/\(([A-Z]{2,5})\)/) || [])[1];
+      let destStation = null;
+      for (let i = 1; i < validStations.length; i++) {
+        const curCode = (validStations[i].match(/\(([A-Z]{2,5})\)/) || [])[1];
+        if (curCode && fromCode && curCode !== fromCode) {
+          destStation = validStations[i];
+          break;
+        } else if (!fromCode && validStations[i] !== fromStation) {
+          destStation = validStations[i];
+          break;
         }
       }
+      toStation = destStation || validStations[validStations.length - 1];
+    } else if (validStations.length === 1) {
+      if (!fromStation) fromStation = validStations[0];
     }
   }
 
+  // 4. Departure Date & Time
   let depTime = '', depDate = '', arrTime = '', arrDate = '';
-  const depMatch = fullText.match(/Departure\*?\s*(\d{2}:\d{2})\s+(\d{1,2}-[A-Za-z]{3}-[A-Za-z0-9]{4})/i);
+
+  const depMatch = fullText.match(/Departure\*?\s*:?\s*(\d{2}:\d{2})\s+(\d{1,2}-[A-Za-z]{3}-\d{4})/i) ||
+                   fullText.match(/Departure\*?\s*:?\s*(\d{1,2}-[A-Za-z]{3}-\d{4})\s+(\d{2}:\d{2})/i) ||
+                   fullText.match(/Start Date\*?\s*(\d{1,2}-[A-Za-z]{3}-\d{4})/i);
+
   if (depMatch) {
-    depTime = depMatch[1];
-    depDate = parseIndianDateToYmd(depMatch[2]);
-  }
-  const arrMatch = fullText.match(/Arrival\*?\s*(\d{2}:\d{2})\s+(\d{1,2}-[A-Za-z]{3}-[A-Za-z0-9]{4})/i);
-  if (arrMatch) {
-    arrTime = arrMatch[1];
-    arrDate = parseIndianDateToYmd(arrMatch[2]);
+    if (depMatch[1] && depMatch[1].includes(':')) {
+      depTime = depMatch[1];
+      depDate = parseIndianDateToYmd(depMatch[2]);
+    } else if (depMatch[2] && depMatch[2].includes(':')) {
+      depTime = depMatch[2];
+      depDate = parseIndianDateToYmd(depMatch[1]);
+    } else if (depMatch[1]) {
+      depDate = parseIndianDateToYmd(depMatch[1]);
+    }
   }
 
+  // 5. Arrival Date & Time
+  const arrMatch = fullText.match(/Arrival\*?\s*:?\s*(\d{2}:\d{2})\s+(\d{1,2}-[A-Za-z]{3}-\d{4})/i) ||
+                   fullText.match(/Arrival\*?\s*:?\s*(\d{1,2}-[A-Za-z]{3}-\d{4})\s+(\d{2}:\d{2})/i);
+
+  if (arrMatch) {
+    if (arrMatch[1] && arrMatch[1].includes(':')) {
+      arrTime = arrMatch[1];
+      arrDate = parseIndianDateToYmd(arrMatch[2]);
+    } else {
+      arrTime = arrMatch[2];
+      arrDate = parseIndianDateToYmd(arrMatch[1]);
+    }
+  }
+
+  // 6. Total Fare / Amount
   let totalFare = 0;
-  const fareIdx = tokens.findIndex(t => t.toLowerCase().includes('total fare'));
-  if (fareIdx !== -1 && tokens[fareIdx + 1]) {
-    const rawAmt = tokens[fareIdx + 1].replace(/[^\d.]/g, '');
-    totalFare = parseFloat(rawAmt) || 0;
+  const fareMatch = fullText.match(/Total Fare[^\d]*([\d,]+\.\d{2})/i) ||
+                    fullText.match(/Ticket Fare[^\d]*([\d,]+\.\d{2})/i);
+  if (fareMatch) {
+    totalFare = parseFloat(fareMatch[1].replace(/,/g, '')) || 0;
   }
 
   function parseIndianDateToYmd(dStr) {
+    if (!dStr) return '';
     const months = { jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06', jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12' };
     const parts = dStr.split('-');
     if (parts.length === 3) {
@@ -1678,16 +3075,32 @@ function handleTravelTicketUpload(type, file) {
   // 2. If PDF, parse text and auto-prefill travel details
   if (file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf') {
     const bufReader = new FileReader();
-    bufReader.onload = () => {
+    bufReader.onload = async () => {
       try {
-        const uint8Array = new Uint8Array(bufReader.result);
-        const tokens = extractPdfTokens(uint8Array);
-        if (tokens.length > 0) {
+        const arrayBuffer = bufReader.result;
+        let tokens = await extractTextFromPdf(arrayBuffer);
+
+        if (!tokens || tokens.length === 0) {
+          const uint8Array = new Uint8Array(arrayBuffer);
+          tokens = extractPdfTokens(uint8Array);
+        }
+
+        if (tokens && tokens.length > 0) {
           const ticketData = parseIrctcData(tokens);
           console.log(`Auto-extracted ticket data for ${type}:`, ticketData);
 
-          if (ticketData.pnr || ticketData.train || ticketData.depDate) {
+          if (ticketData.pnr || ticketData.train || ticketData.depDate || ticketData.fromStation) {
+            const chkBox = document.getElementById(type === 'onward' ? 'addOnwardTravel' : 'addReturnTravel');
+            if (chkBox) {
+              chkBox.checked = true;
+              const fieldsDiv = document.getElementById(type === 'onward' ? 'onwardTravelFields' : 'returnTravelFields');
+              if (fieldsDiv) fieldsDiv.classList.remove('hidden');
+              const travelBody = document.getElementById('travelTransitBody');
+              if (travelBody) travelBody.classList.remove('hidden');
+            }
+
             applyTicketDataToForm(type, ticketData);
+            showToast(`Auto-filled ${type} travel details from PDF ticket!`, 'success', 4000);
           }
         }
       } catch (err) {
@@ -1719,18 +3132,32 @@ function applyTicketDataToForm(type, data) {
   if (data.pnr && pnr) pnr.value = data.pnr;
   if (data.depDate && depDate) {
     depDate.value = data.depDate;
-    updateTravelDateHint(isO ? 'onwardTravelDate' : 'returnTravelDate', isO ? 'onwardDateHint' : 'returnDateHint');
+    updateTravelDateHint(isO ? 'onwardTravelDate' : 'returnTravelDate', isO ? 'onwardTravelDateHint' : 'returnTravelDateHint');
   }
   if (data.depTime && depTime) depTime.value = data.depTime;
   if (data.arrDate && arrDate) {
     arrDate.value = data.arrDate;
-    updateTravelDateHint(isO ? 'onwardArrivalDate' : 'returnArrivalDate', isO ? 'onwardArrivalHint' : 'returnArrivalHint');
+    updateTravelDateHint(isO ? 'onwardArrivalDate' : 'returnArrivalDate', isO ? 'onwardArrivalDateHint' : 'returnArrivalDateHint');
   }
   if (data.arrTime && arrTime) arrTime.value = data.arrTime;
   if (data.totalFare > 0 && amt) {
     amt.value = data.totalFare.toFixed(2);
-    if (reimb) reimb.checked = true;
+    if (reimb) {
+      reimb.disabled = false;
+      reimb.checked = true;
+      const reimbWrap = document.getElementById(isO ? 'onwardReimbursableWrapper' : 'returnReimbursableWrapper');
+      if (reimbWrap) reimbWrap.classList.remove('disabled-opt');
+    }
   }
+
+  // Pre-fill Programme Title if title input is blank
+  const titleInput = document.getElementById('schedTitle');
+  if (titleInput && (!titleInput.value.trim() || titleInput.value.trim().toLowerCase() === 'travel')) {
+    const fromStr = data.fromStation ? data.fromStation.split('(')[0].trim() : 'Departure';
+    const toStr = data.toStation ? data.toStation.split('(')[0].trim() : 'Destination';
+    titleInput.value = `${fromStr} to ${toStr} Travel (${data.train || 'Train'})`;
+  }
+
   updateTravelReimbursableState(type);
 }
 
@@ -1748,12 +3175,17 @@ function renderTravelTicketPreview(type) {
     img.src = att.data;
     img.title = 'Click to preview';
     img.addEventListener('click', () => {
-      const w = window.open('');
-      w.document.write(`<img src="${att.data}" style="max-width:100%; height:auto;">`);
+      openAttachmentViewer(att);
     });
     pill.appendChild(img);
   } else {
-    pill.innerHTML += '<i class="fa-solid fa-file-pdf"></i>';
+    const pdfIcon = document.createElement('i');
+    pdfIcon.className = 'fa-solid fa-file-pdf';
+    pdfIcon.style.cursor = 'pointer';
+    pdfIcon.addEventListener('click', () => {
+      openAttachmentViewer(att);
+    });
+    pill.appendChild(pdfIcon);
   }
 
   const nameSpan = document.createElement('span');
@@ -1806,13 +3238,26 @@ function updateTravelDateHint(inputId, hintId) {
    8. CLASH CHECK & SAVE SCHEDULE / BATCH GROUP / TRAVEL
    ========================================================================== */
 
-function checkScheduleClash(dateStr, fromTime, toTime, excludeId = null) {
-  const stmt = db.prepare(`
+function checkScheduleClash(dateStr, fromTime, toTime, excludeId = null, excludeGroupId = null) {
+  let query = `
     SELECT id, title, from_time, to_time 
     FROM schedules 
-    WHERE schedule_date = ? AND id != ?
-  `);
-  stmt.bind([dateStr, excludeId || '']);
+    WHERE schedule_date = ? 
+      AND id != ?
+      AND title NOT LIKE 'Travel:%'
+      AND title NOT LIKE 'Return Travel:%'
+      AND title NOT LIKE 'Travel Arrival:%'
+      AND title NOT LIKE 'Return Travel Arrival:%'
+  `;
+  const params = [dateStr, excludeId || ''];
+
+  if (excludeGroupId) {
+    query += ` AND (group_id IS NULL OR group_id != ?)`;
+    params.push(excludeGroupId);
+  }
+
+  const stmt = db.prepare(query);
+  stmt.bind(params);
   
   const clashes = [];
   while (stmt.step()) {
@@ -1862,7 +3307,7 @@ async function handleScheduleFormSubmit(e) {
   if (editId) {
     if (activeEditingGroupId && applyAsGroup) {
       // Edit entire group (excluding travel entries)
-      const res = db.exec("SELECT schedule_date FROM schedules WHERE group_id = ? AND title NOT LIKE 'Travel:%' AND title NOT LIKE 'Return Travel:%' ORDER BY schedule_date ASC", [activeEditingGroupId]);
+      const res = db.exec("SELECT schedule_date FROM schedules WHERE group_id = ? AND title NOT LIKE 'Travel:%' AND title NOT LIKE 'Return Travel:%' AND title NOT LIKE 'Travel Arrival:%' AND title NOT LIKE 'Return Travel Arrival:%' ORDER BY schedule_date ASC", [activeEditingGroupId]);
       dates = res.length > 0 ? res[0].values.map(v => v[0]) : [document.querySelector('#selectedDatesChips .date-chip').dataset.isoDate || document.querySelector('#selectedDatesChips .date-chip').title || document.querySelector('#selectedDatesChips .date-chip').textContent];
     } else {
       // Edit single schedule
@@ -1876,9 +3321,9 @@ async function handleScheduleFormSubmit(e) {
   // Clash check (only for standard daytime schedules where fromTime < toTime)
   if (fromTime < toTime) {
     for (const d of dates) {
-      const clashes = checkScheduleClash(d, fromTime, toTime, editId);
+      const clashes = checkScheduleClash(d, fromTime, toTime, editId, activeEditingGroupId);
       if (clashes.length > 0) {
-        const proceed = confirm(`⚠️ Time Clash Alert on ${formatDateIndian(d)}!\n\nThis overlaps with:\n- ${clashes.join('\n- ')}\n\nDo you want to proceed anyway?`);
+        const proceed = confirm(`⚠️ Time Clash Alert on ${formatDateIndian(d)}!\n\nThis overlaps with an existing schedule:\n- ${clashes.join('\n- ')}\n\nDo you want to proceed anyway?`);
         if (!proceed) return;
       }
     }
@@ -1890,7 +3335,6 @@ async function handleScheduleFormSubmit(e) {
     if (inp.value.trim()) customValues[inp.dataset.fieldKey] = inp.value.trim();
   });
   const customValuesJson = JSON.stringify(customValues);
-  const attachmentsJson = JSON.stringify(currentModalAttachments);
   const nowIso = new Date().toISOString();
 
   // Structured Travel Object to persist in schedules table
@@ -1921,6 +3365,60 @@ async function handleScheduleFormSubmit(e) {
   const rAmt = parseFloat(document.getElementById('returnAmount').value) || 0;
   const rReimb = rAmt > 0 && document.getElementById('returnReimbursable').checked;
 
+  // 1. Process & Decouple General Attachments (save Base64 to IndexedDB + Upload to Server, strip Base64 for SQLite)
+  const cleanedAttachments = [];
+  for (const att of currentModalAttachments) {
+    const filename = att.filename || (att.id + '_' + (att.name ? att.name.replace(/[^a-zA-Z0-9_\-\.]/g, '_') : 'file.dat'));
+    if (att.data && att.data.startsWith('data:')) {
+      await saveAttachmentToIndexedDB(att.id, att.data);
+      uploadAttachmentFileToServer(att.id, filename, att.data);
+    }
+    cleanedAttachments.push({
+      id: att.id,
+      name: att.name,
+      type: att.type,
+      size: att.size,
+      filename: filename
+    });
+  }
+  const attachmentsJson = JSON.stringify(cleanedAttachments);
+
+  // 2. Process & Decouple Onward Ticket Attachment
+  let cleanedOnwardAtt = null;
+  if (onwardChecked && onwardTicketAttachment) {
+    const att = onwardTicketAttachment;
+    const filename = att.filename || (att.id + '_' + (att.name ? att.name.replace(/[^a-zA-Z0-9_\-\.]/g, '_') : 'file.dat'));
+    if (att.data && att.data.startsWith('data:')) {
+      await saveAttachmentToIndexedDB(att.id, att.data);
+      uploadAttachmentFileToServer(att.id, filename, att.data);
+    }
+    cleanedOnwardAtt = {
+      id: att.id,
+      name: att.name,
+      type: att.type,
+      size: att.size,
+      filename: filename
+    };
+  }
+
+  // 3. Process & Decouple Return Ticket Attachment
+  let cleanedReturnAtt = null;
+  if (returnChecked && returnTicketAttachment) {
+    const att = returnTicketAttachment;
+    const filename = att.filename || (att.id + '_' + (att.name ? att.name.replace(/[^a-zA-Z0-9_\-\.]/g, '_') : 'file.dat'));
+    if (att.data && att.data.startsWith('data:')) {
+      await saveAttachmentToIndexedDB(att.id, att.data);
+      uploadAttachmentFileToServer(att.id, filename, att.data);
+    }
+    cleanedReturnAtt = {
+      id: att.id,
+      name: att.name,
+      type: att.type,
+      size: att.size,
+      filename: filename
+    };
+  }
+
   const travelInfoObj = {
     onward: onwardChecked ? {
       enabled: true,
@@ -1935,7 +3433,7 @@ async function handleScheduleFormSubmit(e) {
       pnr: oPnr,
       amount: oAmt,
       reimbursable: oReimb,
-      attachment: onwardTicketAttachment
+      attachment: cleanedOnwardAtt
     } : null,
     return: returnChecked ? {
       enabled: true,
@@ -1950,53 +3448,83 @@ async function handleScheduleFormSubmit(e) {
       pnr: rPnr,
       amount: rAmt,
       reimbursable: rReimb,
-      attachment: returnTicketAttachment
+      attachment: cleanedReturnAtt
     } : null
   };
   const travelInfoJson = (onwardChecked || returnChecked) ? JSON.stringify(travelInfoObj) : null;
 
-  // Group ID assignment
+  // Group ID assignment: Every schedule (single or batch) gets a groupId to bind travel entries
   let groupId = activeEditingGroupId;
-  if (!groupId && dates.length > 1 && applyAsGroup) {
-    groupId = `grp_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`;
-  } else if (!applyAsGroup) {
-    groupId = null;
+  if (!groupId) {
+    if (editId) {
+      const gRes = db.exec("SELECT group_id FROM schedules WHERE id = ?", [editId]);
+      if (gRes.length > 0 && gRes[0].values[0][0]) {
+        groupId = gRes[0].values[0][0];
+      } else {
+        groupId = `grp_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`;
+      }
+    } else {
+      groupId = `grp_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`;
+    }
   }
 
-  if (editId && (!activeEditingGroupId || !applyAsGroup)) {
-    // Single edit
-    db.run(`
-      UPDATE schedules 
-      SET title = ?, delivery_mode = ?, status = ?, from_time = ?, to_time = ?, location = ?, notes = ?, attachments = ?, travel_info = ?, group_id = ?, updated_at = ?
-      WHERE id = ?
-    `, [title, deliveryMode, status, fromTime, toTime, location, notes, attachmentsJson, travelInfoJson, groupId, nowIso, editId]);
+  const tagList = Array.from(activeModalSelectedTagIds).map(tid => ({
+    tag_id: tid,
+    field_values: customValuesJson,
+    notes: ''
+  }));
 
-    db.run('DELETE FROM schedule_tags WHERE schedule_id = ?', [editId]);
-    const stStmt = db.prepare('INSERT INTO schedule_tags (id, schedule_id, tag_id, field_values, notes) VALUES (?, ?, ?, ?, ?)');
-    activeModalSelectedTagIds.forEach(tid => {
-      stStmt.run([`st_${editId}_${tid}`, editId, tid, customValuesJson, '']);
+  const schedulesToSave = [];
+
+  if (editId && (!activeEditingGroupId || !applyAsGroup)) {
+    // Single edit: query existing created_at and date
+    const existingRes = db.exec("SELECT created_at, schedule_date FROM schedules WHERE id = ?", [editId]);
+    const existingCreatedAt = (existingRes.length > 0 && existingRes[0].values[0][0]) || nowIso;
+    const scheduleDate = (existingRes.length > 0 && existingRes[0].values[0][1]) || dates[0] || formatDateYMD(new Date());
+
+    schedulesToSave.push({
+      id: editId,
+      group_id: groupId,
+      schedule_date: scheduleDate,
+      from_time: fromTime,
+      to_time: toTime,
+      delivery_mode: deliveryMode,
+      location: location,
+      title: title,
+      notes: notes,
+      attachments: attachmentsJson,
+      travel_info: travelInfoJson,
+      status: status,
+      created_at: existingCreatedAt,
+      updated_at: nowIso,
+      tags: tagList.map(t => ({ id: `st_${editId}_${t.tag_id}`, schedule_id: editId, tag_id: t.tag_id, field_values: t.field_values, notes: t.notes }))
     });
-    stStmt.free();
 
   } else if (editId && activeEditingGroupId && applyAsGroup) {
-    // Bulk update all schedules in this group
-    db.run(`
-      UPDATE schedules
-      SET title = ?, delivery_mode = ?, status = ?, from_time = ?, to_time = ?, location = ?, notes = ?, attachments = ?, travel_info = ?, updated_at = ?
-      WHERE group_id = ?
-    `, [title, deliveryMode, status, fromTime, toTime, location, notes, attachmentsJson, travelInfoJson, nowIso, activeEditingGroupId]);
-
-    // Update tags for all schedules in group
-    const res = db.exec("SELECT id FROM schedules WHERE group_id = ?", [activeEditingGroupId]);
+    // Bulk update all programme schedules in this group (excluding travel and arrival legs)
+    const res = db.exec("SELECT id, schedule_date, created_at FROM schedules WHERE group_id = ? AND title NOT LIKE 'Travel:%' AND title NOT LIKE 'Return Travel:%' AND title NOT LIKE 'Travel Arrival:%' AND title NOT LIKE 'Return Travel Arrival:%'", [activeEditingGroupId]);
     if (res.length > 0) {
       res[0].values.forEach(valArr => {
         const schId = valArr[0];
-        db.run('DELETE FROM schedule_tags WHERE schedule_id = ?', [schId]);
-        const stStmt = db.prepare('INSERT INTO schedule_tags (id, schedule_id, tag_id, field_values, notes) VALUES (?, ?, ?, ?, ?)');
-        activeModalSelectedTagIds.forEach(tid => {
-          stStmt.run([`st_${schId}_${tid}`, schId, tid, customValuesJson, '']);
+        const schDate = valArr[1];
+        const schCreated = valArr[2] || nowIso;
+        schedulesToSave.push({
+          id: schId,
+          group_id: activeEditingGroupId,
+          schedule_date: schDate,
+          from_time: fromTime,
+          to_time: toTime,
+          delivery_mode: deliveryMode,
+          location: location,
+          title: title,
+          notes: notes,
+          attachments: attachmentsJson,
+          travel_info: travelInfoJson,
+          status: status,
+          created_at: schCreated,
+          updated_at: nowIso,
+          tags: tagList.map(t => ({ id: `st_${schId}_${t.tag_id}`, schedule_id: schId, tag_id: t.tag_id, field_values: t.field_values, notes: t.notes }))
         });
-        stStmt.free();
       });
     }
 
@@ -2004,16 +3532,23 @@ async function handleScheduleFormSubmit(e) {
     // Create new entries for all dates
     for (const dStr of dates) {
       const newId = `sch_${dStr}_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`;
-      db.run(`
-        INSERT INTO schedules (id, group_id, schedule_date, from_time, to_time, delivery_mode, location, title, notes, attachments, travel_info, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, [newId, groupId, dStr, fromTime, toTime, deliveryMode, location, title, notes, attachmentsJson, travelInfoJson, status, nowIso, nowIso]);
-
-      const stStmt = db.prepare('INSERT INTO schedule_tags (id, schedule_id, tag_id, field_values, notes) VALUES (?, ?, ?, ?, ?)');
-      activeModalSelectedTagIds.forEach(tid => {
-        stStmt.run([`st_${newId}_${tid}`, newId, tid, customValuesJson, '']);
+      schedulesToSave.push({
+        id: newId,
+        group_id: groupId,
+        schedule_date: dStr,
+        from_time: fromTime,
+        to_time: toTime,
+        delivery_mode: deliveryMode,
+        location: location,
+        title: title,
+        notes: notes,
+        attachments: attachmentsJson,
+        travel_info: travelInfoJson,
+        status: status,
+        created_at: nowIso,
+        updated_at: nowIso,
+        tags: tagList.map(t => ({ id: `st_${newId}_${t.tag_id}`, schedule_id: newId, tag_id: t.tag_id, field_values: t.field_values, notes: t.notes }))
       });
-      stStmt.free();
     }
   }
 
@@ -2032,17 +3567,28 @@ async function handleScheduleFormSubmit(e) {
       oAmt > 0 ? `Amount: ₹${oAmt.toFixed(2)} (${oReimb ? 'Reimbursable' : 'Non-reimbursable'})` : 'Sponsored by Organizer (₹0.00)'
     ].filter(Boolean).join(' | ');
 
-    const oAttachments = onwardTicketAttachment ? JSON.stringify([onwardTicketAttachment]) : '[]';
+    const oAttachments = cleanedOnwardAtt ? JSON.stringify([cleanedOnwardAtt]) : '[]';
     const oId = `sch_${oDate}_travel_onward_${Date.now()}`;
-    
-    // 1. Departure Day Travel Entry (from departure time until midnight if overnight, or until arrival time)
     const oDepToTime = isOvernight ? '23:59' : oArrTime;
-    db.run(`
-      INSERT INTO schedules (id, group_id, schedule_date, from_time, to_time, delivery_mode, location, title, notes, attachments, travel_info, status, created_at, updated_at)
-      VALUES (?, null, ?, ?, ?, 'offline', ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [oId, oDate, oDepTime, oDepToTime, `${oFrom} -> ${oTo}`, oTitle, oNotes, oAttachments, travelInfoJson, status, nowIso, nowIso]);
 
-    // 2. Arrival Day Travel Entry (if overnight / arrives next date)
+    schedulesToSave.push({
+      id: oId,
+      group_id: groupId,
+      schedule_date: oDate,
+      from_time: oDepTime,
+      to_time: oDepToTime,
+      delivery_mode: 'offline',
+      location: `${oFrom} -> ${oTo}`,
+      title: oTitle,
+      notes: oNotes,
+      attachments: oAttachments,
+      travel_info: travelInfoJson,
+      status: status,
+      created_at: nowIso,
+      updated_at: nowIso,
+      tags: []
+    });
+
     if (isOvernight) {
       const oArrId = `sch_${oArrDate}_travel_onward_arr_${Date.now()}`;
       let oArrTitle = `Travel Arrival: ${oTo || 'Venue'} from ${oFrom || 'Home'} (${oMode})`;
@@ -2050,10 +3596,23 @@ async function handleScheduleFormSubmit(e) {
       if (oPnr) oArrTitle += ` | PNR: ${oPnr}`;
       const oArrNotes = `Arrival day: In-transit train arrival at ${oTo} at ${oArrTime} | Dep: ${formatDateIndian(oDate)} at ${oDepTime}`;
       
-      db.run(`
-        INSERT INTO schedules (id, group_id, schedule_date, from_time, to_time, delivery_mode, location, title, notes, attachments, travel_info, status, created_at, updated_at)
-        VALUES (?, null, ?, '00:00', ?, 'offline', ?, ?, ?, ?, ?, ?, ?, ?)
-      `, [oArrId, oArrDate, oArrTime, `${oFrom} -> ${oTo}`, oArrTitle, oArrNotes, oAttachments, travelInfoJson, status, nowIso, nowIso]);
+      schedulesToSave.push({
+        id: oArrId,
+        group_id: groupId,
+        schedule_date: oArrDate,
+        from_time: '00:00',
+        to_time: oArrTime,
+        delivery_mode: 'offline',
+        location: `${oFrom} -> ${oTo}`,
+        title: oArrTitle,
+        notes: oArrNotes,
+        attachments: oAttachments,
+        travel_info: travelInfoJson,
+        status: status,
+        created_at: nowIso,
+        updated_at: nowIso,
+        tags: []
+      });
     }
   }
 
@@ -2072,17 +3631,28 @@ async function handleScheduleFormSubmit(e) {
       rAmt > 0 ? `Amount: ₹${rAmt.toFixed(2)} (${rReimb ? 'Reimbursable' : 'Non-reimbursable'})` : 'Sponsored by Organizer (₹0.00)'
     ].filter(Boolean).join(' | ');
 
-    const rAttachments = returnTicketAttachment ? JSON.stringify([returnTicketAttachment]) : '[]';
+    const rAttachments = cleanedReturnAtt ? JSON.stringify([cleanedReturnAtt]) : '[]';
     const rId = `sch_${rDate}_travel_return_${Date.now()}`;
-
-    // 1. Departure Day Return Entry
     const rDepToTime = isOvernight ? '23:59' : rArrTime;
-    db.run(`
-      INSERT INTO schedules (id, group_id, schedule_date, from_time, to_time, delivery_mode, location, title, notes, attachments, travel_info, status, created_at, updated_at)
-      VALUES (?, null, ?, ?, ?, 'offline', ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [rId, rDate, rDepTime, rDepToTime, `${rFrom} -> ${rTo}`, rTitle, rNotes, rAttachments, travelInfoJson, status, nowIso, nowIso]);
 
-    // 2. Arrival Day Return Entry (if overnight / arrives next date)
+    schedulesToSave.push({
+      id: rId,
+      group_id: groupId,
+      schedule_date: rDate,
+      from_time: rDepTime,
+      to_time: rDepToTime,
+      delivery_mode: 'offline',
+      location: `${rFrom} -> ${rTo}`,
+      title: rTitle,
+      notes: rNotes,
+      attachments: rAttachments,
+      travel_info: travelInfoJson,
+      status: status,
+      created_at: nowIso,
+      updated_at: nowIso,
+      tags: []
+    });
+
     if (isOvernight) {
       const rArrId = `sch_${rArrDate}_travel_return_arr_${Date.now()}`;
       let rArrTitle = `Return Travel Arrival: ${rTo || 'Home'} from ${rFrom || 'Venue'} (${rMode})`;
@@ -2090,20 +3660,63 @@ async function handleScheduleFormSubmit(e) {
       if (rPnr) rArrTitle += ` | PNR: ${rPnr}`;
       const rArrNotes = `Arrival day: In-transit train return arrival at ${rTo} at ${rArrTime} | Dep: ${formatDateIndian(rDate)} at ${rDepTime}`;
 
-      db.run(`
-        INSERT INTO schedules (id, group_id, schedule_date, from_time, to_time, delivery_mode, location, title, notes, attachments, travel_info, status, created_at, updated_at)
-        VALUES (?, null, ?, '00:00', ?, 'offline', ?, ?, ?, ?, ?, ?, ?, ?)
-      `, [rArrId, rArrDate, rArrTime, `${rFrom} -> ${rTo}`, rArrTitle, rArrNotes, rAttachments, travelInfoJson, status, nowIso, nowIso]);
+      schedulesToSave.push({
+        id: rArrId,
+        group_id: groupId,
+        schedule_date: rArrDate,
+        from_time: '00:00',
+        to_time: rArrTime,
+        delivery_mode: 'offline',
+        location: `${rFrom} -> ${rTo}`,
+        title: rArrTitle,
+        notes: rArrNotes,
+        attachments: rAttachments,
+        travel_info: travelInfoJson,
+        status: status,
+        created_at: nowIso,
+        updated_at: nowIso,
+        tags: []
+      });
     }
   }
 
-  await saveDbToIndexedDB();
-  populateTitlesDatalist();
-  triggerAutoDriveSync();
+  // Direct Local SQLite Persistence: Atomically save schedules & tags to local database
+  try {
+    // 1. If editId or groupId, clean existing travel legs for this group or schedule first
+    if (groupId) {
+      db.run("DELETE FROM schedules WHERE group_id = ? AND (title LIKE 'Travel:%' OR title LIKE 'Return Travel:%' OR title LIKE 'Travel Arrival:%' OR title LIKE 'Return Travel Arrival:%')", [groupId]);
+    } else if (editId) {
+      db.run("DELETE FROM schedules WHERE id LIKE ? AND (title LIKE 'Travel:%' OR title LIKE 'Return Travel:%' OR title LIKE 'Travel Arrival:%' OR title LIKE 'Return Travel Arrival:%')", [`%${editId}%`]);
+    }
 
-  closeScheduleModal();
-  clearDateSelection();
-  renderCurrentView();
+    // 2. Insert or replace all schedules and tags
+    for (const sch of schedulesToSave) {
+      db.run(`
+        INSERT OR REPLACE INTO schedules (id, group_id, schedule_date, from_time, to_time, delivery_mode, location, title, notes, attachments, travel_info, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [sch.id, sch.group_id, sch.schedule_date, sch.from_time, sch.to_time, sch.delivery_mode, sch.location, sch.title, sch.notes, sch.attachments, sch.travel_info, sch.status, sch.created_at, sch.updated_at]);
+
+      // Tags
+      db.run('DELETE FROM schedule_tags WHERE schedule_id = ?', [sch.id]);
+      if (sch.tags && sch.tags.length > 0) {
+        const stStmt = db.prepare('INSERT INTO schedule_tags (id, schedule_id, tag_id, field_values, notes) VALUES (?, ?, ?, ?, ?)');
+        sch.tags.forEach(t => {
+          stStmt.run([t.id, t.schedule_id, t.tag_id, t.field_values, t.notes || '']);
+        });
+        stStmt.free();
+      }
+    }
+
+    await saveDbToIndexedDB();
+    populateTitlesDatalist();
+    closeScheduleModal();
+    clearDateSelection();
+    renderCurrentView();
+    showToast('✓ Saved directly to local database!', 'success', 3000);
+  } catch(err) {
+    console.error('Error saving schedule locally:', err);
+    showToast('❌ Error saving schedule: ' + err.message, 'error', 5000);
+  }
 }
 
 function addHoursToTime(hhmm, hrsToAdd) {
@@ -2120,13 +3733,14 @@ async function handleDeleteSchedule() {
   const editId = document.getElementById('editScheduleId').value;
   if (!editId) return;
 
+  if (activeEditingGroupId) {
+    await handleDeleteBatchGroup();
+    return;
+  }
+
   if (confirm('Delete this schedule?')) {
-    db.run('DELETE FROM schedules WHERE id = ?', [editId]);
-    db.run('DELETE FROM schedule_tags WHERE schedule_id = ?', [editId]);
-    await saveDbToIndexedDB();
-    triggerAutoDriveSync();
+    await deleteSingleScheduleById(editId);
     closeScheduleModal();
-    renderCurrentView();
   }
 }
 
@@ -2134,18 +3748,46 @@ async function handleDeleteBatchGroup() {
   if (!activeEditingGroupId) return;
 
   if (confirm('⚠️ Are you sure you want to delete this ENTIRE batch collection of schedules? All dates in this group will be deleted.')) {
-    const res = db.exec("SELECT id FROM schedules WHERE group_id = ?", [activeEditingGroupId]);
+    await deleteBatchGroupById(activeEditingGroupId);
+    closeScheduleModal();
+  }
+}
+
+async function deleteSingleScheduleById(schId) {
+  if (!schId || !db) return;
+  try {
+    db.run("DELETE FROM schedules WHERE id = ?", [schId]);
+    db.run("DELETE FROM schedule_tags WHERE schedule_id = ?", [schId]);
+    // Also remove associated travel legs if any
+    db.run("DELETE FROM schedules WHERE id LIKE ? AND (title LIKE 'Travel:%' OR title LIKE 'Return Travel:%' OR title LIKE 'Travel Arrival:%' OR title LIKE 'Return Travel Arrival:%')", [`%${schId}%`]);
+    await saveDbToIndexedDB();
+    populateTitlesDatalist();
+    renderCurrentView();
+    showToast('✓ Schedule deleted from local database.', 'info', 3000);
+  } catch(err) {
+    console.error('Error deleting schedule:', err);
+    showToast('❌ Error deleting schedule: ' + err.message, 'error', 4000);
+  }
+}
+
+async function deleteBatchGroupById(grpId) {
+  if (!grpId || !db) return;
+  try {
+    const res = db.exec("SELECT id FROM schedules WHERE group_id = ?", [grpId]);
     if (res.length > 0) {
       res[0].values.forEach(v => {
         const id = v[0];
-        db.run('DELETE FROM schedule_tags WHERE schedule_id = ?', [id]);
+        db.run("DELETE FROM schedule_tags WHERE schedule_id = ?", [id]);
       });
     }
-    db.run('DELETE FROM schedules WHERE group_id = ?', [activeEditingGroupId]);
+    db.run("DELETE FROM schedules WHERE group_id = ?", [grpId]);
     await saveDbToIndexedDB();
-    triggerAutoDriveSync();
-    closeScheduleModal();
+    populateTitlesDatalist();
     renderCurrentView();
+    showToast('✓ Entire batch group deleted from local database.', 'info', 3000);
+  } catch(err) {
+    console.error('Error deleting batch group:', err);
+    showToast('❌ Error deleting batch group: ' + err.message, 'error', 4000);
   }
 }
 
@@ -2208,10 +3850,11 @@ function renderTagMasterUI() {
     tagChip.querySelector('.fa-xmark').addEventListener('click', async (e) => {
       e.stopPropagation();
       if (confirm(`Delete tag "${t.name}"?`)) {
-        db.run('DELETE FROM tags WHERE id = ?', [t.id]);
-        db.run('DELETE FROM schedule_tags WHERE tag_id = ?', [t.id]);
-        await saveDbToIndexedDB();
-        triggerAutoDriveSync();
+        if (db) {
+          db.run('DELETE FROM tags WHERE id = ?', [t.id]);
+          db.run('DELETE FROM schedule_tags WHERE tag_id = ?', [t.id]);
+          await saveDbToIndexedDB();
+        }
         loadMasterDataFromDb();
         renderTagMasterUI();
       }
@@ -2227,7 +3870,7 @@ function renderTagMasterUI() {
     const fldBadge = document.createElement('div');
     fldBadge.className = 'tag-selectable';
     fldBadge.style.borderColor = '#38bdf8';
-    fldBadge.textContent = `${f.field_label} (${f.field_type})`;
+    fldBadge.textContent = `${f.field_label || f.name} (${f.field_type || f.type})`;
     fieldsContainer.appendChild(fldBadge);
   });
 }
@@ -2238,10 +3881,14 @@ async function handleAddCategory() {
 
   const color = '#' + Math.floor(Math.random()*16777215).toString(16);
   const id = 'cat_' + Date.now();
-  db.run('INSERT INTO tag_categories (id, name, color, icon, sort_order) VALUES (?, ?, ?, ?, ?)',
-         [id, name.trim(), color, 'folder', tagMasterCategories.length + 1]);
-  
-  await saveDbToIndexedDB();
+  const sortOrder = tagMasterCategories.length + 1;
+
+  if (db) {
+    db.run('INSERT INTO tag_categories (id, name, color, icon, sort_order) VALUES (?, ?, ?, ?, ?)',
+           [id, name.trim(), color, 'folder', sortOrder]);
+    await saveDbToIndexedDB();
+  }
+
   loadMasterDataFromDb();
   activeMasterCatId = id;
   renderTagMasterUI();
@@ -2256,9 +3903,12 @@ async function handleAddTag() {
   const id = 'tag_' + Date.now();
 
   try {
-    db.run('INSERT INTO tags (id, category_id, name, color, description) VALUES (?, ?, ?, ?, ?)',
-           [id, activeMasterCatId, name.trim(), color, '']);
-    await saveDbToIndexedDB();
+    if (db) {
+      db.run('INSERT INTO tags (id, category_id, name, color, description) VALUES (?, ?, ?, ?, ?)',
+             [id, activeMasterCatId, name.trim(), color, '']);
+      await saveDbToIndexedDB();
+    }
+
     loadMasterDataFromDb();
     renderTagMasterUI();
   } catch (err) {
@@ -2274,23 +3924,425 @@ async function handleAddField() {
   const key = label.toLowerCase().replace(/[^a-z0-9]/g, '_');
   const id = 'fld_' + Date.now();
 
-  db.run('INSERT INTO tag_field_definitions (id, tag_id, category_id, field_key, field_label, field_type) VALUES (?, ?, ?, ?, ?, ?)',
-         [id, null, activeMasterCatId, key, label.trim(), 'text']);
+  if (db) {
+    db.run('INSERT INTO tag_field_definitions (id, tag_id, category_id, field_key, field_label, field_type) VALUES (?, null, ?, ?, ?, ?)',
+           [id, activeMasterCatId, key, label.trim(), 'text']);
+    await saveDbToIndexedDB();
+  }
 
-  await saveDbToIndexedDB();
   loadMasterDataFromDb();
   renderTagMasterUI();
 }
 
 /* ==========================================================================
-   10. GOOGLE DRIVE SYNC & OAUTH (FOLDER: CalendarApp)
+   10. COMMON DATABASE SYNC PROVIDERS (SERVER & GOOGLE DRIVE)
    ========================================================================== */
+
+function initSyncProvider() {
+  updateBadge('Local SQLite Active', false);
+  updateServerUIStatus(true);
+}
+
+function toggleSyncSectionsUI() {}
+
+function triggerAutoSync() {}
+
+function updateServerUIStatus(isConnected) {
+  const syncStatusText = document.getElementById('syncStatusText');
+  const syncDriveIcon = document.getElementById('syncDriveIcon');
+  if (syncStatusText) syncStatusText.textContent = 'Backup & Restore';
+  if (syncDriveIcon) {
+    syncDriveIcon.className = 'fa-solid fa-database';
+    syncDriveIcon.style.color = '#38bdf8';
+  }
+}
+
+function extractLocalDbPayload() {
+  const payload = {
+    daily_transactions: [],
+    daily_notes: [],
+    schedules: [],
+    schedule_tags: []
+  };
+
+  if (!db) return payload;
+
+  try {
+    const tRes = db.exec("SELECT * FROM daily_transactions");
+    if (tRes && tRes.length > 0) payload.daily_transactions = rowsToObjects(tRes[0]);
+  } catch (e) {}
+
+  try {
+    const nRes = db.exec("SELECT * FROM daily_notes");
+    if (nRes && nRes.length > 0) payload.daily_notes = rowsToObjects(nRes[0]);
+  } catch (e) {}
+
+  try {
+    const sRes = db.exec("SELECT * FROM schedules");
+    if (sRes && sRes.length > 0) payload.schedules = rowsToObjects(sRes[0]);
+  } catch (e) {}
+
+  try {
+    const stRes = db.exec("SELECT * FROM schedule_tags");
+    if (stRes && stRes.length > 0) payload.schedule_tags = rowsToObjects(stRes[0]);
+  } catch (e) {}
+
+  return payload;
+}
+
+function insertRowsDynamic(tableName, rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return;
+  try {
+    const sample = rows[0];
+    const keys = Object.keys(sample).filter(k => k !== 'tag_data');
+    if (keys.length === 0) return;
+
+    keys.forEach(k => {
+      try { db.run(`ALTER TABLE ${tableName} ADD COLUMN ${k};`); } catch(e) {}
+    });
+
+    const placeholders = keys.map(() => '?').join(', ');
+    const sql = `INSERT OR REPLACE INTO ${tableName} (${keys.join(', ')}) VALUES (${placeholders})`;
+    const stmt = db.prepare(sql);
+
+    rows.forEach(r => {
+      const values = keys.map(k => r[k] !== undefined ? r[k] : null);
+      stmt.run(values);
+    });
+    stmt.free();
+  } catch (err) {
+    console.warn(`Error inserting rows into ${tableName}:`, err);
+  }
+}
+
+function repopulateLocalDbFromJson(data) {
+  if (!db || !data) return;
+  
+  db.run("DELETE FROM schedule_tags;");
+  db.run("DELETE FROM schedules;");
+  db.run("DELETE FROM tag_field_definitions;");
+  db.run("DELETE FROM tags;");
+  db.run("DELETE FROM tag_categories;");
+  db.run("DELETE FROM daily_notes;");
+  db.run("DELETE FROM daily_transactions;");
+
+  ensureSchemaUpToDate();
+
+  if (Array.isArray(data.tag_categories)) insertRowsDynamic('tag_categories', data.tag_categories);
+  if (Array.isArray(data.tags)) insertRowsDynamic('tags', data.tags);
+  if (Array.isArray(data.tag_field_definitions)) insertRowsDynamic('tag_field_definitions', data.tag_field_definitions);
+  if (Array.isArray(data.schedules)) insertRowsDynamic('schedules', data.schedules);
+  if (Array.isArray(data.schedule_tags)) insertRowsDynamic('schedule_tags', data.schedule_tags);
+  if (Array.isArray(data.daily_notes)) insertRowsDynamic('daily_notes', data.daily_notes);
+  if (Array.isArray(data.daily_transactions)) insertRowsDynamic('daily_transactions', data.daily_transactions);
+}
+
+function getLocalClientDataForSync() {
+  const clientData = {
+    daily_transactions: [],
+    daily_notes: [],
+    schedules: [],
+    schedule_tags: []
+  };
+
+  if (!db) return clientData;
+
+  try {
+    const resTx = db.exec("SELECT * FROM daily_transactions");
+    if (resTx && resTx.length > 0) clientData.daily_transactions = rowsToObjects(resTx[0]);
+
+    const resNt = db.exec("SELECT * FROM daily_notes");
+    if (resNt && resNt.length > 0) clientData.daily_notes = rowsToObjects(resNt[0]);
+
+    const resSch = db.exec("SELECT * FROM schedules");
+    if (resSch && resSch.length > 0) clientData.schedules = rowsToObjects(resSch[0]);
+
+    const resSt = db.exec("SELECT * FROM schedule_tags");
+    if (resSt && resSt.length > 0) clientData.schedule_tags = rowsToObjects(resSt[0]);
+  } catch (e) {
+    console.warn("Error collecting local client data for sync:", e);
+  }
+
+  return clientData;
+}
+
+async function syncWithServerOnLaunch(isUserTriggered = false) {
+  if (isUserTriggered) {
+    showToast('Local database active (IndexedDB)', 'info', 2500);
+  }
+}
+
+function formatFullDateTime(ts) {
+  if (!ts) return 'Not recorded';
+  const d = new Date(Number(ts));
+  if (isNaN(d.getTime())) return 'Invalid date';
+  
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const day = String(d.getDate()).padStart(2, '0');
+  const monthStr = months[d.getMonth()];
+  const year = d.getFullYear();
+  
+  let hours = d.getHours();
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12;
+  hours = hours ? hours : 12;
+  const hoursStr = String(hours).padStart(2, '0');
+  const mins = String(d.getMinutes()).padStart(2, '0');
+  const secs = String(d.getSeconds()).padStart(2, '0');
+
+  return `${day}-${monthStr}-${year}, ${hoursStr}:${mins}:${secs} ${ampm}`;
+}
+
+async function openServerSyncModal() {
+  const modal = document.getElementById('serverSyncModal');
+  if (!modal) return;
+  modal.classList.remove('hidden');
+
+  const banner = document.getElementById('syncRecommendationBanner');
+  const sCountsEl = document.getElementById('serverDbCounts');
+  const sTimeEl = document.getElementById('serverDbTime');
+
+  if (banner) {
+    banner.innerHTML = '💾 <strong>Local Single-Device Database Active</strong><br>All schedules, notes, and transactions are stored locally on this device in private IndexedDB storage.';
+    banner.style.background = 'rgba(16, 185, 129, 0.15)';
+    banner.style.borderColor = '#10b981';
+    banner.style.color = '#6ee7b7';
+  }
+
+  let localSchCount = 0;
+  let localTxCount = 0;
+  let localNtCount = 0;
+  let localTagCount = 0;
+  if (db) {
+    try {
+      const r0 = db.exec("SELECT COUNT(*) FROM schedules");
+      if (r0.length > 0) localSchCount = r0[0].values[0][0];
+      const r1 = db.exec("SELECT COUNT(*) FROM daily_transactions");
+      if (r1.length > 0) localTxCount = r1[0].values[0][0];
+      const r2 = db.exec("SELECT COUNT(*) FROM daily_notes");
+      if (r2.length > 0) localNtCount = r2[0].values[0][0];
+      const r3 = db.exec("SELECT COUNT(*) FROM tags");
+      if (r3.length > 0) localTagCount = r3[0].values[0][0];
+    } catch (e) {}
+  }
+
+  if (sCountsEl) {
+    sCountsEl.textContent = `${localSchCount} schedules, ${localTxCount} txns, ${localNtCount} notes, ${localTagCount} tags`;
+  }
+  const lastMod = localStorage.getItem('srg_db_last_modified');
+  if (sTimeEl) {
+    sTimeEl.textContent = lastMod ? formatFullDateTime(parseInt(lastMod, 10)) : 'Just now';
+  }
+
+  await renderLocalSnapshotsList();
+
+  const delAllBtn = document.getElementById('deleteAllBackupsBtn');
+  if (delAllBtn) {
+    delAllBtn.onclick = async () => {
+      if (confirm('⚠️ Are you sure you want to clean up all old local snapshots?')) {
+        await deleteAllLocalDbSnapshots();
+        showToast('All local snapshots cleaned up!', 'info', 3000);
+        await renderLocalSnapshotsList();
+      }
+    };
+  }
+}
+
+async function renderLocalSnapshotsList() {
+  const backupsContainer = document.getElementById('serverBackupsList');
+  if (!backupsContainer) return;
+  const snapshots = await listLocalDbSnapshots();
+  if (snapshots.length === 0) {
+    backupsContainer.innerHTML = '<div style="color:var(--text-muted); font-size:0.8rem; text-align:center; padding:10px;">No snapshots saved yet. Snapshots are auto-created during backup/restore.</div>';
+    return;
+  }
+  backupsContainer.innerHTML = '';
+  snapshots.forEach(s => {
+    const div = document.createElement('div');
+    div.style.cssText = 'display:flex; justify-content:space-between; align-items:center; background:var(--bg-primary); padding:8px 10px; border-radius:6px; font-size:0.8rem; border:1px solid var(--border-color);';
+    const dtStr = formatFullDateTime(s.timestamp);
+    const szStr = (s.size / 1024).toFixed(1) + ' KB';
+    div.innerHTML = `
+      <div>
+        <div style="font-weight:600; color:var(--text-main); font-size:0.78rem;">${escapeHtml(s.label || s.name)}</div>
+        <div style="font-size:0.72rem; color:var(--text-muted);">${dtStr} • ${szStr}</div>
+      </div>
+      <button class="btn-secondary btn-sm restore-snapshot-btn" data-id="${s.id}" style="padding:3px 8px; font-size:0.75rem;"><i class="fa-solid fa-rotate-left"></i> Restore</button>
+    `;
+    backupsContainer.appendChild(div);
+  });
+
+  backupsContainer.querySelectorAll('.restore-snapshot-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const snapId = Number(btn.dataset.id);
+      if (confirm('Restore this local database snapshot? Your current unsaved state will be backed up.')) {
+        await restoreLocalDbSnapshot(snapId);
+      }
+    });
+  });
+}
+
+function closeServerSyncModal() {
+  const modal = document.getElementById('serverSyncModal');
+  if (modal) modal.classList.add('hidden');
+}
+
+async function forcePushLocalDbToServer() {
+  closeServerSyncModal();
+}
+
+async function forcePullServerDbToLocal() {
+  closeServerSyncModal();
+}
+
+async function purgeLocalDatabase() {
+  if (!confirm("⚠️ Are you sure you want to PURGE the local database on this device?\n\nThis will wipe all locally stored schedules, notes, and transactions.")) {
+    return;
+  }
+
+  try {
+    // 1. Delete IndexedDB
+    indexedDB.deleteDatabase('SRGCalendarDB');
+    
+    // 2. Clear localStorage sync keys
+    localStorage.removeItem('srg_db_last_modified');
+
+    // 3. Reset in-memory SQLite database
+    db = new SQL.Database();
+    ensureSchemaUpToDate();
+    await saveDbToIndexedDB();
+
+    loadMasterDataFromDb();
+    populateTitlesDatalist();
+    renderCurrentView();
+
+    showToast('Local database reset to fresh clean state!', 'info', 4000);
+    closeServerSyncModal();
+  } catch (err) {
+    showToast('Error purging local database: ' + err.message, 'error', 5000);
+  }
+}
+
+async function uploadDbToServer(isSilent = false) {
+  if (!isSilent) showToast('Local DB mode: All data is saved on this device.', 'info');
+}
+
+async function downloadDbFromServer(isSilent = false) {
+  // Pure local mode
+}
+
+/* --------------------------------------------------------------------------
+   10B. GOOGLE DRIVE SYNC & OAUTH (FOLDER: CalendarApp)
+   -------------------------------------------------------------------------- */
 
 const DRIVE_FILE_NAME = 'SRG_Calendar.db';
 const DRIVE_FOLDER_NAME = 'CalendarApp';
 
 function initGoogleDriveAuth() {
-  document.getElementById('gdriveClientIdInput').value = gdriveClientId;
+  const clientIdInput = document.getElementById('gdriveClientIdInput');
+  if (clientIdInput) clientIdInput.value = gdriveClientId;
+
+  if (typeof google === 'undefined' || !google.accounts || !google.accounts.oauth2) {
+    console.log('Google Identity Services SDK initializing...');
+    setTimeout(initGoogleDriveAuth, 400);
+    return;
+  }
+
+  try {
+    tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: gdriveClientId,
+      scope: 'https://www.googleapis.com/auth/drive.file',
+      callback: async (tokenResponse) => {
+        if (tokenResponse.error) {
+          console.warn('GIS Auth Error:', tokenResponse);
+          if (isManualSignIn) {
+            showToast('Google Drive authentication failed: ' + (tokenResponse.error_description || tokenResponse.error), 'error');
+          }
+          updateDriveUIStatus(false);
+          return;
+        }
+
+        if (tokenResponse && tokenResponse.access_token) {
+          gdriveToken = tokenResponse.access_token;
+          const expiresInSec = tokenResponse.expires_in || 3600;
+          const expiresAt = Date.now() + (expiresInSec * 1000) - (60 * 1000); // 1 min buffer
+
+          localStorage.setItem('srg_gdrive_access_token', gdriveToken);
+          localStorage.setItem('srg_gdrive_token_expires_at', expiresAt.toString());
+          localStorage.setItem('srg_gdrive_auto_sync', 'true');
+
+          updateDriveUIStatus(true);
+
+          if (isManualSignIn) {
+            showToast('Connected to Google Account successfully!', 'success');
+          }
+
+          await syncWithDriveOnLaunch(isManualSignIn);
+        }
+      }
+    });
+
+    // Persistent Login Check
+    const autoSync = localStorage.getItem('srg_gdrive_auto_sync') === 'true';
+    const savedToken = localStorage.getItem('srg_gdrive_access_token');
+    const expiresAt = parseInt(localStorage.getItem('srg_gdrive_token_expires_at') || '0');
+
+    if (autoSync && savedToken && Date.now() < expiresAt) {
+      gdriveToken = savedToken;
+      updateDriveUIStatus(true);
+      syncWithDriveOnLaunch(false);
+    } else if (autoSync) {
+      console.log('Refreshing Google Drive access token silently...');
+      isManualSignIn = false;
+      tokenClient.requestAccessToken({ prompt: '' });
+    }
+  } catch (err) {
+    console.error('Error initializing Google Drive Token Client:', err);
+  }
+}
+
+function updateDriveUIStatus(isConnected) {
+  const badge = document.getElementById('gdriveStatusBadge');
+  const uploadBtn = document.getElementById('gdriveUploadNowBtn');
+  const downloadBtn = document.getElementById('gdriveDownloadNowBtn');
+  const signInBtn = document.getElementById('gdriveSignInBtn');
+  const disconnectBtn = document.getElementById('gdriveDisconnectBtn');
+  const syncStatusText = document.getElementById('syncStatusText');
+
+  if (isConnected) {
+    if (badge) {
+      badge.textContent = 'Connected';
+      badge.className = 'status-pill status-connected';
+    }
+    if (uploadBtn) uploadBtn.disabled = false;
+    if (downloadBtn) downloadBtn.disabled = false;
+    if (signInBtn) signInBtn.classList.add('hidden');
+    if (disconnectBtn) disconnectBtn.classList.remove('hidden');
+    if (syncStatusText) syncStatusText.textContent = 'Drive Connected';
+    updateBadge('Drive Synced ✓', true);
+  } else {
+    if (badge) {
+      badge.textContent = 'Not Connected';
+      badge.className = 'status-pill status-disconnected';
+    }
+    if (uploadBtn) uploadBtn.disabled = true;
+    if (downloadBtn) downloadBtn.disabled = true;
+    if (signInBtn) signInBtn.classList.remove('hidden');
+    if (disconnectBtn) disconnectBtn.classList.add('hidden');
+    if (syncStatusText) syncStatusText.textContent = 'Drive Sync';
+    updateBadge('Offline Local DB', false);
+  }
+}
+
+function setSyncButtonSpinner(isSyncing) {
+  const icon = document.getElementById('syncDriveIcon');
+  if (icon) {
+    if (isSyncing) {
+      icon.className = 'fa-solid fa-spinner fa-spin';
+    } else {
+      icon.className = 'fa-brands fa-google-drive';
+    }
+  }
 }
 
 function handleSaveClientId() {
@@ -2298,7 +4350,7 @@ function handleSaveClientId() {
   if (val) {
     localStorage.setItem('srg_gdrive_client_id', val);
     gdriveClientId = val;
-    alert('Google Client ID saved! Now click "Connect Google Account".');
+    showToast('Google Client ID saved!', 'success');
   }
 }
 
@@ -2310,28 +4362,32 @@ function handleGoogleDriveSignIn() {
     localStorage.setItem('srg_gdrive_client_id', gdriveClientId);
   }
 
-  const tokenClient = google.accounts.oauth2.initTokenClient({
-    client_id: gdriveClientId,
-    scope: 'https://www.googleapis.com/auth/drive.file',
-    callback: async (tokenResponse) => {
-      if (tokenResponse && tokenResponse.access_token) {
-        gdriveToken = tokenResponse.access_token;
-        document.getElementById('gdriveStatusBadge').textContent = 'Connected';
-        document.getElementById('gdriveStatusBadge').className = 'status-pill status-connected';
-        document.getElementById('gdriveUploadNowBtn').disabled = false;
-        document.getElementById('gdriveDownloadNowBtn').disabled = false;
-        document.getElementById('syncStatusText').textContent = 'Drive Connected';
-        updateBadge('Drive Synced', true);
+  isManualSignIn = true;
+  if (!tokenClient) {
+    initGoogleDriveAuth();
+  }
 
-        await checkOrCreateDriveFile();
-      }
-    }
-  });
-
-  tokenClient.requestAccessToken({ prompt: 'consent' });
+  if (tokenClient) {
+    tokenClient.requestAccessToken({ prompt: 'select_account' });
+  } else {
+    showToast('Google Identity Services SDK loading... Please retry in a moment.', 'warning');
+  }
 }
 
-async function checkOrCreateDriveFile() {
+function handleGoogleDriveDisconnect() {
+  if (confirm('Disconnect Google Drive sync? You can reconnect anytime.')) {
+    gdriveToken = null;
+    gdriveFileId = null;
+    gdriveFolderId = null;
+    localStorage.removeItem('srg_gdrive_access_token');
+    localStorage.removeItem('srg_gdrive_token_expires_at');
+    localStorage.removeItem('srg_gdrive_auto_sync');
+    updateDriveUIStatus(false);
+    showToast('Disconnected from Google Drive.', 'info');
+  }
+}
+
+async function getOrCreateDriveFolder() {
   try {
     const folderSearchUrl = `https://www.googleapis.com/drive/v3/files?q=name='${DRIVE_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
     const fRes = await fetch(folderSearchUrl, {
@@ -2339,8 +4395,7 @@ async function checkOrCreateDriveFile() {
     });
     const fData = await fRes.json();
     if (fData.files && fData.files.length > 0) {
-      gdriveFolderId = fData.files[0].id;
-      console.log('Found CalendarApp folder:', gdriveFolderId);
+      return fData.files[0].id;
     } else {
       const createFolderRes = await fetch('https://www.googleapis.com/drive/v3/files', {
         method: 'POST',
@@ -2354,41 +4409,97 @@ async function checkOrCreateDriveFile() {
         })
       });
       const newFolder = await createFolderRes.json();
-      gdriveFolderId = newFolder.id;
-      console.log('Created CalendarApp folder:', gdriveFolderId);
+      return newFolder.id;
     }
+  } catch (err) {
+    console.error('Folder creation error:', err);
+    return null;
+  }
+}
 
-    const fileSearchUrl = `https://www.googleapis.com/drive/v3/files?q=name='${DRIVE_FILE_NAME}' and trashed=false`;
+async function getDriveFileMeta() {
+  try {
+    const fileSearchUrl = `https://www.googleapis.com/drive/v3/files?q=name='${DRIVE_FILE_NAME}' and trashed=false&fields=files(id,name,modifiedTime,size)`;
     const res = await fetch(fileSearchUrl, {
       headers: { Authorization: `Bearer ${gdriveToken}` }
     });
     const data = await res.json();
     if (data.files && data.files.length > 0) {
-      gdriveFileId = data.files[0].id;
-      console.log('Found existing Google Drive calendar file:', gdriveFileId);
-      
-      if (gdriveFolderId) {
-        fetch(`https://www.googleapis.com/drive/v3/files/${gdriveFileId}?addParents=${gdriveFolderId}`, {
-          method: 'PATCH',
-          headers: { Authorization: `Bearer ${gdriveToken}` }
-        }).catch(err => console.log('Folder move notice:', err));
-      }
-
-      await uploadDbToDrive();
-    } else {
-      console.log('Uploading DB into CalendarApp folder...');
-      await uploadDbToDrive();
+      return data.files[0];
     }
+    return null;
   } catch (err) {
-    console.error('Drive file check error:', err);
+    console.error('File search error:', err);
+    return null;
   }
 }
 
-async function uploadDbToDrive() {
-  if (!gdriveToken || !db) return;
+async function syncWithDriveOnLaunch(isUserTriggered = false) {
+  if (!gdriveToken) return;
+
+  const activeToast = isUserTriggered ? showToast('Syncing with Google Drive...', 'loading', 0) : null;
+  setSyncButtonSpinner(true);
+
+  try {
+    if (!gdriveFolderId) {
+      gdriveFolderId = await getOrCreateDriveFolder();
+    }
+
+    const fileMeta = await getDriveFileMeta();
+
+    if (fileMeta) {
+      gdriveFileId = fileMeta.id;
+      const remoteModifiedTime = new Date(fileMeta.modifiedTime).getTime();
+      const localLastModified = parseInt(localStorage.getItem('srg_db_last_modified') || '0');
+
+      if (remoteModifiedTime > localLastModified + 3000) {
+        console.log('Remote Drive database is newer. Downloading to update local app...');
+        await downloadDbFromDrive(true);
+        if (activeToast) dismissToast(activeToast);
+        showToast('Downloaded latest database from Google Drive!', 'success', 4000);
+      } else {
+        console.log('Local DB is up to date or newer. Uploading to Drive...');
+        await uploadDbToDrive(true);
+        if (activeToast) dismissToast(activeToast);
+        if (isUserTriggered) {
+          showToast('Google Drive synced! (Database is up to date)', 'success', 3500);
+        }
+      }
+    } else {
+      console.log('File not found on Drive. Creating initial database upload...');
+      await uploadDbToDrive(true);
+      if (activeToast) dismissToast(activeToast);
+      showToast('Database uploaded to Google Drive!', 'success', 4000);
+    }
+  } catch (err) {
+    console.error('Launch sync error:', err);
+    if (activeToast) dismissToast(activeToast);
+    if (isUserTriggered) {
+      showToast('Drive sync error: ' + err.message, 'error', 5000);
+    }
+  } finally {
+    setSyncButtonSpinner(false);
+  }
+}
+
+async function uploadDbToDrive(isSilent = false) {
+  if (!gdriveToken || !db) {
+    if (!isSilent) showToast('Google Drive is not connected.', 'warning');
+    return;
+  }
+
+  let loadingToast = null;
+  if (!isSilent) {
+    loadingToast = showToast('Uploading database to Google Drive...', 'loading', 0);
+  }
+  setSyncButtonSpinner(true);
   updateBadge('Uploading to Drive...', true);
 
   try {
+    if (!gdriveFolderId) {
+      gdriveFolderId = await getOrCreateDriveFolder();
+    }
+
     const binaryData = db.export();
     const metadata = {
       name: DRIVE_FILE_NAME,
@@ -2402,11 +4513,11 @@ async function uploadDbToDrive() {
     form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
     form.append('file', new Blob([binaryData], { type: 'application/x-sqlite3' }));
 
-    let url = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
+    let url = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,modifiedTime';
     let method = 'POST';
 
     if (gdriveFileId) {
-      url = `https://www.googleapis.com/upload/drive/v3/files/${gdriveFileId}?uploadType=multipart`;
+      url = `https://www.googleapis.com/upload/drive/v3/files/${gdriveFileId}?uploadType=multipart&fields=id,modifiedTime`;
       if (gdriveFolderId) {
         url += `&addParents=${gdriveFolderId}`;
       }
@@ -2422,44 +4533,92 @@ async function uploadDbToDrive() {
     const result = await res.json();
     if (result.id) {
       gdriveFileId = result.id;
+      const modTime = result.modifiedTime ? new Date(result.modifiedTime).getTime() : Date.now();
+      localStorage.setItem('srg_db_last_modified', modTime.toString());
+
       updateBadge('Drive Synced ✓', true);
+      if (loadingToast) dismissToast(loadingToast);
+      if (!isSilent) {
+        showToast('Database successfully uploaded to Google Drive!', 'success', 3500);
+      }
       console.log('Uploaded DB to Google Drive (CalendarApp folder) successfully!');
+    } else {
+      throw new Error(result.error ? result.error.message : 'Unknown upload error');
     }
   } catch (err) {
     console.error('Failed to upload to Google Drive:', err);
     updateBadge('Drive Upload Failed', false);
+    if (loadingToast) dismissToast(loadingToast);
+    if (!isSilent) {
+      showToast('Failed to upload to Google Drive: ' + err.message, 'error', 5000);
+    }
+  } finally {
+    setSyncButtonSpinner(false);
   }
 }
 
-async function downloadDbFromDrive() {
-  if (!gdriveToken || !gdriveFileId) return;
+async function downloadDbFromDrive(isSilent = false) {
+  if (!gdriveToken) {
+    if (!isSilent) showToast('Google Drive is not connected.', 'warning');
+    return;
+  }
+
+  let loadingToast = null;
+  if (!isSilent) {
+    loadingToast = showToast('Pulling latest database from Google Drive...', 'loading', 0);
+  }
+  setSyncButtonSpinner(true);
   updateBadge('Pulling from Drive...', true);
 
   try {
+    if (!gdriveFileId) {
+      const fileMeta = await getDriveFileMeta();
+      if (fileMeta) {
+        gdriveFileId = fileMeta.id;
+      } else {
+        throw new Error('Database file not found on Google Drive.');
+      }
+    }
+
     const res = await fetch(`https://www.googleapis.com/drive/v3/files/${gdriveFileId}?alt=media`, {
       headers: { Authorization: `Bearer ${gdriveToken}` }
     });
+
+    if (!res.ok) {
+      throw new Error(`HTTP error ${res.status}: ${res.statusText}`);
+    }
+
     const arrayBuffer = await res.arrayBuffer();
     const u8 = new Uint8Array(arrayBuffer);
 
     db = new SQL.Database(u8);
+    ensureSchemaUpToDate();
     await saveDbToIndexedDB();
+
+    const nowTime = Date.now().toString();
+    localStorage.setItem('srg_db_last_modified', nowTime);
+
     loadMasterDataFromDb();
+    populateTitlesDatalist();
     renderCurrentView();
 
     updateBadge('Drive Synced ✓', true);
-    alert('Successfully updated local database from Google Drive single source of truth!');
+    if (loadingToast) dismissToast(loadingToast);
+    if (!isSilent) {
+      showToast('Latest database downloaded from Google Drive!', 'success', 3500);
+    }
   } catch (err) {
     console.error('Failed to download from Drive:', err);
-    alert('Error pulling file from Google Drive: ' + err.message);
+    updateBadge('Drive Download Failed', false);
+    if (loadingToast) dismissToast(loadingToast);
+    if (!isSilent) {
+      showToast('Failed to pull from Google Drive: ' + err.message, 'error', 5000);
+    }
+  } finally {
+    setSyncButtonSpinner(false);
   }
 }
 
-function triggerAutoDriveSync() {
-  if (gdriveToken && gdriveFileId) {
-    uploadDbToDrive();
-  }
-}
 
 /* ==========================================================================
    11. BACKUP & EXPORT
@@ -2473,6 +4632,7 @@ function exportSqliteFile() {
   a.href = URL.createObjectURL(blob);
   a.download = `SRG_Calendar_${formatDateYMD(new Date())}.db`;
   a.click();
+  showToast('Database backup downloaded as .db file!', 'success', 3500);
 }
 
 function importSqliteFile(e) {
@@ -2489,10 +4649,10 @@ function importSqliteFile(e) {
       loadMasterDataFromDb();
       populateTitlesDatalist();
       renderCurrentView();
-      triggerAutoDriveSync();
-      alert('SQLite database imported successfully!');
+      triggerAutoSync();
+      showToast('SQLite database restored successfully!', 'success', 4000);
     } catch (err) {
-      alert('Error parsing SQLite file: ' + err.message);
+      showToast('Error parsing SQLite backup file: ' + err.message, 'error', 5000);
     }
   };
   reader.readAsArrayBuffer(file);
@@ -2547,6 +4707,201 @@ function setupUIEventListeners() {
     });
   }
 
+  // Theme Switcher, Reset Cache & Security Lock buttons
+  const themeToggleBtn = document.getElementById('themeToggleBtn');
+  if (themeToggleBtn) {
+    themeToggleBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      toggleAppTheme();
+    });
+  }
+
+  const resetCacheBtn = document.getElementById('resetCacheBtn');
+  if (resetCacheBtn) {
+    resetCacheBtn.addEventListener('click', () => {
+      if (confirm('This will purge browser caches and reload the latest version of SRG Calendar. Continue?')) {
+        if ('caches' in window) {
+          caches.keys().then(names => {
+            Promise.all(names.map(name => caches.delete(name))).then(() => {
+              location.reload(true);
+            });
+          });
+        } else {
+          location.reload(true);
+        }
+      }
+    });
+  }
+
+  const lockAppBtn = document.getElementById('lockAppBtn');
+  if (lockAppBtn) {
+    lockAppBtn.addEventListener('click', lockAppSecurity);
+  }
+
+  // About Modal Event Listeners
+  const openAboutBtn = document.getElementById('openAboutBtn');
+  if (openAboutBtn) {
+    openAboutBtn.addEventListener('click', openAboutModal);
+  }
+
+  const closeAboutModalBtn = document.getElementById('closeAboutModalBtn');
+  if (closeAboutModalBtn) {
+    closeAboutModalBtn.addEventListener('click', closeAboutModal);
+  }
+
+  const closeAboutModalOkBtn = document.getElementById('closeAboutModalOkBtn');
+  if (closeAboutModalOkBtn) {
+    closeAboutModalOkBtn.addEventListener('click', closeAboutModal);
+  }
+
+  const aboutModal = document.getElementById('aboutModal');
+  if (aboutModal) {
+    aboutModal.addEventListener('click', (e) => {
+      if (e.target === aboutModal) {
+        closeAboutModal();
+      }
+    });
+  }
+
+  // Change PIN Modal Event Listeners
+  const openChangePinBtn = document.getElementById('openChangePinBtn');
+  if (openChangePinBtn) {
+    openChangePinBtn.addEventListener('click', openChangePinModal);
+  }
+
+  const openChangePinFromSyncBtn = document.getElementById('openChangePinFromSyncBtn');
+  if (openChangePinFromSyncBtn) {
+    openChangePinFromSyncBtn.addEventListener('click', () => {
+      closeServerSyncModal();
+      openChangePinModal();
+    });
+  }
+
+  const closeChangePinModalBtn = document.getElementById('closeChangePinModalBtn');
+  if (closeChangePinModalBtn) {
+    closeChangePinModalBtn.addEventListener('click', closeChangePinModal);
+  }
+
+  const cancelChangePinBtn = document.getElementById('cancelChangePinBtn');
+  if (cancelChangePinBtn) {
+    cancelChangePinBtn.addEventListener('click', closeChangePinModal);
+  }
+
+  const changePinForm = document.getElementById('changePinForm');
+  if (changePinForm) {
+    changePinForm.addEventListener('submit', handleChangePinSubmit);
+  }
+
+  const changePinModal = document.getElementById('changePinModal');
+  if (changePinModal) {
+    changePinModal.addEventListener('click', (e) => {
+      if (e.target === changePinModal) {
+        closeChangePinModal();
+      }
+    });
+  }
+
+  const unlockForm = document.getElementById('appUnlockForm');
+  if (unlockForm) {
+    unlockForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const enteredKey = document.getElementById('appLockKeyInput').value;
+      unlockAppWithKey(enteredKey);
+    });
+  }
+
+  // Header Note & Finance Buttons
+  const headerNoteBtn = document.getElementById('headerNoteBtn');
+  if (headerNoteBtn) {
+    headerNoteBtn.addEventListener('click', () => {
+      openDailyNoteModal(formatDateYMD(currentDate));
+    });
+  }
+
+  const headerFinanceBtn = document.getElementById('headerFinanceBtn');
+  if (headerFinanceBtn) {
+    headerFinanceBtn.addEventListener('click', () => {
+      openDailyFinanceModal(formatDateYMD(currentDate));
+    });
+  }
+
+  // Day View Note & Finance Buttons
+  const dayViewNoteBtn = document.getElementById('dayViewNoteBtn');
+  if (dayViewNoteBtn) {
+    dayViewNoteBtn.addEventListener('click', () => {
+      openDailyNoteModal(formatDateYMD(currentDate));
+    });
+  }
+
+  const dayViewFinanceBtn = document.getElementById('dayViewFinanceBtn');
+  if (dayViewFinanceBtn) {
+    dayViewFinanceBtn.addEventListener('click', () => {
+      openDailyFinanceModal(formatDateYMD(currentDate));
+    });
+  }
+
+  // Daily Note Modal Controls
+  const closeDailyNoteModalBtn = document.getElementById('closeDailyNoteModalBtn');
+  if (closeDailyNoteModalBtn) {
+    closeDailyNoteModalBtn.addEventListener('click', closeDailyNoteModal);
+  }
+  const cancelDailyNoteBtn = document.getElementById('cancelDailyNoteBtn');
+  if (cancelDailyNoteBtn) {
+    cancelDailyNoteBtn.addEventListener('click', closeDailyNoteModal);
+  }
+  const saveDailyNoteBtn = document.getElementById('saveDailyNoteBtn');
+  if (saveDailyNoteBtn) {
+    saveDailyNoteBtn.addEventListener('click', async () => {
+      const dateStr = document.getElementById('dailyNoteDateInput').value;
+      const content = document.getElementById('dailyNoteTextInput').value;
+      await saveDailyNote(dateStr, content);
+      closeDailyNoteModal();
+    });
+  }
+  const deleteDailyNoteBtn = document.getElementById('deleteDailyNoteBtn');
+  if (deleteDailyNoteBtn) {
+    deleteDailyNoteBtn.addEventListener('click', async () => {
+      const dateStr = document.getElementById('dailyNoteDateInput').value;
+      if (confirm('Are you sure you want to delete this daily note?')) {
+        await deleteDailyNote(dateStr);
+        closeDailyNoteModal();
+      }
+    });
+  }
+
+  // Attachment Viewer Modal Controls
+  const closeAttachmentViewerBtn = document.getElementById('closeAttachmentViewerBtn');
+  if (closeAttachmentViewerBtn) {
+    closeAttachmentViewerBtn.addEventListener('click', closeAttachmentViewer);
+  }
+
+  // Daily Finance Modal Controls
+  const closeDailyFinanceModalBtn = document.getElementById('closeDailyFinanceModalBtn');
+  if (closeDailyFinanceModalBtn) {
+    closeDailyFinanceModalBtn.addEventListener('click', closeDailyFinanceModal);
+  }
+  const resetFinanceFormBtn = document.getElementById('resetFinanceFormBtn');
+  if (resetFinanceFormBtn) {
+    resetFinanceFormBtn.addEventListener('click', resetFinanceForm);
+  }
+  const financeForm = document.getElementById('financeTxnForm');
+  if (financeForm) {
+    financeForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const txnData = {
+        id: document.getElementById('financeTxnId').value,
+        txn_date: document.getElementById('financeTxnDate').value,
+        type: document.getElementById('financeType').value,
+        amount: document.getElementById('financeAmount').value,
+        debit_account: document.getElementById('financeDebitAccount').value,
+        credit_account: document.getElementById('financeCreditAccount').value,
+        description: document.getElementById('financeDescription').value
+      };
+      await saveDailyTransaction(txnData);
+      resetFinanceForm();
+    });
+  }
+
   document.querySelectorAll('.view-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       switchToView(btn.dataset.view);
@@ -2561,6 +4916,13 @@ function setupUIEventListeners() {
   document.getElementById('agendaSearchInput').addEventListener('input', renderAgendaView);
   document.getElementById('modeFilter').addEventListener('change', renderAgendaView);
   document.getElementById('categoryFilter').addEventListener('change', renderAgendaView);
+  const agendaTodayBtn = document.getElementById('agendaTodayBtn');
+  if (agendaTodayBtn) {
+    agendaTodayBtn.addEventListener('click', () => {
+      currentDate = new Date();
+      renderAgendaView(true);
+    });
+  }
 
   // Modal events
   document.getElementById('closeScheduleModalBtn').addEventListener('click', closeScheduleModal);
@@ -2620,24 +4982,135 @@ function setupUIEventListeners() {
   document.getElementById('addTagBtn').addEventListener('click', handleAddTag);
   document.getElementById('addFieldBtn').addEventListener('click', handleAddField);
 
-  // Settings & Google Drive modal events
-  document.getElementById('openSettingsBtn').addEventListener('click', () => {
-    document.getElementById('settingsModal').classList.remove('hidden');
-  });
-  document.getElementById('closeSettingsBtn').addEventListener('click', () => {
-    document.getElementById('settingsModal').classList.add('hidden');
-  });
-  document.getElementById('syncDriveBtn').addEventListener('click', () => {
-    document.getElementById('settingsModal').classList.remove('hidden');
+  // Settings & Backup events
+  const openSettingsBtn = document.getElementById('openSettingsBtn');
+  if (openSettingsBtn) {
+    openSettingsBtn.addEventListener('click', openServerSyncModal);
+  }
+
+  const providerSelect = document.getElementById('syncProviderSelect');
+  if (providerSelect) {
+    providerSelect.addEventListener('change', (e) => {
+      syncProvider = e.target.value;
+      localStorage.setItem('srg_sync_provider', syncProvider);
+      toggleSyncSectionsUI();
+      if (syncProvider === 'server') {
+        syncWithServerOnLaunch(true);
+      } else if (syncProvider === 'gdrive') {
+        if (!gdriveToken) handleGoogleDriveSignIn();
+        else syncWithDriveOnLaunch(true);
+      } else {
+        updateBadge('Offline Local DB', false);
+      }
+    });
+  }
+
+  // Backup & Restore Header Button
+  const syncDriveBtn = document.getElementById('syncDriveBtn');
+  if (syncDriveBtn) {
+    syncDriveBtn.addEventListener('click', openServerSyncModal);
+  }
+
+  const closeServerSyncModalBtn = document.getElementById('closeServerSyncModalBtn');
+  if (closeServerSyncModalBtn) {
+    closeServerSyncModalBtn.addEventListener('click', closeServerSyncModal);
+  }
+
+  const forcePullBtn = document.getElementById('forcePullServerBtn');
+  if (forcePullBtn) {
+    forcePullBtn.addEventListener('click', forcePullServerDbToLocal);
+  }
+
+  const forcePushBtn = document.getElementById('forcePushLocalBtn');
+  if (forcePushBtn) {
+    forcePushBtn.addEventListener('click', forcePushLocalDbToServer);
+  }
+
+  const downloadBackupBtn = document.getElementById('downloadBackupBtn');
+  if (downloadBackupBtn) {
+    downloadBackupBtn.addEventListener('click', exportSqliteFile);
+  }
+
+  const purgeLocalDbBtn = document.getElementById('purgeLocalDbBtn');
+  if (purgeLocalDbBtn) {
+    purgeLocalDbBtn.addEventListener('click', purgeLocalDatabase);
+  }
+
+  const uploadRestoreBtn = document.getElementById('uploadRestoreBtn');
+  const restoreFileInput = document.getElementById('restoreFileInput');
+  if (uploadRestoreBtn && restoreFileInput) {
+    uploadRestoreBtn.addEventListener('click', () => restoreFileInput.click());
+    restoreFileInput.addEventListener('change', async (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+
+      if (!confirm(`⚠️ Are you sure you want to restore "${file.name}"?\n\nA safety snapshot of your current local database will be saved before restoring.`)) {
+        restoreFileInput.value = '';
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try {
+          const u8 = new Uint8Array(reader.result);
+          // Check SQLite format 3 header
+          const headerStr = String.fromCharCode(...u8.slice(0, 16));
+          if (!headerStr.startsWith('SQLite format 3')) {
+            throw new Error('Selected file is not a valid SQLite database.');
+          }
+
+          await saveLocalDbSnapshot('Pre-restore Safety Backup');
+
+          db = new SQL.Database(u8);
+          ensureSchemaUpToDate();
+          await saveDbToIndexedDB();
+
+          loadMasterDataFromDb();
+          populateTitlesDatalist();
+          renderCurrentView();
+          closeServerSyncModal();
+          showToast(`✓ Database successfully restored from ${file.name}!`, 'success', 5000);
+        } catch (err) {
+          console.error('Error restoring database:', err);
+          showToast('❌ Error restoring database: ' + err.message, 'error', 5000);
+        } finally {
+          restoreFileInput.value = '';
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    });
+  }
+
+  const exportDbBtn = document.getElementById('exportDbBtn');
+  if (exportDbBtn) {
+    exportDbBtn.addEventListener('click', exportSqliteFile);
+  }
+  const importDbInput = document.getElementById('importDbInput');
+  if (importDbInput) {
+    importDbInput.addEventListener('change', importSqliteFile);
+  }
+
+  // Auto sync when leaving / minimizing app
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden' && db) {
+      if (syncProvider === 'server') {
+        syncWithServerOnLaunch(false);
+      } else if (syncProvider === 'gdrive' && gdriveToken) {
+        uploadDbToDrive(true);
+      }
+    }
   });
 
-  document.getElementById('gdriveSignInBtn').addEventListener('click', handleGoogleDriveSignIn);
-  document.getElementById('gdriveUploadNowBtn').addEventListener('click', uploadDbToDrive);
-  document.getElementById('gdriveDownloadNowBtn').addEventListener('click', downloadDbFromDrive);
-  document.getElementById('saveClientIdBtn').addEventListener('click', handleSaveClientId);
-
-  document.getElementById('exportDbBtn').addEventListener('click', exportSqliteFile);
-  document.getElementById('importDbInput').addEventListener('change', importSqliteFile);
+  // Auto sync when network reconnects
+  window.addEventListener('online', () => {
+    if (syncProvider === 'server') {
+      showToast('Network reconnected! Syncing with rathinagiri.in...', 'info', 3000);
+      syncWithServerOnLaunch(false);
+    } else if (syncProvider === 'gdrive' && gdriveToken) {
+      showToast('Network reconnected! Syncing with Drive...', 'info', 3000);
+      syncWithDriveOnLaunch(false);
+    }
+  });
 
   // Schedule Details Modal Events
   document.getElementById('closeScheduleDetailsBtn').addEventListener('click', closeScheduleDetailsModal);
@@ -2645,7 +5118,70 @@ function setupUIEventListeners() {
   document.getElementById('detailsEditBtn').addEventListener('click', () => {
     const sch = activeViewingSchedule;
     closeScheduleDetailsModal();
-    if (sch) openScheduleModal(sch);
+    if (sch) {
+      const isTravel = sch.title && (sch.title.toLowerCase().startsWith('travel:') || sch.title.toLowerCase().startsWith('return travel:') || sch.title.toLowerCase().startsWith('travel arrival:') || sch.title.toLowerCase().startsWith('return travel arrival:') || sch.title.toLowerCase() === 'travel');
+      if (isTravel && sch.group_id) {
+        const res = db.exec("SELECT * FROM schedules WHERE group_id = ? AND title NOT LIKE 'Travel:%' AND title NOT LIKE 'Return Travel:%' AND title NOT LIKE 'Travel Arrival:%' AND title NOT LIKE 'Return Travel Arrival:%' LIMIT 1", [sch.group_id]);
+        if (res.length > 0) {
+          const parentSch = rowsToObjects(res[0])[0];
+          openScheduleModal(parentSch);
+          return;
+        }
+      }
+      openScheduleModal(sch);
+    }
+  });
+  const detailsDelBtn = document.getElementById('detailsDeleteBtn');
+  if (detailsDelBtn) {
+    detailsDelBtn.addEventListener('click', async () => {
+      const sch = activeViewingSchedule;
+      if (!sch) return;
+
+      closeScheduleDetailsModal();
+
+      if (sch.group_id) {
+        if (confirm(`⚠️ "${sch.title}" is connected to a Schedule/Batch Group. Delete the schedule and ALL attached travel plans?`)) {
+          await deleteBatchGroupById(sch.group_id);
+        }
+      } else {
+        if (confirm(`Delete schedule "${sch.title}"?`)) {
+          await deleteSingleScheduleById(sch.id);
+        }
+      }
+    });
+  }
+
+  // Reports & Statements Modal Controls
+  const openReportsBtn = document.getElementById('openReportsModalBtn');
+  if (openReportsBtn) {
+    openReportsBtn.addEventListener('click', openReportsModal);
+  }
+  const closeReportsBtn = document.getElementById('closeReportsModalBtn');
+  if (closeReportsBtn) {
+    closeReportsBtn.addEventListener('click', closeReportsModal);
+  }
+  const generateReportBtn = document.getElementById('generateReportBtn');
+  if (generateReportBtn) {
+    generateReportBtn.addEventListener('click', generateActiveReport);
+  }
+  const printReportBtn = document.getElementById('printReportBtn');
+  if (printReportBtn) {
+    printReportBtn.addEventListener('click', printCurrentReport);
+  }
+  document.querySelectorAll('.report-tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      switchReportTab(btn.dataset.report);
+    });
+  });
+  ['change', 'input'].forEach(evt => {
+    const fromD = document.getElementById('reportFromDate');
+    const toD = document.getElementById('reportToDate');
+    const acctS = document.getElementById('reportAccountSelect');
+    const tagS = document.getElementById('reportTagSelect');
+    if (fromD) fromD.addEventListener(evt, generateActiveReport);
+    if (toD) toD.addEventListener(evt, generateActiveReport);
+    if (acctS) acctS.addEventListener(evt, generateActiveReport);
+    if (tagS) tagS.addEventListener(evt, generateActiveReport);
   });
 }
 
@@ -2655,19 +5191,35 @@ function openScheduleDetailsModal(s) {
   if (!s) return;
   activeViewingSchedule = s;
 
-  const isTravel = s.title && (s.title.toLowerCase().startsWith('travel:') || s.title.toLowerCase().startsWith('return travel:') || s.title.toLowerCase() === 'travel');
+  const isTravelArr = s.title && (s.title.toLowerCase().startsWith('travel arrival:') || s.title.toLowerCase().startsWith('return travel arrival:'));
+  const isTravelDep = s.title && (s.title.toLowerCase().startsWith('travel:') || s.title.toLowerCase().startsWith('return travel:') || s.title.toLowerCase() === 'travel');
+  const isTravel = isTravelArr || isTravelDep;
+
   const headingEl = document.getElementById('detailsModalHeading');
-  headingEl.innerHTML = isTravel ? '<i class="fa-solid fa-train"></i> Travel Details' : '<i class="fa-solid fa-calendar-day"></i> Schedule Details';
+  const editBtn = document.getElementById('detailsEditBtn');
+  if (editBtn) {
+    editBtn.innerHTML = isTravel ? '<i class="fa-solid fa-pen-to-square"></i> Edit Main Schedule' : '<i class="fa-solid fa-pen-to-square"></i> Edit';
+  }
+
+  headingEl.innerHTML = isTravel ? '<i class="fa-solid fa-train"></i> Travel Plan Details' : '<i class="fa-solid fa-calendar-day"></i> Schedule Details';
 
   const body = document.getElementById('scheduleDetailsBody');
   body.innerHTML = '';
+
+  if (isTravel) {
+    const infoBanner = document.createElement('div');
+    infoBanner.className = 'travel-alert-banner';
+    infoBanner.style.cssText = 'padding: 10px; border-radius: 6px; font-size: 0.85rem; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;';
+    infoBanner.innerHTML = `<i class="fa-solid fa-circle-info" style="font-size: 1rem; color: #f59e0b;"></i> <span><strong>Attached Travel Plan:</strong> Travel plans are linked to your main program schedule. To edit travel details or remove this travel plan, edit the main program schedule.</span>`;
+    body.appendChild(infoBanner);
+  }
 
   // Title
   const titleItem = document.createElement('div');
   titleItem.className = 'schedule-detail-item';
   titleItem.innerHTML = `
     <span class="schedule-detail-label">Title</span>
-    <span class="schedule-detail-value" style="font-weight: 600; font-size: 1.05rem; color: #f8fafc;">${s.title}</span>
+    <span class="schedule-detail-value" style="font-weight: 600; font-size: 1.05rem; color: var(--text-main);">${escapeHtml(s.title)}</span>
   `;
   body.appendChild(titleItem);
 
@@ -2676,7 +5228,7 @@ function openScheduleDetailsModal(s) {
   dateTimeItem.className = 'schedule-detail-item';
   dateTimeItem.innerHTML = `
     <span class="schedule-detail-label">Date & Time</span>
-    <span class="schedule-detail-value">📅 ${formatDateIndian(s.schedule_date)} | ⏰ ${formatTimeRange(s.from_time, s.to_time)}</span>
+    <span class="schedule-detail-value"><i class="fa-solid fa-calendar-days"></i> ${formatDateIndian(s.schedule_date)} | <i class="fa-solid fa-clock"></i> ${formatTimeRange(s.from_time, s.to_time)}</span>
   `;
   body.appendChild(dateTimeItem);
 
@@ -2689,10 +5241,10 @@ function openScheduleDetailsModal(s) {
       <span class="chip-mode-badge ${s.delivery_mode}" style="font-size:0.75rem; padding: 2px 8px;">
         ${s.delivery_mode === 'online' ? '🌐 Online' : (s.delivery_mode === 'hybrid' ? '🔄 Hybrid' : '🏢 Offline')}
       </span>
-      <span style="font-size: 0.75rem; padding: 2px 8px; border-radius: 3px; background: rgba(255,255,255,0.1); color: #cbd5e1; font-weight: 600;">
-        Status: ${s.status ? s.status.toUpperCase() : 'CONFIRMED'}
+      <span style="font-size: 0.75rem; padding: 2px 8px; border-radius: 3px; background: var(--bg-tertiary); color: var(--text-main); border: 1px solid var(--border-color); font-weight: 600;">
+        Status: ${s.status ? escapeHtml(s.status.toUpperCase()) : 'CONFIRMED'}
       </span>
-      ${s.group_id ? '<span style="font-size: 0.75rem; padding: 2px 8px; border-radius: 3px; background: rgba(99,102,241,0.25); color: #a5b4fc; font-weight: 600;">👥 Batch Group</span>' : ''}
+      ${s.group_id ? '<span style="font-size: 0.75rem; padding: 2px 8px; border-radius: 3px; background: rgba(99,102,241,0.25); color: #818cf8; font-weight: 600;"><i class="fa-solid fa-layer-group"></i> Batch Group</span>' : ''}
     </div>
   `;
   body.appendChild(statusItem);
@@ -2703,7 +5255,7 @@ function openScheduleDetailsModal(s) {
     locItem.className = 'schedule-detail-item';
     locItem.innerHTML = `
       <span class="schedule-detail-label">Location / Route</span>
-      <span class="schedule-detail-value">📍 ${s.location}</span>
+      <span class="schedule-detail-value"><i class="fa-solid fa-location-dot"></i> ${escapeHtml(s.location)}</span>
     `;
     body.appendChild(locItem);
   }
@@ -2714,7 +5266,7 @@ function openScheduleDetailsModal(s) {
     tagsItem.className = 'schedule-detail-item';
     const tagBadges = s.tags.map(t => {
       const bg = t.color ? t.color + '40' : 'rgba(255,255,255,0.1)';
-      return `<span class="chip-tag-pill" style="background:${bg}; font-size:0.75rem; padding:3px 8px; border-radius:4px;">${t.name}</span>`;
+      return `<span class="chip-tag-pill" style="background:${bg}; font-size:0.75rem; padding:3px 8px; border-radius:4px;">${escapeHtml(t.name)}</span>`;
     }).join(' ');
     tagsItem.innerHTML = `
       <span class="schedule-detail-label">Tags</span>
@@ -2729,7 +5281,7 @@ function openScheduleDetailsModal(s) {
     notesItem.className = 'schedule-detail-item';
     notesItem.innerHTML = `
       <span class="schedule-detail-label">Notes & Travel Info</span>
-      <div class="schedule-detail-value" style="background: var(--bg-primary); padding: 10px; border-radius: 6px; font-size: 0.85rem; border: 1px solid var(--border-color); white-space: pre-wrap;">${s.notes}</div>
+      <div class="schedule-detail-value" style="background: var(--bg-primary); padding: 10px; border-radius: 6px; font-size: 0.85rem; border: 1px solid var(--border-color); white-space: pre-wrap;">${escapeHtml(s.notes)}</div>
     `;
     body.appendChild(notesItem);
   }
@@ -2751,19 +5303,12 @@ function openScheduleDetailsModal(s) {
         const attPill = document.createElement('div');
         attPill.className = 'travel-ticket-pill';
         attPill.style.cursor = 'pointer';
-        if (att.type && att.type.startsWith('image/')) {
-          attPill.innerHTML = `<img src="${att.data}" class="ticket-thumb-img"> <span>${att.name}</span>`;
-          attPill.addEventListener('click', () => {
-            const w = window.open('');
-            w.document.write(`<img src="${att.data}" style="max-width:100%; height:auto;">`);
-          });
-        } else {
-          attPill.innerHTML = `<i class="fa-solid fa-file-pdf"></i> <span>${att.name}</span>`;
-          attPill.addEventListener('click', () => {
-            const w = window.open('');
-            w.document.write(`<iframe src="${att.data}" style="width:100%; height:100vh; border:none;"></iframe>`);
-          });
-        }
+        const iconClass = (att.type && att.type.includes('pdf')) ? 'fa-file-pdf' : ((att.type && att.type.startsWith('image/')) ? 'fa-file-image' : 'fa-paperclip');
+        attPill.innerHTML = `<i class="fa-solid ${iconClass}"></i> <span>${escapeHtml(att.name || 'Attachment')}</span>`;
+        attPill.addEventListener('click', (e) => {
+          e.stopPropagation();
+          openAttachmentViewer(att);
+        });
         attContainer.appendChild(attPill);
       });
       attItem.appendChild(attContainer);
@@ -2777,4 +5322,1083 @@ function openScheduleDetailsModal(s) {
 function closeScheduleDetailsModal() {
   document.getElementById('scheduleDetailsModal').classList.add('hidden');
   activeViewingSchedule = null;
+}
+
+/* ==========================================================================
+   REPORTS & FINANCIAL STATEMENTS ENGINE
+   ========================================================================== */
+
+let activeReportType = 'free_days';
+
+function openReportsModal() {
+  const modal = document.getElementById('reportsModal');
+  if (!modal) return;
+  modal.classList.remove('hidden');
+
+  const fromInput = document.getElementById('reportFromDate');
+  const toInput = document.getElementById('reportToDate');
+
+  const now = currentDate || new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+  if (fromInput && !fromInput.value) {
+    fromInput.value = `${year}-${String(month + 1).padStart(2, '0')}-01`;
+  }
+  if (toInput && !toInput.value) {
+    toInput.value = `${year}-${String(month + 1).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`;
+  }
+
+  populateReportFilterOptions();
+  generateActiveReport();
+}
+
+function closeReportsModal() {
+  const modal = document.getElementById('reportsModal');
+  if (modal) modal.classList.add('hidden');
+}
+
+function populateReportFilterOptions() {
+  if (!db) return;
+
+  // 1. Populate Account Dropdown for Ledger Report
+  const acctSelect = document.getElementById('reportAccountSelect');
+  if (acctSelect) {
+    acctSelect.innerHTML = '';
+    const accts = new Set();
+    try {
+      const r1 = db.exec("SELECT DISTINCT debit_account FROM daily_transactions WHERE debit_account IS NOT NULL AND debit_account != ''");
+      if (r1.length > 0) r1[0].values.forEach(v => accts.add(v[0]));
+      const r2 = db.exec("SELECT DISTINCT credit_account FROM daily_transactions WHERE credit_account IS NOT NULL AND credit_account != ''");
+      if (r2.length > 0) r2[0].values.forEach(v => accts.add(v[0]));
+    } catch(e){}
+
+    const sortedAccts = Array.from(accts).sort();
+    if (sortedAccts.length === 0) {
+      acctSelect.innerHTML = '<option value="">No Accounts Found</option>';
+    } else {
+      sortedAccts.forEach(a => {
+        const opt = document.createElement('option');
+        opt.value = a;
+        opt.textContent = a;
+        acctSelect.appendChild(opt);
+      });
+    }
+  }
+
+  // 2. Populate Tag Select for Reports 4 & 5
+  const tagSelect = document.getElementById('reportTagSelect');
+  if (tagSelect) {
+    tagSelect.innerHTML = '<option value="all">All Tags</option>';
+    tagMasterTags.forEach(t => {
+      const opt = document.createElement('option');
+      opt.value = t.id;
+      opt.textContent = t.name;
+      tagSelect.appendChild(opt);
+    });
+  }
+}
+
+function switchReportTab(reportType) {
+  activeReportType = reportType;
+  document.querySelectorAll('.report-tab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.report === reportType);
+  });
+
+  const acctGroup = document.getElementById('reportAccountGroup');
+  const tagGroup = document.getElementById('reportTagGroup');
+
+  if (acctGroup) acctGroup.classList.toggle('hidden', reportType !== 'ledger');
+  if (tagGroup) tagGroup.classList.toggle('hidden', reportType !== 'schedules' && reportType !== 'ticket_cost' && reportType !== 'ticket_claim');
+
+  generateActiveReport();
+}
+
+function generateActiveReport() {
+  const container = document.getElementById('reportOutputContainer');
+  if (!container) return;
+
+  const fromDate = document.getElementById('reportFromDate').value;
+  const toDate = document.getElementById('reportToDate').value;
+
+  if (!fromDate || !toDate) {
+    container.innerHTML = '<div style="color:#fb7185; text-align:center; padding:30px;">Please select both From Date and To Date.</div>';
+    return;
+  }
+  if (fromDate > toDate) {
+    container.innerHTML = '<div style="color:#fb7185; text-align:center; padding:30px;">From Date cannot be later than To Date.</div>';
+    return;
+  }
+
+  if (activeReportType === 'free_days') {
+    renderFreeDaysReport(container, fromDate, toDate);
+  } else if (activeReportType === 'journal') {
+    renderJournalReport(container, fromDate, toDate);
+  } else if (activeReportType === 'ledger') {
+    renderLedgerReport(container, fromDate, toDate);
+  } else if (activeReportType === 'schedules') {
+    renderSchedulesReport(container, fromDate, toDate);
+  } else if (activeReportType === 'ticket_cost') {
+    renderTicketCostReport(container, fromDate, toDate);
+  } else if (activeReportType === 'ticket_claim') {
+    renderTicketClaimReport(container, fromDate, toDate);
+  }
+}
+
+function renderFreeDaysReport(container, fromDate, toDate) {
+  const d1 = new Date(fromDate + 'T00:00:00');
+  const d2 = new Date(toDate + 'T00:00:00');
+
+  const schedulesMap = getSchedulesMap(fromDate, toDate);
+  const freeDays = [];
+
+  for (let d = new Date(d1); d <= d2; d.setDate(d.getDate() + 1)) {
+    const dateYmd = formatDateYMD(d);
+    const daySchedules = schedulesMap[dateYmd] || [];
+
+    const nonTravel = daySchedules.filter(s => {
+      const titleLower = (s.title || '').toLowerCase();
+      return !titleLower.startsWith('travel') && !titleLower.startsWith('return travel');
+    });
+
+    const travelSchedules = daySchedules.filter(s => {
+      const titleLower = (s.title || '').toLowerCase();
+      return titleLower.startsWith('travel') || titleLower.startsWith('return travel');
+    });
+
+    if (nonTravel.length === 0) {
+      let placeStr = '';
+      if (travelSchedules.length > 0) {
+        placeStr = travelSchedules.map(t => t.location || t.title).join(', ');
+      }
+      freeDays.push({
+        dateYmd: dateYmd,
+        dateObj: new Date(d),
+        hasTravelOnly: travelSchedules.length > 0,
+        travelPlace: placeStr
+      });
+    }
+  }
+
+  if (freeDays.length === 0) {
+    container.innerHTML = `<div style="text-align:center; padding:40px; color:var(--text-muted);">No free days found between ${formatDateIndian(fromDate)} and ${formatDateIndian(toDate)}.</div>`;
+    return;
+  }
+
+  let html = `
+    <div style="margin-bottom:12px; display:flex; justify-content:space-between; align-items:center;">
+      <h4 style="margin:0; font-size:1rem; color:var(--text-main);"><i class="fa-solid fa-umbrella-beach" style="color:var(--accent-blue);"></i> Free Days List (${formatDateIndian(fromDate)} to ${formatDateIndian(toDate)})</h4>
+      <span style="font-size:0.85rem; color:var(--receipt-color); font-weight:600;">Total Free Days: ${freeDays.length}</span>
+    </div>
+    <table style="width:100%; border-collapse:collapse; font-size:0.88rem; text-align:left;">
+      <thead>
+        <tr style="background:var(--bg-tertiary); border-bottom:2px solid var(--border-color);">
+          <th style="padding:10px;">Date & Day</th>
+          <th style="padding:10px;">Tamil Day</th>
+          <th style="padding:10px;">Status / Remarks</th>
+          <th style="padding:10px;">Location / In-Transit Place</th>
+        </tr>
+      </thead>
+      <tbody>
+  `;
+
+  freeDays.forEach(f => {
+    const dStrInd = formatDateIndian(f.dateYmd);
+    const dayOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][f.dateObj.getDay()];
+    const tamilDay = TAMIL_DAYS[f.dateObj.getDay()];
+
+    let statusBadge = `<span style="color:var(--receipt-color); background:var(--badge-green-bg); border:1px solid var(--badge-green-border); padding:3px 8px; border-radius:4px; font-weight:600;">🟢 100% Free Day</span>`;
+    if (f.hasTravelOnly) {
+      statusBadge = `<span style="color:var(--accent-blue); background:var(--badge-blue-bg); border:1px solid var(--badge-blue-border); padding:3px 8px; border-radius:4px; font-weight:600;">🚆 Travel / In-Transit Only</span>`;
+    }
+
+    html += `
+      <tr style="border-bottom:1px solid var(--border-color);">
+        <td style="padding:10px; font-weight:600;">${dStrInd} (${dayOfWeek})</td>
+        <td style="padding:10px; color:var(--text-muted);">${tamilDay}</td>
+        <td style="padding:10px;">${statusBadge}</td>
+        <td style="padding:10px;">${f.travelPlace ? `📍 ${escapeHtml(f.travelPlace)}` : '-'}</td>
+      </tr>
+    `;
+  });
+
+  html += `</tbody></table>`;
+  container.innerHTML = html;
+}
+
+function renderJournalReport(container, fromDate, toDate) {
+  let txns = [];
+  try {
+    const res = db.exec("SELECT * FROM daily_transactions WHERE txn_date >= ? AND txn_date <= ? ORDER BY txn_date ASC, created_at ASC", [fromDate, toDate]);
+    if (res.length > 0) txns = rowsToObjects(res[0]);
+  } catch(e){}
+
+  if (txns.length === 0) {
+    container.innerHTML = `<div style="text-align:center; padding:40px; color:var(--text-muted);">No financial transactions found between ${formatDateIndian(fromDate)} and ${formatDateIndian(toDate)}.</div>`;
+    return;
+  }
+
+  let totalReceipts = 0;
+  let totalPayments = 0;
+  txns.forEach(t => {
+    if (t.type === 'receipt') totalReceipts += Number(t.amount || 0);
+    else totalPayments += Number(t.amount || 0);
+  });
+  const netFlow = totalReceipts - totalPayments;
+
+  let html = `
+    <div style="margin-bottom:14px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+      <h4 style="margin:0; font-size:1rem; color:var(--text-main);"><i class="fa-solid fa-book" style="color:var(--receipt-color);"></i> Journal Statement (${formatDateIndian(fromDate)} to ${formatDateIndian(toDate)})</h4>
+      <div style="font-size:0.85rem; display:flex; gap:12px;">
+        <span>Receipts: <strong style="color:var(--receipt-color);">₹${totalReceipts.toFixed(2)}</strong></span>
+        <span>Payments: <strong style="color:var(--payment-color);">₹${totalPayments.toFixed(2)}</strong></span>
+        <span>Net Flow: <strong style="color:${netFlow >= 0 ? 'var(--net-positive)' : 'var(--payment-color)'};">₹${netFlow.toFixed(2)}</strong></span>
+      </div>
+    </div>
+    <table style="width:100%; border-collapse:collapse; font-size:0.86rem; text-align:left;">
+      <thead>
+        <tr style="background:var(--bg-tertiary); border-bottom:2px solid var(--border-color);">
+          <th style="padding:8px 10px;">Date</th>
+          <th style="padding:8px 10px;">Type</th>
+          <th style="padding:8px 10px;">Debit Account (Dr)</th>
+          <th style="padding:8px 10px;">Credit Account (Cr)</th>
+          <th style="padding:8px 10px; text-align:right;">Amount (₹)</th>
+          <th style="padding:8px 10px;">Narration / Description</th>
+        </tr>
+      </thead>
+      <tbody>
+  `;
+
+  txns.forEach(t => {
+    const isReceipt = t.type === 'receipt';
+    html += `
+      <tr style="border-bottom:1px solid var(--border-color);">
+        <td style="padding:8px 10px; font-weight:600;">${formatDateIndian(t.txn_date)}</td>
+        <td style="padding:8px 10px;"><span style="color:${isReceipt ? 'var(--receipt-color)' : 'var(--payment-color)'}; font-weight:600;">${isReceipt ? '🟢 Receipt' : '🔴 Payment'}</span></td>
+        <td style="padding:8px 10px;">${escapeHtml(t.debit_account || '-')}</td>
+        <td style="padding:8px 10px;">${escapeHtml(t.credit_account || '-')}</td>
+        <td style="padding:8px 10px; text-align:right; font-weight:700; color:${isReceipt ? 'var(--receipt-color)' : 'var(--payment-color)'};">₹${Number(t.amount || 0).toFixed(2)}</td>
+        <td style="padding:8px 10px; color:var(--text-muted);">${escapeHtml(t.description || '-')}</td>
+      </tr>
+    `;
+  });
+
+  html += `</tbody></table>`;
+  container.innerHTML = html;
+}
+
+function renderLedgerReport(container, fromDate, toDate) {
+  const acctSelect = document.getElementById('reportAccountSelect');
+  const targetAccount = acctSelect ? acctSelect.value : '';
+
+  if (!targetAccount) {
+    container.innerHTML = `<div style="text-align:center; padding:40px; color:var(--text-muted);">Please select a particular account from the dropdown.</div>`;
+    return;
+  }
+
+  let txns = [];
+  try {
+    const res = db.exec("SELECT * FROM daily_transactions WHERE (debit_account = ? OR credit_account = ?) AND txn_date >= ? AND txn_date <= ? ORDER BY txn_date ASC, created_at ASC", [targetAccount, targetAccount, fromDate, toDate]);
+    if (res.length > 0) txns = rowsToObjects(res[0]);
+  } catch(e){}
+
+  if (txns.length === 0) {
+    container.innerHTML = `<div style="text-align:center; padding:40px; color:var(--text-muted);">No ledger entries found for account "${escapeHtml(targetAccount)}" between ${formatDateIndian(fromDate)} and ${formatDateIndian(toDate)}.</div>`;
+    return;
+  }
+
+  let totalDebit = 0;
+  let totalCredit = 0;
+  let runningBalance = 0;
+
+  let html = `
+    <div style="margin-bottom:14px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+      <h4 style="margin:0; font-size:1rem; color:var(--text-main);"><i class="fa-solid fa-scale-balanced" style="color:var(--badge-amber-text);"></i> Ledger Account: <strong style="color:var(--accent-blue);">${escapeHtml(targetAccount)}</strong></h4>
+      <span style="font-size:0.85rem; color:var(--text-muted);">${formatDateIndian(fromDate)} to ${formatDateIndian(toDate)}</span>
+    </div>
+    <table style="width:100%; border-collapse:collapse; font-size:0.86rem; text-align:left;">
+      <thead>
+        <tr style="background:var(--bg-tertiary); border-bottom:2px solid var(--border-color);">
+          <th style="padding:8px 10px;">Date</th>
+          <th style="padding:8px 10px;">Particulars / Contra Account</th>
+          <th style="padding:8px 10px; text-align:right;">Debit (Dr ₹)</th>
+          <th style="padding:8px 10px; text-align:right;">Credit (Cr ₹)</th>
+          <th style="padding:8px 10px; text-align:right;">Balance (₹)</th>
+          <th style="padding:8px 10px;">Narration</th>
+        </tr>
+      </thead>
+      <tbody>
+  `;
+
+  txns.forEach(t => {
+    let drAmt = 0;
+    let crAmt = 0;
+    let contraAcct = '';
+
+    if (t.debit_account === targetAccount) {
+      drAmt = Number(t.amount || 0);
+      contraAcct = 'To ' + (t.credit_account || 'Cash/Bank');
+      runningBalance += drAmt;
+      totalDebit += drAmt;
+    } else {
+      crAmt = Number(t.amount || 0);
+      contraAcct = 'By ' + (t.debit_account || 'Cash/Bank');
+      runningBalance -= crAmt;
+      totalCredit += crAmt;
+    }
+
+    html += `
+      <tr style="border-bottom:1px solid var(--border-color);">
+        <td style="padding:8px 10px; font-weight:600;">${formatDateIndian(t.txn_date)}</td>
+        <td style="padding:8px 10px; font-weight:600; color:var(--text-main);">${escapeHtml(contraAcct)}</td>
+        <td style="padding:8px 10px; text-align:right; color:var(--receipt-color);">${drAmt > 0 ? '₹' + drAmt.toFixed(2) : '-'}</td>
+        <td style="padding:8px 10px; text-align:right; color:var(--payment-color);">${crAmt > 0 ? '₹' + crAmt.toFixed(2) : '-'}</td>
+        <td style="padding:8px 10px; text-align:right; font-weight:700; color:${runningBalance >= 0 ? 'var(--net-positive)' : 'var(--payment-color)'};">₹${runningBalance.toFixed(2)}</td>
+        <td style="padding:8px 10px; color:var(--text-muted);">${escapeHtml(t.description || '-')}</td>
+      </tr>
+    `;
+  });
+
+  html += `
+      <tr style="background:var(--bg-tertiary); font-weight:700; border-top:2px solid var(--border-color);">
+        <td colspan="2" style="padding:10px;">TOTALS & CLOSING BALANCE</td>
+        <td style="padding:10px; text-align:right; color:var(--receipt-color);">Dr ₹${totalDebit.toFixed(2)}</td>
+        <td style="padding:10px; text-align:right; color:var(--payment-color);">Cr ₹${totalCredit.toFixed(2)}</td>
+        <td style="padding:10px; text-align:right; color:var(--net-positive);">₹${runningBalance.toFixed(2)}</td>
+        <td style="padding:10px;"></td>
+      </tr>
+    </tbody></table>
+  `;
+
+  container.innerHTML = html;
+}
+
+function renderSchedulesReport(container, fromDate, toDate) {
+  const tagSelect = document.getElementById('reportTagSelect');
+  const targetTagId = tagSelect ? tagSelect.value : 'all';
+
+  let schedulesMap = getSchedulesMap(fromDate, toDate);
+  let allSchs = [];
+
+  Object.keys(schedulesMap).forEach(d => {
+    schedulesMap[d].forEach(s => allSchs.push(s));
+  });
+
+  if (targetTagId !== 'all') {
+    allSchs = allSchs.filter(s => (s.tags || []).some(t => t.id === targetTagId));
+  }
+
+  if (allSchs.length === 0) {
+    container.innerHTML = `<div style="text-align:center; padding:40px; color:var(--text-muted);">No schedules found for the selected date range and tag filter.</div>`;
+    return;
+  }
+
+  let html = `
+    <div style="margin-bottom:14px; display:flex; justify-content:space-between; align-items:center;">
+      <h4 style="margin:0; font-size:1rem; color:var(--text-main);"><i class="fa-solid fa-calendar-check" style="color:var(--accent-blue);"></i> Schedule & Travel Report (${formatDateIndian(fromDate)} to ${formatDateIndian(toDate)})</h4>
+      <span style="font-size:0.85rem; color:var(--receipt-color); font-weight:600;">Total Schedules: ${allSchs.length}</span>
+    </div>
+    <div style="display:flex; flex-direction:column; gap:10px;">
+  `;
+
+  allSchs.forEach(s => {
+    const isTravel = s.title && (s.title.toLowerCase().includes('travel'));
+    html += `
+      <div style="background:var(--bg-secondary); border:1px solid var(--border-color); border-left:4px solid ${isTravel ? '#8b5cf6' : '#3b82f6'}; padding:12px; border-radius:6px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+          <strong style="font-size:0.95rem; color:var(--text-main);">${escapeHtml(s.title)}</strong>
+          <span style="font-size:0.8rem; color:var(--text-muted); font-weight:600;">📅 ${formatDateIndian(s.schedule_date)} (${formatTimeRange(s.from_time, s.to_time)})</span>
+        </div>
+        <div style="font-size:0.82rem; color:var(--text-muted); margin-bottom:6px;">
+          ${s.location ? `<span>📍 Location: ${escapeHtml(s.location)}</span> • ` : ''}
+          <span>Mode: <strong>${(s.delivery_mode || 'offline').toUpperCase()}</strong></span>
+          ${s.is_completed ? ' • <span style="color:var(--receipt-color); font-weight:600;">✓ Completed</span>' : ' • <span style="color:var(--badge-amber-text);">Planned</span>'}
+        </div>
+        ${s.notes ? `<div style="font-size:0.82rem; color:var(--text-main); background:var(--bg-tertiary); padding:6px; border-radius:4px; margin-top:4px;">📝 ${escapeHtml(s.notes)}</div>` : ''}
+      </div>
+    `;
+  });
+
+  html += `</div>`;
+  container.innerHTML = html;
+}
+
+function renderTicketCostReport(container, fromDate, toDate) {
+  const tagSelect = document.getElementById('reportTagSelect');
+  const targetTagId = tagSelect ? tagSelect.value : 'all';
+
+  let ticketEntries = [];
+  const processedKeys = new Set();
+
+  if (!db) {
+    container.innerHTML = '<div style="text-align:center; padding:40px; color:var(--text-muted);">Database not available.</div>';
+    return;
+  }
+
+  try {
+    const res = db.exec("SELECT * FROM schedules WHERE travel_info IS NOT NULL AND travel_info != '' ORDER BY schedule_date ASC");
+    if (res && res.length > 0) {
+      const rows = rowsToObjects(res[0]);
+      rows.forEach(s => {
+        if (targetTagId !== 'all') {
+          const stRes = db.exec("SELECT tag_id FROM schedule_tags WHERE schedule_id = ?", [s.id]);
+          let hasTag = false;
+          if (stRes && stRes.length > 0) {
+            hasTag = stRes[0].values.some(v => v[0] === targetTagId);
+          }
+          if (!hasTag) return;
+        }
+
+        try {
+          const tInfo = JSON.parse(s.travel_info);
+          if (!tInfo) return;
+
+          // 1. ONWARD TICKET
+          if (tInfo.onward && tInfo.onward.enabled) {
+            const o = tInfo.onward;
+            const amt = Number(o.amount || 0);
+            const depDate = o.fromDate || s.schedule_date;
+            const arrDate = o.toDate || depDate;
+
+            if (depDate >= fromDate && depDate <= toDate) {
+              const pnr = (o.pnr || '').trim();
+              const uniqueKey = (s.group_id ? s.group_id : s.id) + '_onward_' + (pnr || (o.fromPlace + '_' + o.toPlace + '_' + depDate));
+
+              if (!processedKeys.has(uniqueKey)) {
+                processedKeys.add(uniqueKey);
+                ticketEntries.push({
+                  type: 'onward',
+                  fromDate: depDate,
+                  fromTime: o.depTime || '09:00',
+                  toDate: arrDate,
+                  toTime: o.arrTime || '18:00',
+                  fromPlace: o.fromPlace || 'Origin',
+                  toPlace: o.toPlace || 'Destination',
+                  mode: o.mode || 'Travel',
+                  details: o.details || '',
+                  pnr: pnr,
+                  amount: amt,
+                  isReimbursable: Boolean(o.reimbursable)
+                });
+              }
+            }
+          }
+
+          // 2. RETURN TICKET
+          if (tInfo.return && tInfo.return.enabled) {
+            const r = tInfo.return;
+            const amt = Number(r.amount || 0);
+            const depDate = r.fromDate || s.schedule_date;
+            const arrDate = r.toDate || depDate;
+
+            if (depDate >= fromDate && depDate <= toDate) {
+              const pnr = (r.pnr || '').trim();
+              const uniqueKey = (s.group_id ? s.group_id : s.id) + '_return_' + (pnr || (r.fromPlace + '_' + r.toPlace + '_' + depDate));
+
+              if (!processedKeys.has(uniqueKey)) {
+                processedKeys.add(uniqueKey);
+                ticketEntries.push({
+                  type: 'return',
+                  fromDate: depDate,
+                  fromTime: r.depTime || '09:00',
+                  toDate: arrDate,
+                  toTime: r.arrTime || '18:00',
+                  fromPlace: r.fromPlace || 'Venue',
+                  toPlace: r.toPlace || 'Home',
+                  mode: r.mode || 'Travel',
+                  details: r.details || '',
+                  pnr: pnr,
+                  amount: amt,
+                  isReimbursable: Boolean(r.reimbursable)
+                });
+              }
+            }
+          }
+
+        } catch (e) {
+          console.warn('Error parsing travel_info:', e);
+        }
+      });
+    }
+  } catch (err) {
+    console.error('Error reading ticket cost report schedules:', err);
+  }
+
+  ticketEntries.sort((a, b) => {
+    if (a.fromDate !== b.fromDate) return a.fromDate.localeCompare(b.fromDate);
+    return a.fromTime.localeCompare(b.fromTime);
+  });
+
+  if (ticketEntries.length === 0) {
+    container.innerHTML = `<div style="text-align:center; padding:40px; color:var(--text-muted);">No travel ticket expenditures recorded between ${formatDateIndian(fromDate)} and ${formatDateIndian(toDate)}.</div>`;
+    return;
+  }
+
+  let totalReimbursable = 0;
+  let totalSelf = 0;
+  ticketEntries.forEach(e => {
+    if (e.isReimbursable) totalReimbursable += e.amount;
+    else totalSelf += e.amount;
+  });
+  const grandTotal = totalReimbursable + totalSelf;
+
+  let html = `
+    <div style="margin-bottom:14px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+      <h4 style="margin:0; font-size:1rem; color:var(--text-main);"><i class="fa-solid fa-ticket" style="color:#8b5cf6;"></i> Ticket Cost & Travel Expenses (${formatDateIndian(fromDate)} to ${formatDateIndian(toDate)})</h4>
+      <div style="font-size:0.85rem; display:flex; gap:12px;">
+        <span>Reimbursable: <strong style="color:var(--receipt-color);">₹${totalReimbursable.toFixed(2)}</strong></span>
+        <span>Self-Paid: <strong style="color:var(--badge-amber-text);">₹${totalSelf.toFixed(2)}</strong></span>
+        <span>Grand Total: <strong style="color:var(--net-positive);">₹${grandTotal.toFixed(2)}</strong></span>
+      </div>
+    </div>
+    <div style="overflow-x:auto;">
+      <table style="width:100%; border-collapse:collapse; font-size:0.86rem; text-align:left; min-width:700px;">
+        <thead>
+          <tr style="background:var(--bg-tertiary); border-bottom:2px solid var(--border-color);">
+            <th style="padding:8px 10px;">From Date & Time</th>
+            <th style="padding:8px 10px;">To Date & Time</th>
+            <th style="padding:8px 10px;">Journey / Route</th>
+            <th style="padding:8px 10px;">Mode & Details</th>
+            <th style="padding:8px 10px;">PNR No.</th>
+            <th style="padding:8px 10px; text-align:right;">Ticket Cost (₹)</th>
+            <th style="padding:8px 10px; text-align:center;">Reimbursable Status</th>
+          </tr>
+        </thead>
+        <tbody>
+  `;
+
+  ticketEntries.forEach(e => {
+    const fromDtStr = `${formatDateIndian(e.fromDate)} ${e.fromTime}`;
+    const toDtStr = `${formatDateIndian(e.toDate)} ${e.toTime}`;
+    const routeStr = `${escapeHtml(e.fromPlace)} ➔ ${escapeHtml(e.toPlace)} (${e.type === 'onward' ? 'Onward' : 'Return'})`;
+    const modeStr = `${escapeHtml(e.mode)}${e.details ? ' - ' + escapeHtml(e.details) : ''}`;
+    const pnrBadge = e.pnr ? `<code style="background:var(--bg-tertiary); padding:2px 6px; border-radius:4px; font-weight:600;">${escapeHtml(e.pnr)}</code>` : '<span style="color:var(--text-muted);">-</span>';
+
+    html += `
+      <tr style="border-bottom:1px solid var(--border-color);">
+        <td style="padding:8px 10px; font-weight:600; white-space:nowrap;">${fromDtStr}</td>
+        <td style="padding:8px 10px; white-space:nowrap; color:var(--text-muted);">${toDtStr}</td>
+        <td style="padding:8px 10px; font-weight:600; color:var(--text-main);">${routeStr}</td>
+        <td style="padding:8px 10px; color:var(--text-muted);">${modeStr}</td>
+        <td style="padding:8px 10px;">${pnrBadge}</td>
+        <td style="padding:8px 10px; text-align:right; font-weight:700; color:var(--net-positive);">₹${e.amount.toFixed(2)}</td>
+        <td style="padding:8px 10px; text-align:center;">
+          ${e.isReimbursable ? '<span style="color:var(--receipt-color); background:var(--badge-green-bg); border:1px solid var(--badge-green-border); padding:2px 8px; border-radius:4px; font-weight:600;">🟢 Reimbursable</span>' : '<span style="color:var(--text-muted); background:var(--bg-tertiary); padding:2px 8px; border-radius:4px;">⚪ Self-Paid</span>'}
+        </td>
+      </tr>
+    `;
+  });
+
+  html += `
+        </tbody>
+        <tfoot style="background:var(--bg-tertiary); font-weight:700; border-top:2px solid var(--border-color);">
+          <tr>
+            <td colspan="5" style="padding:10px; text-align:right;">TOTAL EXPENDITURE SUMMARY</td>
+            <td style="padding:10px; text-align:right; color:var(--net-positive); font-size:0.95rem;">₹${grandTotal.toFixed(2)}</td>
+            <td style="padding:10px; text-align:center; font-size:0.8rem;">
+              <span style="color:var(--receipt-color); font-weight:600;">Reimbursable: ₹${totalReimbursable.toFixed(2)}</span><br>
+              <span style="color:var(--badge-amber-text); font-weight:600;">Self-Paid: ₹${totalSelf.toFixed(2)}</span>
+            </td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  `;
+
+  container.innerHTML = html;
+}
+
+/* ==========================================================================
+   PDF & ATTACHMENT TO PNG IMAGE CONVERSION PIPELINE FOR PRINTING
+   ========================================================================== */
+
+async function convertAttachmentToImageDataUrl(att) {
+  if (!att) return null;
+  let rawData = att.data;
+  const fileName = (att.name || att.filename || '').toLowerCase();
+  const fileType = (att.type || '').toLowerCase();
+
+  if (!rawData) {
+    if (att.id) {
+      try {
+        rawData = await loadAttachmentFromIndexedDB(att.id);
+      } catch(e){}
+    }
+    if (!rawData && att.filename) {
+      try {
+        rawData = await loadAttachmentFromIndexedDB(att.filename);
+      } catch(e){}
+    }
+  }
+
+  if (!rawData) return null;
+
+  if (typeof rawData === 'string') {
+    if (rawData.startsWith('data:image/') || rawData.startsWith('http://') || rawData.startsWith('https://')) {
+      return rawData;
+    } else if (rawData.startsWith('data:application/pdf') || fileName.endsWith('.pdf') || fileType.includes('pdf')) {
+      return await renderPdfDataUrlToImage(rawData);
+    }
+  }
+
+  return null;
+}
+
+async function renderPdfDataUrlToImage(dataUrl) {
+  if (typeof pdfjsLib === 'undefined') return null;
+  try {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    
+    let base64Str = dataUrl;
+    if (dataUrl.includes(',')) base64Str = dataUrl.split(',')[1];
+
+    const binaryStr = atob(base64Str);
+    const len = binaryStr.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = binaryStr.charCodeAt(i);
+    }
+
+    return await renderPdfArrayBufferToImage(bytes.buffer);
+  } catch (err) {
+    console.warn('PDF data URL render error:', err);
+    return null;
+  }
+}
+
+async function renderPdfArrayBufferToImage(arrayBuffer) {
+  if (typeof pdfjsLib === 'undefined' || !arrayBuffer) return null;
+  try {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+    const pdf = await loadingTask.promise;
+    if (pdf.numPages === 0) return null;
+
+    const page = await pdf.getPage(1); // Render page 1 of ticket PDF
+    const viewport = page.getViewport({ scale: 1.8 }); // Crisp high-res scale
+
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d');
+    canvas.height = viewport.height;
+    canvas.width = viewport.width;
+
+    const renderContext = {
+      canvasContext: context,
+      viewport: viewport
+    };
+
+    await page.render(renderContext).promise;
+    return canvas.toDataURL('image/png');
+  } catch (err) {
+    console.warn('PDF ArrayBuffer render error:', err);
+    return null;
+  }
+}
+
+let activeClaimSelectedKeys = new Set();
+
+async function renderTicketClaimReport(container, fromDate, toDate) {
+  const tagSelect = document.getElementById('reportTagSelect');
+  const targetTagId = tagSelect ? tagSelect.value : 'all';
+
+  if (!db) {
+    container.innerHTML = '<div style="text-align:center; padding:40px; color:var(--text-muted);">Database not available.</div>';
+    return;
+  }
+
+  let ticketEntries = [];
+  const processedKeys = new Set();
+
+  try {
+    const res = db.exec("SELECT * FROM schedules WHERE travel_info IS NOT NULL AND travel_info != '' ORDER BY schedule_date ASC");
+    if (res && res.length > 0) {
+      const rows = rowsToObjects(res[0]);
+      rows.forEach(s => {
+        if (targetTagId !== 'all') {
+          const stRes = db.exec("SELECT tag_id FROM schedule_tags WHERE schedule_id = ?", [s.id]);
+          let hasTag = false;
+          if (stRes && stRes.length > 0) {
+            hasTag = stRes[0].values.some(v => v[0] === targetTagId);
+          }
+          if (!hasTag) return;
+        }
+
+        try {
+          const tInfo = JSON.parse(s.travel_info);
+          if (!tInfo) return;
+
+          // 1. ONWARD TICKET
+          if (tInfo.onward && tInfo.onward.enabled) {
+            const o = tInfo.onward;
+            const amt = Number(o.amount || 0);
+            const depDate = o.fromDate || s.schedule_date;
+            const arrDate = o.toDate || depDate;
+
+            if (depDate >= fromDate && depDate <= toDate) {
+              const pnr = (o.pnr || '').trim();
+              const uniqueKey = (s.group_id ? s.group_id : s.id) + '_onward_' + (pnr || (o.fromPlace + '_' + o.toPlace + '_' + depDate));
+
+              if (!processedKeys.has(uniqueKey)) {
+                processedKeys.add(uniqueKey);
+                ticketEntries.push({
+                  key: uniqueKey,
+                  type: 'onward',
+                  fromDate: depDate,
+                  fromTime: o.depTime || '09:00',
+                  toDate: arrDate,
+                  toTime: o.arrTime || '18:00',
+                  fromPlace: o.fromPlace || 'Origin',
+                  toPlace: o.toPlace || 'Destination',
+                  mode: o.mode || 'Travel',
+                  details: o.details || '',
+                  pnr: pnr,
+                  amount: amt,
+                  isReimbursable: Boolean(o.reimbursable),
+                  attachment: o.attachment || null,
+                  scheduleTitle: s.title
+                });
+              }
+            }
+          }
+
+          // 2. RETURN TICKET
+          if (tInfo.return && tInfo.return.enabled) {
+            const r = tInfo.return;
+            const amt = Number(r.amount || 0);
+            const depDate = r.fromDate || s.schedule_date;
+            const arrDate = r.toDate || depDate;
+
+            if (depDate >= fromDate && depDate <= toDate) {
+              const pnr = (r.pnr || '').trim();
+              const uniqueKey = (s.group_id ? s.group_id : s.id) + '_return_' + (pnr || (r.fromPlace + '_' + r.toPlace + '_' + depDate));
+
+              if (!processedKeys.has(uniqueKey)) {
+                processedKeys.add(uniqueKey);
+                ticketEntries.push({
+                  key: uniqueKey,
+                  type: 'return',
+                  fromDate: depDate,
+                  fromTime: r.depTime || '09:00',
+                  toDate: arrDate,
+                  toTime: r.arrTime || '18:00',
+                  fromPlace: r.fromPlace || 'Venue',
+                  toPlace: r.toPlace || 'Home',
+                  mode: r.mode || 'Travel',
+                  details: r.details || '',
+                  pnr: pnr,
+                  amount: amt,
+                  isReimbursable: Boolean(r.reimbursable),
+                  attachment: r.attachment || null,
+                  scheduleTitle: s.title
+                });
+              }
+            }
+          }
+
+        } catch (e) {
+          console.warn('Error parsing travel_info for ticket claim:', e);
+        }
+      });
+    }
+  } catch (err) {
+    console.error('Error querying schedules for ticket claim report:', err);
+  }
+
+  ticketEntries.sort((a, b) => {
+    if (a.fromDate !== b.fromDate) return a.fromDate.localeCompare(b.fromDate);
+    return a.fromTime.localeCompare(b.fromTime);
+  });
+
+  if (ticketEntries.length === 0) {
+    container.innerHTML = `<div style="text-align:center; padding:40px; color:var(--text-muted);">No travel tickets found between ${formatDateIndian(fromDate)} and ${formatDateIndian(toDate)} matching your filters.</div>`;
+    return;
+  }
+
+  // Pre-select reimbursable tickets if activeClaimSelectedKeys is empty or on first load
+  if (activeClaimSelectedKeys.size === 0) {
+    ticketEntries.forEach(e => {
+      if (e.isReimbursable && e.amount > 0) {
+        activeClaimSelectedKeys.add(e.key);
+      }
+    });
+    if (activeClaimSelectedKeys.size === 0) {
+      ticketEntries.forEach(e => {
+        if (e.amount > 0) activeClaimSelectedKeys.add(e.key);
+      });
+    }
+  }
+
+  // Load & convert Base64/PDF attachment data to PNG Data URLs for all tickets in parallel
+  for (const item of ticketEntries) {
+    if (item.attachment) {
+      try {
+        item.renderedImageDataUrl = await convertAttachmentToImageDataUrl(item.attachment);
+      } catch(e) {
+        console.warn('Error converting attachment to image:', e);
+      }
+    }
+  }
+
+  function renderClaimContent() {
+    const selectedTickets = ticketEntries.filter(e => activeClaimSelectedKeys.has(e.key));
+    let claimTotal = 0;
+    selectedTickets.forEach(e => claimTotal += e.amount);
+
+    let html = `
+      <!-- TICKET SELECTION TOOLBAR (HIDDEN IN PRINT) -->
+      <div class="no-print" style="background:var(--bg-tertiary); padding:12px; border-radius:var(--radius-md); border:1px solid var(--border-color); margin-bottom:18px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:10px;">
+          <h4 style="margin:0; font-size:0.92rem; color:var(--text-main);"><i class="fa-solid fa-list-check" style="color:var(--accent-blue);"></i> Select Tickets for Claim Statement (${selectedTickets.length} / ${ticketEntries.length} Selected)</h4>
+          <div style="display:flex; gap:8px;">
+            <button type="button" class="btn-secondary btn-xs" id="claimSelectReimbBtn"><i class="fa-solid fa-circle-check" style="color:var(--receipt-color);"></i> Select Reimbursable Only</button>
+            <button type="button" class="btn-secondary btn-xs" id="claimSelectAllBtn">Select All</button>
+            <button type="button" class="btn-secondary btn-xs" id="claimDeselectAllBtn">Deselect All</button>
+          </div>
+        </div>
+
+        <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap:8px; max-height:180px; overflow-y:auto; padding:4px;">
+    `;
+
+    ticketEntries.forEach(e => {
+      const isChecked = activeClaimSelectedKeys.has(e.key);
+      const hasAttachment = Boolean(e.attachment && (e.renderedImageDataUrl || e.attachment.data || e.attachment.filename));
+      html += `
+        <label style="display:flex; align-items:flex-start; gap:8px; background:var(--bg-primary); padding:8px 10px; border-radius:6px; border:1px solid ${isChecked ? 'var(--accent-blue)' : 'var(--border-color)'}; cursor:pointer; font-size:0.8rem;">
+          <input type="checkbox" class="claim-ticket-chk" data-key="${e.key}" ${isChecked ? 'checked' : ''} style="margin-top:2px;">
+          <div style="flex:1;">
+            <div style="font-weight:600; color:var(--text-main);">${formatDateIndian(e.fromDate)} &bull; ${escapeHtml(e.fromPlace)} ➔ ${escapeHtml(e.toPlace)}</div>
+            <div style="color:var(--text-muted); font-size:0.75rem;">
+              ${escapeHtml(e.mode)} ${e.pnr ? '| PNR:' + escapeHtml(e.pnr) : ''}
+              ${hasAttachment ? '<span style="color:var(--accent-blue); margin-left:4px;"><i class="fa-solid fa-paperclip"></i> Ticket Proof Attached</span>' : ''}
+            </div>
+          </div>
+          <div style="text-align:right;">
+            <strong style="color:var(--net-positive);">₹${e.amount.toFixed(2)}</strong>
+            <div style="font-size:0.7rem; color:${e.isReimbursable ? 'var(--receipt-color)' : 'var(--text-muted)'};">${e.isReimbursable ? '🟢 Reimbursable' : '⚪ Self'}</div>
+          </div>
+        </label>
+      `;
+    });
+
+    html += `
+        </div>
+      </div>
+
+      <!-- FORMAL PRINTABLE STATEMENT OF CLAIM -->
+      <div id="printableClaimStatement" style="background:#ffffff; color:#0f172a; padding:24px; border-radius:8px; border:1px solid #cbd5e1; font-family:system-ui,-apple-system,sans-serif;">
+        
+        <!-- Header -->
+        <div style="text-align:center; border-bottom:2px solid #0f172a; padding-bottom:12px; margin-bottom:16px;">
+          <h2 style="margin:0 0 4px 0; font-size:1.3rem; color:#0f172a; letter-spacing:0.5px; text-transform:uppercase;">Statement of Claim for Travel Reimbursement</h2>
+          <div style="font-size:0.85rem; color:#475569; font-weight:600;">SRG Calendar Pro &bull; Official Expenditure Reimbursement Voucher</div>
+          <div style="font-size:0.8rem; color:#64748b; margin-top:4px;">
+            Claim Period: <strong>${formatDateIndian(fromDate)}</strong> to <strong>${formatDateIndian(toDate)}</strong> &nbsp;|&nbsp; Date of Submission: <strong>${formatDateIndian(formatDateYMD(new Date()))}</strong>
+          </div>
+        </div>
+
+        <!-- Summary Bar -->
+        <div style="display:flex; justify-content:space-between; align-items:center; background:#f8fafc; padding:10px 14px; border-radius:6px; border:1px solid #e2e8f0; margin-bottom:16px; font-size:0.88rem;">
+          <div>Total Selected Tickets: <strong>${selectedTickets.length}</strong></div>
+          <div>Total Reimbursement Claimed: <strong style="font-size:1.1rem; color:#2563eb;">₹${claimTotal.toFixed(2)}</strong></div>
+        </div>
+    `;
+
+    if (selectedTickets.length === 0) {
+      html += `
+        <div style="text-align:center; padding:40px; color:#64748b;">No tickets selected for claim. Please check one or more tickets above.</div>
+      `;
+    } else {
+      html += `
+        <table style="width:100%; border-collapse:collapse; font-size:0.85rem; margin-bottom:20px; text-align:left;">
+          <thead>
+            <tr style="background:#f1f5f9; border-bottom:2px solid #94a3b8; color:#0f172a;">
+              <th style="padding:8px; width:35px; text-align:center;">#</th>
+              <th style="padding:8px;">Journey Date & Time</th>
+              <th style="padding:8px;">Sector / Route</th>
+              <th style="padding:8px;">Mode & Details</th>
+              <th style="padding:8px;">PNR / Reference</th>
+              <th style="padding:8px; text-align:center;">Evidence</th>
+              <th style="padding:8px; text-align:right;">Claim Amount (₹)</th>
+            </tr>
+          </thead>
+          <tbody>
+      `;
+
+      let slNo = 1;
+      let annexureCount = 0;
+      selectedTickets.forEach(e => {
+        const hasAtt = Boolean(e.attachment && (e.renderedImageDataUrl || e.attachment.data || e.attachment.filename));
+        let annexureLabel = '-';
+        if (hasAtt) {
+          annexureCount++;
+          annexureLabel = `Annexure ${String.fromCharCode(64 + annexureCount)}`;
+          e.annexureLabel = annexureLabel;
+        } else {
+          e.annexureLabel = null;
+        }
+
+        html += `
+          <tr style="border-bottom:1px solid #e2e8f0;">
+            <td style="padding:8px; text-align:center; font-weight:600;">${slNo++}</td>
+            <td style="padding:8px; font-weight:600; white-space:nowrap;">${formatDateIndian(e.fromDate)} <span style="font-size:0.78rem; color:#64748b;">${e.fromTime}</span></td>
+            <td style="padding:8px; font-weight:600;">${escapeHtml(e.fromPlace)} ➔ ${escapeHtml(e.toPlace)} <span style="font-size:0.75rem; color:#475569;">(${e.type === 'onward' ? 'Onward' : 'Return'})</span></td>
+            <td style="padding:8px; color:#334155;">${escapeHtml(e.mode)}${e.details ? ' (' + escapeHtml(e.details) + ')' : ''}</td>
+            <td style="padding:8px;"><code style="background:#f1f5f9; padding:2px 6px; border-radius:3px; font-size:0.8rem; color:#0f172a; font-weight:600;">${escapeHtml(e.pnr || '-')}</code></td>
+            <td style="padding:8px; text-align:center; font-size:0.78rem; font-weight:600; color:${hasAtt ? '#0284c7' : '#94a3b8'};">${hasAtt ? '📎 ' + annexureLabel : 'No Attachment'}</td>
+            <td style="padding:8px; text-align:right; font-weight:700; color:#0f172a;">₹${e.amount.toFixed(2)}</td>
+          </tr>
+        `;
+      });
+
+      html += `
+          </tbody>
+          <tfoot style="background:#f8fafc; font-weight:700; border-top:2px solid #0f172a;">
+            <tr>
+              <td colspan="6" style="padding:10px; text-align:right; text-transform:uppercase;">Total Amount Claimed:</td>
+              <td style="padding:10px; text-align:right; color:#2563eb; font-size:1.05rem;">₹${claimTotal.toFixed(2)}</td>
+            </tr>
+          </tfoot>
+        </table>
+
+        <!-- Declaration & Signatures -->
+        <div style="margin-top:24px; padding:12px; background:#f8fafc; border-radius:6px; border:1px solid #e2e8f0; font-size:0.8rem; color:#334155; line-height:1.4;">
+          <strong>Declaration:</strong> I hereby certify that the travel expenses claimed above were actually incurred by me for official business travel in connection with the programs listed, and no previous claim has been preferred for the same.
+        </div>
+
+        <div style="display:flex; justify-content:space-between; margin-top:50px; padding-top:10px; font-size:0.85rem; color:#0f172a;">
+          <div style="text-align:center; width:200px;">
+            <div style="border-bottom:1px solid #0f172a; margin-bottom:6px; height:30px;"></div>
+            <strong>Signature of Claimant</strong><br>
+            <span style="font-size:0.75rem; color:#64748b;">Date: ${formatDateIndian(formatDateYMD(new Date()))}</span>
+          </div>
+          <div style="text-align:center; width:200px;">
+            <div style="border-bottom:1px solid #0f172a; margin-bottom:6px; height:30px;"></div>
+            <strong>Verified & Approved By</strong><br>
+            <span style="font-size:0.75rem; color:#64748b;">Finance / Controlling Authority</span>
+          </div>
+        </div>
+      `;
+
+      // Render Attached Ticket Vouchers / Evidence Annexure (1 ticket per page)
+      const attachedTickets = selectedTickets.filter(e => e.attachment && (e.renderedImageDataUrl || e.attachment.data || e.attachment.filename));
+      if (attachedTickets.length > 0) {
+        html += `
+          <div style="page-break-before:always; margin-top:30px; border-top:2px dashed #94a3b8; padding-top:20px;">
+            <h3 style="margin:0 0 16px 0; font-size:1.1rem; color:#0f172a; text-transform:uppercase;"><i class="fa-solid fa-paperclip"></i> Annexure: Attached Ticket Proofs & Vouchers</h3>
+        `;
+
+        attachedTickets.forEach(e => {
+          const att = e.attachment;
+          const imgUrl = e.renderedImageDataUrl || (att ? att.data : null);
+
+          html += `
+            <div class="page-break" style="page-break-before:always; padding-top:16px; margin-bottom:30px; page-break-inside:avoid;">
+              <div style="border:1px solid #cbd5e1; border-radius:8px; padding:16px; background:#ffffff; text-align:center;">
+                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #cbd5e1; padding-bottom:8px; margin-bottom:12px; text-align:left;">
+                  <h4 style="margin:0; font-size:0.95rem; color:#0f172a;">
+                    <strong>${e.annexureLabel || 'Annexure'}</strong>: Ticket Proof for PNR <code style="background:#e2e8f0; padding:2px 6px; border-radius:4px;">${escapeHtml(e.pnr || 'N/A')}</code>
+                  </h4>
+                  <span style="font-size:0.8rem; color:#475569; font-weight:600;">${formatDateIndian(e.fromDate)} &bull; ${escapeHtml(e.fromPlace)} ➔ ${escapeHtml(e.toPlace)}</span>
+                </div>
+                
+                <div style="font-size:0.82rem; color:#334155; margin-bottom:12px; text-align:left;">
+                  Mode/Train: <strong>${escapeHtml(e.mode)} ${e.details ? '(' + escapeHtml(e.details) + ')' : ''}</strong> | Ticket Cost: <strong style="color:#2563eb;">₹${e.amount.toFixed(2)}</strong> | File: <em>${escapeHtml(att.name || att.filename || 'Ticket Document')}</em>
+                </div>
+          `;
+
+          if (imgUrl) {
+            html += `
+              <div style="text-align:center; margin-top:8px;">
+                <img src="${imgUrl}" style="max-width:100%; max-height:850px; border:1px solid #cbd5e1; border-radius:4px; box-shadow:0 2px 10px rgba(0,0,0,0.1);" alt="Ticket Proof Image">
+              </div>
+            `;
+          } else {
+            html += `
+              <div style="color:#64748b; font-size:0.85rem; font-style:italic; padding:20px; background:#f8fafc; border-radius:4px;">
+                Ticket voucher recorded electronically for PNR ${escapeHtml(e.pnr || 'N/A')}.
+              </div>
+            `;
+          }
+
+          html += `</div></div>`;
+        });
+
+        html += `</div>`;
+      }
+    }
+
+    html += `</div>`;
+    container.innerHTML = html;
+
+    const chks = container.querySelectorAll('.claim-ticket-chk');
+    chks.forEach(chk => {
+      chk.addEventListener('change', (e) => {
+        const k = e.target.dataset.key;
+        if (e.target.checked) activeClaimSelectedKeys.add(k);
+        else activeClaimSelectedKeys.delete(k);
+        renderClaimContent();
+      });
+    });
+
+    const selectReimbBtn = container.querySelector('#claimSelectReimbBtn');
+    if (selectReimbBtn) {
+      selectReimbBtn.addEventListener('click', () => {
+        activeClaimSelectedKeys.clear();
+        ticketEntries.forEach(e => {
+          if (e.isReimbursable && e.amount > 0) activeClaimSelectedKeys.add(e.key);
+        });
+        renderClaimContent();
+      });
+    }
+
+    const selectAllBtn = container.querySelector('#claimSelectAllBtn');
+    if (selectAllBtn) {
+      selectAllBtn.addEventListener('click', () => {
+        activeClaimSelectedKeys.clear();
+        ticketEntries.forEach(e => activeClaimSelectedKeys.add(e.key));
+        renderClaimContent();
+      });
+    }
+
+    const deselectAllBtn = container.querySelector('#claimDeselectAllBtn');
+    if (deselectAllBtn) {
+      deselectAllBtn.addEventListener('click', () => {
+        activeClaimSelectedKeys.clear();
+        renderClaimContent();
+      });
+    }
+  }
+
+  renderClaimContent();
+}
+
+function printCurrentReport() {
+  const content = document.getElementById('reportOutputContainer').innerHTML;
+  const win = window.open('', '_blank', 'width=950,height=750');
+  win.document.write(`
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>SRG Calendar Pro - Official Report Statement</title>
+        <style>
+          body { font-family: system-ui, -apple-system, sans-serif; padding: 25px; color: #0f172a; background: #fff; }
+          table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+          th, td { padding: 8px 10px; border: 1px solid #cbd5e1; text-align: left; font-size: 13px; }
+          th { background: #f1f5f9; font-weight: bold; }
+          h4 { margin-top: 0; color: #0f172a; }
+          .today-badge { display: none; }
+          .no-print { display: none !important; }
+          .page-break { page-break-before: always; }
+          img { max-width: 100% !important; height: auto !important; page-break-inside: avoid; }
+        </style>
+      </head>
+      <body>
+        ${content}
+      </body>
+    </html>
+  `);
+  win.document.close();
+  win.focus();
+  setTimeout(() => win.print(), 400);
 }

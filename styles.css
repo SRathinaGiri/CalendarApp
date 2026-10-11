@@ -14,6 +14,28 @@
   --accent-green: #10b981;
   --accent-amber: #f59e0b;
   --accent-rose: #f43f5e;
+
+  /* Semantic Theme Badges & Indicators (Dark theme: glowing accents) */
+  --badge-amber-text: #fbbf24;
+  --badge-amber-bg: rgba(251, 191, 36, 0.15);
+  --badge-amber-border: rgba(251, 191, 36, 0.35);
+
+  --badge-green-text: #34d399;
+  --badge-green-bg: rgba(52, 211, 153, 0.15);
+  --badge-green-border: rgba(52, 211, 153, 0.35);
+
+  --badge-blue-text: #60a5fa;
+  --badge-blue-bg: rgba(96, 165, 250, 0.15);
+  --badge-blue-border: rgba(96, 165, 250, 0.35);
+
+  --badge-red-text: #fb7185;
+  --badge-red-bg: rgba(244, 63, 94, 0.15);
+  --badge-red-border: rgba(244, 63, 94, 0.35);
+
+  --receipt-color: #34d399;
+  --payment-color: #fb7185;
+  --net-positive: #60a5fa;
+  --net-negative: #fb7185;
   
   --radius-sm: 6px;
   --radius-md: 10px;
@@ -25,6 +47,51 @@
   --shadow-lg: 0 10px 25px rgba(0,0,0,0.5);
   
   --font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+}
+
+/* HIGH-CONTRAST PROFESSIONAL LIGHT THEME */
+:root[data-theme="light"], body[data-theme="light"], [data-theme="light"] {
+  --bg-primary: #f8fafc;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f1f5f9;
+  --border-color: #cbd5e1;
+  --border-focus: #2563eb;
+  --text-main: #0f172a;
+  --text-muted: #334155;
+  --text-dim: #475569;
+
+  --accent-blue: #1d4ed8;
+  --accent-indigo: #4338ca;
+  --accent-purple: #6d28d9;
+  --accent-green: #047857;
+  --accent-amber: #b45309;
+  --accent-rose: #be123c;
+
+  /* Semantic Theme Badges & Indicators (Light theme: Dark, rich, professional contrast) */
+  --badge-amber-text: #92400e;
+  --badge-amber-bg: #fef3c7;
+  --badge-amber-border: #f59e0b;
+
+  --badge-green-text: #065f46;
+  --badge-green-bg: #ecfdf5;
+  --badge-green-border: #10b981;
+
+  --badge-blue-text: #1e40af;
+  --badge-blue-bg: #eff6ff;
+  --badge-blue-border: #3b82f6;
+
+  --badge-red-text: #991b1b;
+  --badge-red-bg: #fef2f2;
+  --badge-red-border: #ef4444;
+
+  --receipt-color: #047857;
+  --payment-color: #b91c1c;
+  --net-positive: #1d4ed8;
+  --net-negative: #b91c1c;
+  
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.08);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.06);
+  --shadow-lg: 0 10px 25px rgba(0,0,0,0.1);
 }
 
 * {
@@ -484,17 +551,20 @@ button {
   white-space: nowrap;
   flex-shrink: 0;
 }
-.chip-mode-badge.online {
+.chip-mode-badge.online, .type-badge-online {
   background: rgba(14, 165, 233, 0.25);
   color: #38bdf8;
+  border: 1px solid rgba(14, 165, 233, 0.4);
 }
-.chip-mode-badge.offline {
+.chip-mode-badge.offline, .type-badge-offline {
   background: rgba(16, 185, 129, 0.2);
   color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.4);
 }
-.chip-mode-badge.hybrid {
+.chip-mode-badge.hybrid, .type-badge-hybrid {
   background: rgba(168, 85, 247, 0.25);
   color: #c084fc;
+  border: 1px solid rgba(168, 85, 247, 0.4);
 }
 
 .chip-title {
@@ -1592,4 +1662,1197 @@ input:focus, select:focus, textarea:focus {
     border-right: none;
     border-bottom: 1px solid var(--border-color);
   }
+}
+
+/* ==========================================================================
+   TOAST NOTIFICATION SYSTEM
+   ========================================================================== */
+.toast-container {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 420px;
+  width: calc(100% - 48px);
+  pointer-events: none;
+}
+
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 18px;
+  border-radius: var(--radius-md);
+  background: #1e293b;
+  color: #f8fafc;
+  border: 1px solid var(--border-color);
+  box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+  font-size: 0.88rem;
+  font-weight: 500;
+  animation: toastSlideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: all 0.25s ease;
+}
+
+.toast.toast-success {
+  border-left: 4px solid #10b981;
+  background: #0f2922;
+}
+.toast.toast-success i { color: #34d399; font-size: 1.1rem; }
+
+.toast.toast-error {
+  border-left: 4px solid #f43f5e;
+  background: #2d151a;
+}
+.toast.toast-error i { color: #fb7185; font-size: 1.1rem; }
+
+.toast.toast-info {
+  border-left: 4px solid #3b82f6;
+  background: #13233b;
+}
+.toast.toast-info i { color: #60a5fa; font-size: 1.1rem; }
+
+.toast.toast-loading {
+  border-left: 4px solid #f59e0b;
+  background: #272115;
+}
+.toast.toast-loading i { color: #fbbf24; font-size: 1.1rem; }
+
+.toast-hide {
+  opacity: 0;
+  transform: translateY(10px) scale(0.95);
+}
+
+@keyframes toastSlideIn {
+  from { opacity: 0; transform: translateY(20px) scale(0.95); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@media (max-width: 480px) {
+  .toast-container {
+    bottom: 16px;
+    right: 16px;
+    left: 16px;
+    width: auto;
+    max-width: none;
+  }
+}
+
+/* DAILY DIARY NOTE STYLES */
+.day-note-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  line-height: 1;
+}
+
+.day-note-btn:hover {
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.15);
+}
+
+.day-note-btn.has-note {
+  color: #fbbf24;
+}
+
+.day-note-pill {
+  background: rgba(245, 158, 11, 0.15);
+  border-left: 3px solid #f59e0b;
+  color: #fef3c7;
+  font-size: 0.72rem;
+  padding: 3px 6px;
+  border-radius: 4px;
+  margin-top: 2px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  transition: background 0.15s ease;
+}
+
+.day-note-pill:hover {
+  background: rgba(245, 158, 11, 0.28);
+}
+
+.daily-note-banner {
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.12), rgba(217, 119, 6, 0.08));
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+  margin-bottom: 16px;
+}
+
+.daily-note-banner-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.daily-note-banner-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: #fbbf24;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.daily-note-banner-content {
+  font-size: 0.92rem;
+  color: var(--text-main);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* OFFLINE READ-ONLY BANNER */
+.offline-readonly-banner {
+  background: #991b1b;
+  color: #fef2f2;
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 8px 16px;
+  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-bottom: 1px solid #b91c1c;
+}
+
+/* DAILY FINANCE STYLES */
+.day-finance-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  line-height: 1;
+}
+
+.day-finance-btn:hover {
+  color: #34d399;
+  background: rgba(52, 211, 153, 0.15);
+}
+
+.day-finance-btn.has-finance {
+  color: #34d399;
+}
+
+.day-finance-pill {
+  background: rgba(16, 185, 129, 0.15);
+  border-left: 3px solid #10b981;
+  color: #a7f3d0;
+  font-size: 0.72rem;
+  padding: 3px 6px;
+  border-radius: 4px;
+  margin-top: 2px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  transition: background 0.15s ease;
+}
+
+.day-finance-pill:hover {
+  background: rgba(16, 185, 129, 0.28);
+}
+
+.daily-finance-banner {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.12), rgba(5, 150, 105, 0.08));
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+  margin-bottom: 16px;
+}
+
+.daily-finance-banner-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.daily-finance-banner-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: #34d399;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ==========================================================================
+   HIGH-CONTRAST PROFESSIONAL LIGHT THEME OVERRIDES
+   ========================================================================== */
+[data-theme="light"], body[data-theme="light"] {
+  --bg-primary: #f8fafc;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #f1f5f9;
+  --border-color: #cbd5e1;
+  --border-focus: #2563eb;
+  --text-main: #0f172a;
+  --text-muted: #334155;
+  --text-dim: #475569;
+
+  --accent-blue: #1d4ed8;
+  --accent-indigo: #4338ca;
+  --accent-purple: #6d28d9;
+  --accent-green: #047857;
+  --accent-amber: #b45309;
+  --accent-rose: #be123c;
+
+  --badge-amber-text: #92400e;
+  --badge-amber-bg: #fef3c7;
+  --badge-amber-border: #f59e0b;
+
+  --badge-green-text: #065f46;
+  --badge-green-bg: #ecfdf5;
+  --badge-green-border: #10b981;
+
+  --badge-blue-text: #1e40af;
+  --badge-blue-bg: #eff6ff;
+  --badge-blue-border: #3b82f6;
+
+  --badge-red-text: #991b1b;
+  --badge-red-bg: #fef2f2;
+  --badge-red-border: #ef4444;
+
+  --receipt-color: #047857;
+  --payment-color: #b91c1c;
+  --net-positive: #1d4ed8;
+  --net-negative: #b91c1c;
+  
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.08);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.06);
+  --shadow-lg: 0 10px 25px rgba(0,0,0,0.1);
+}
+
+/* Header Buttons Theme Styling */
+#headerNoteBtn {
+  color: var(--badge-amber-text) !important;
+  border-color: var(--badge-amber-border) !important;
+}
+#headerNoteBtn i {
+  color: var(--badge-amber-text) !important;
+}
+#headerNoteBtn:hover {
+  background: var(--badge-amber-bg) !important;
+}
+
+#headerFinanceBtn {
+  color: var(--badge-green-text) !important;
+  border-color: var(--badge-green-border) !important;
+}
+#headerFinanceBtn i {
+  color: var(--badge-green-text) !important;
+}
+#headerFinanceBtn:hover {
+  background: var(--badge-green-bg) !important;
+}
+
+#openReportsModalBtn {
+  color: var(--badge-blue-text) !important;
+  border-color: var(--badge-blue-border) !important;
+}
+#openReportsModalBtn i {
+  color: var(--badge-blue-text) !important;
+}
+#openReportsModalBtn:hover {
+  background: var(--badge-blue-bg) !important;
+}
+
+#openChangePinBtn i {
+  color: var(--badge-amber-text) !important;
+}
+
+#resetCacheBtn i {
+  color: var(--payment-color) !important;
+}
+
+[data-theme="light"] .app-header {
+  background-color: rgba(255, 255, 255, 0.98);
+  border-bottom: 1px solid #cbd5e1;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+}
+
+[data-theme="light"] .btn-secondary {
+  background: #ffffff !important;
+  color: #1e293b !important;
+  border: 1px solid #cbd5e1 !important;
+}
+[data-theme="light"] .btn-secondary:hover {
+  background: #f1f5f9 !important;
+  color: #0f172a !important;
+}
+
+[data-theme="light"] .btn-icon {
+  background: #ffffff !important;
+  color: #1e293b !important;
+  border: 1px solid #cbd5e1 !important;
+}
+[data-theme="light"] .btn-icon:hover {
+  background: #f1f5f9 !important;
+  color: #0f172a !important;
+}
+[data-theme="light"] .btn-icon i {
+  color: #1e293b;
+}
+
+[data-theme="light"] #openTagMasterBtn {
+  background: #ffffff !important;
+  color: #1e293b !important;
+  border: 1px solid #cbd5e1 !important;
+}
+[data-theme="light"] #openTagMasterBtn i {
+  color: #4338ca !important;
+}
+
+[data-theme="light"] #lockAppBtn i {
+  color: #1e293b !important;
+}
+
+[data-theme="light"] #themeToggleBtn i {
+  color: #b45309 !important;
+}
+
+[data-theme="light"] #todayBtn {
+  background: #ffffff !important;
+  color: #0f172a !important;
+  border: 1px solid #cbd5e1 !important;
+  font-weight: 600 !important;
+}
+[data-theme="light"] #todayBtn:hover {
+  background: #f1f5f9 !important;
+}
+
+[data-theme="light"] #prevBtn i,
+[data-theme="light"] #nextBtn i {
+  color: #1e293b !important;
+}
+
+[data-theme="light"] .view-switchers {
+  background: #f1f5f9 !important;
+  border: 1px solid #cbd5e1 !important;
+}
+
+[data-theme="light"] .view-btn {
+  color: #334155 !important;
+}
+
+[data-theme="light"] .view-btn:hover {
+  color: #0f172a !important;
+}
+
+[data-theme="light"] .view-btn.active {
+  background: #2563eb !important;
+  color: #ffffff !important;
+}
+
+[data-theme="light"] .brand-name {
+  color: #0f172a;
+}
+
+[data-theme="light"] .brand-badge {
+  color: #047857 !important;
+  font-weight: 600 !important;
+}
+
+[data-theme="light"] .current-period {
+  color: #0f172a;
+  font-weight: 700;
+}
+
+[data-theme="light"] .weekdays-grid {
+  background: #e2e8f0;
+  border-bottom: 1px solid #cbd5e1;
+}
+
+[data-theme="light"] .weekday-cell {
+  color: #1e293b;
+}
+
+[data-theme="light"] .day-cell {
+  background: #ffffff;
+}
+
+[data-theme="light"] .day-cell:hover {
+  background: #f8fafc;
+}
+
+[data-theme="light"] .day-cell.other-month {
+  background: #f1f5f9;
+  opacity: 0.7;
+}
+
+[data-theme="light"] .day-cell.today {
+  background: #eff6ff;
+  border: 2px solid #2563eb;
+}
+
+[data-theme="light"] .day-cell.selected {
+  background: #e0e7ff;
+  border: 2px solid #4f46e5;
+}
+
+[data-theme="light"] .day-number {
+  color: #0f172a;
+}
+
+[data-theme="light"] .day-tamil {
+  color: #475569;
+}
+
+/* Schedule Chips & Pills in Light Theme */
+[data-theme="light"] .day-note-btn {
+  color: #475569;
+}
+[data-theme="light"] .day-note-btn.has-note {
+  color: #b45309;
+}
+[data-theme="light"] .day-note-pill {
+  background: #fffbeb !important;
+  border-left: 3px solid #d97706 !important;
+  color: #78350f !important;
+  font-weight: 700 !important;
+}
+[data-theme="light"] .day-note-pill i {
+  color: #d97706 !important;
+}
+
+[data-theme="light"] .day-finance-btn {
+  color: #475569;
+}
+[data-theme="light"] .day-finance-btn.has-finance {
+  color: #047857;
+}
+[data-theme="light"] .day-finance-pill {
+  background: #ecfdf5 !important;
+  border-left: 3px solid #059669 !important;
+  color: #064e3b !important;
+  font-weight: 700 !important;
+}
+[data-theme="light"] .day-finance-pill i {
+  color: #059669 !important;
+}
+
+[data-theme="light"] .schedule-chip {
+  background: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
+  border-left: 4px solid #2563eb !important;
+  color: #0f172a !important;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06) !important;
+}
+
+[data-theme="light"] .schedule-chip:hover {
+  background: #f8fafc !important;
+}
+
+[data-theme="light"] .schedule-chip.travel-chip {
+  background: #fffbeb !important;
+  border-left: 4px solid #d97706 !important;
+  color: #78350f !important;
+}
+
+[data-theme="light"] .schedule-chip.travel-arr-chip {
+  background: #ecfdf5 !important;
+  border-left: 4px solid #059669 !important;
+  color: #064e3b !important;
+}
+
+[data-theme="light"] .chip-title {
+  color: #0f172a !important;
+  font-weight: 700 !important;
+}
+
+[data-theme="light"] .schedule-chip.travel-chip .chip-title {
+  color: #78350f !important;
+  font-weight: 700 !important;
+}
+
+[data-theme="light"] .schedule-chip.travel-arr-chip .chip-title {
+  color: #064e3b !important;
+  font-weight: 700 !important;
+}
+
+[data-theme="light"] .chip-time {
+  color: #1d4ed8 !important;
+  font-weight: 700 !important;
+}
+
+[data-theme="light"] .schedule-chip.travel-chip .chip-time {
+  color: #b45309 !important;
+  font-weight: 700 !important;
+}
+
+[data-theme="light"] .schedule-chip.travel-arr-chip .chip-time {
+  color: #047857 !important;
+  font-weight: 700 !important;
+}
+
+[data-theme="light"] .chip-tag-pill {
+  background: #e2e8f0 !important;
+  color: #1e293b !important;
+}
+
+/* Day View Window in Light Theme */
+[data-theme="light"] .day-view-container {
+  background: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
+}
+
+[data-theme="light"] .day-view-header {
+  background: #f1f5f9 !important;
+  border-bottom: 1px solid #cbd5e1 !important;
+}
+
+[data-theme="light"] .day-view-day-name {
+  color: #0f172a !important;
+}
+
+[data-theme="light"] .day-view-full-date {
+  color: #1e40af !important;
+  background: #dbeafe !important;
+  border: 1px solid #93c5fd !important;
+}
+
+[data-theme="light"] .day-view-tamil {
+  color: #475569 !important;
+}
+
+[data-theme="light"] .day-picker-label {
+  color: #334155 !important;
+}
+
+[data-theme="light"] .day-picker-input {
+  background: #ffffff !important;
+  color: #0f172a !important;
+  border: 1px solid #cbd5e1 !important;
+}
+
+[data-theme="light"] .day-timeline {
+  background: #ffffff !important;
+}
+
+[data-theme="light"] .day-hour-row {
+  border-bottom: 1px solid #e2e8f0 !important;
+}
+
+[data-theme="light"] .day-hour-row.current-hour {
+  background: #eff6ff !important;
+}
+
+[data-theme="light"] .hour-time-col {
+  background: #f8fafc !important;
+  border-right: 1px solid #cbd5e1 !important;
+}
+
+[data-theme="light"] .hour-primary-time {
+  color: #0f172a !important;
+  font-weight: 700 !important;
+}
+
+[data-theme="light"] .hour-sub-time {
+  color: #475569 !important;
+}
+
+[data-theme="light"] .day-event-card {
+  background: #f1f5f9 !important;
+  color: #0f172a !important;
+  border: 1px solid #cbd5e1 !important;
+}
+
+[data-theme="light"] .day-event-card.travel-event {
+  background: #fffbeb !important;
+  color: #78350f !important;
+  border-left: 4px solid #d97706 !important;
+}
+
+[data-theme="light"] .day-event-title {
+  color: #0f172a !important;
+  font-weight: 700 !important;
+}
+
+[data-theme="light"] .day-event-time {
+  color: #1d4ed8 !important;
+  font-weight: 700 !important;
+}
+
+[data-theme="light"] .day-event-notes {
+  background: #ffffff !important;
+  color: #1e293b !important;
+  border: 1px solid #cbd5e1 !important;
+}
+
+[data-theme="light"] .daily-note-banner {
+  background: #fffbeb !important;
+  border: 1px solid #fcd34d !important;
+  color: #78350f !important;
+}
+
+[data-theme="light"] .daily-note-banner-title {
+  color: #b45309 !important;
+}
+
+[data-theme="light"] .daily-note-banner-content {
+  color: #451a03 !important;
+}
+
+[data-theme="light"] .daily-finance-banner {
+  background: #ecfdf5 !important;
+  border: 1px solid #6ee7b7 !important;
+  color: #064e3b !important;
+}
+
+[data-theme="light"] .daily-finance-banner-title {
+  color: #047857 !important;
+}
+
+/* Agenda View Window in Light Theme */
+[data-theme="light"] .agenda-view-container {
+  background: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
+}
+
+[data-theme="light"] .agenda-toolbar {
+  background: #f8fafc !important;
+}
+
+[data-theme="light"] .search-box input {
+  background: #ffffff !important;
+  color: #0f172a !important;
+  border: 1px solid #cbd5e1 !important;
+}
+
+[data-theme="light"] .search-box i {
+  color: #475569 !important;
+}
+
+[data-theme="light"] .filter-group select {
+  background: #ffffff !important;
+  color: #0f172a !important;
+  border: 1px solid #cbd5e1 !important;
+}
+
+[data-theme="light"] .agenda-card {
+  background: #ffffff !important;
+  color: #0f172a !important;
+  border: 1px solid #cbd5e1 !important;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05) !important;
+}
+
+[data-theme="light"] .agenda-card:hover {
+  background: #f8fafc !important;
+  border-color: #2563eb !important;
+}
+
+[data-theme="light"] .agenda-day-str {
+  color: #1d4ed8 !important;
+  font-weight: 700 !important;
+}
+
+[data-theme="light"] .agenda-day-name {
+  color: #475569 !important;
+}
+
+[data-theme="light"] .agenda-card-title {
+  color: #0f172a !important;
+  font-weight: 700 !important;
+}
+
+[data-theme="light"] .agenda-card-meta {
+  color: #334155 !important;
+}
+
+/* Modals & Dialogs in Light Theme */
+[data-theme="light"] .modal-card {
+  background: #ffffff !important;
+  color: #0f172a !important;
+  border: 1px solid #cbd5e1 !important;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.15) !important;
+}
+
+[data-theme="light"] .modal-header {
+  background: #f8fafc !important;
+  border-bottom: 1px solid #e2e8f0 !important;
+  color: #0f172a !important;
+}
+
+[data-theme="light"] .modal-header h3 {
+  color: #0f172a !important;
+}
+
+[data-theme="light"] .modal-footer {
+  background: #f8fafc !important;
+  border-top: 1px solid #e2e8f0 !important;
+}
+
+[data-theme="light"] .schedule-detail-label {
+  color: #475569 !important;
+  font-weight: 700 !important;
+}
+
+[data-theme="light"] .schedule-detail-value {
+  color: #0f172a !important;
+}
+
+[data-theme="light"] input[type="text"],
+[data-theme="light"] input[type="number"],
+[data-theme="light"] input[type="date"],
+[data-theme="light"] input[type="time"],
+[data-theme="light"] input[type="password"],
+[data-theme="light"] select,
+[data-theme="light"] textarea {
+  background: #ffffff !important;
+  color: #0f172a !important;
+  border: 1px solid #cbd5e1 !important;
+}
+
+[data-theme="light"] .travel-alert-banner {
+  background: #fffbeb !important;
+  border: 1px solid #fcd34d !important;
+  color: #78350f !important;
+}
+
+[data-theme="light"] .travel-alert-banner span {
+  color: #78350f !important;
+}
+
+[data-theme="light"] .travel-alert-banner strong {
+  color: #92400e !important;
+}
+
+
+
+/* Universal High-Contrast Mode Badges in Light Theme */
+[data-theme="light"] .chip-mode-badge.offline,
+[data-theme="light"] .type-badge-offline {
+  background: #d1fae5 !important;
+  color: #065f46 !important;
+  border: 1px solid #6ee7b7 !important;
+  font-weight: 700 !important;
+}
+
+[data-theme="light"] .chip-mode-badge.online,
+[data-theme="light"] .type-badge-online {
+  background: #e0f2fe !important;
+  color: #0369a1 !important;
+  border: 1px solid #7dd3fc !important;
+  font-weight: 700 !important;
+}
+
+[data-theme="light"] .chip-mode-badge.hybrid,
+[data-theme="light"] .type-badge-hybrid {
+  background: #f3e8ff !important;
+  color: #6b21a8 !important;
+  border: 1px solid #d8b4fe !important;
+  font-weight: 700 !important;
+}
+
+[data-theme="light"] .type-badge-program {
+  background: #dbeafe !important;
+  color: #1e40af !important;
+  border: 1px solid #93c5fd !important;
+  font-weight: 700 !important;
+}
+
+/* Empty Hour Placeholder (Available / No Schedule) in Light & Dark Theme */
+.hour-empty-placeholder {
+  color: rgba(148, 163, 184, 0.6);
+  font-size: 0.8rem;
+  font-style: italic;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+[data-theme="light"] .hour-empty-placeholder {
+  color: #334155 !important;
+  font-weight: 600 !important;
+}
+
+/* Today Card Highlight in Agenda View */
+.agenda-card.today-agenda-card {
+  border: 2px solid #3b82f6 !important;
+  background: rgba(30, 58, 138, 0.25) !important;
+}
+
+[data-theme="light"] .agenda-card.today-agenda-card {
+  border: 2px solid #2563eb !important;
+  background: #eff6ff !important;
+}
+
+.today-badge {
+  background: #2563eb;
+  color: #ffffff;
+  font-size: 0.65rem;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 700;
+  font-style: normal;
+  display: inline-block;
+  vertical-align: middle;
+  margin-left: 6px;
+}
+
+/* PORTRAIT 30-DAY MONTHLY TABLE VIEW (ONE ROW PER DAY) */
+.portrait-month-container {
+  display: none;
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  background: var(--bg-primary);
+}
+
+.portrait-month-container.active {
+  display: block;
+}
+
+.portrait-table-wrapper {
+  max-width: 1100px;
+  margin: 0 auto;
+  overflow-x: auto;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+}
+
+.portrait-month-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+  text-align: left;
+}
+
+.portrait-month-table th {
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  font-weight: 600;
+  padding: 12px;
+  border-bottom: 2px solid var(--border-color);
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.portrait-month-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-color);
+  vertical-align: top;
+}
+
+.portrait-day-row.today-row {
+  background: rgba(59, 130, 246, 0.12) !important;
+}
+
+.portrait-day-cell-date {
+  font-weight: 700;
+  color: var(--text-main);
+  line-height: 1.3;
+}
+
+.portrait-day-cell-sub {
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  font-weight: normal;
+}
+
+.portable-day-card.today-portable-card {
+  border: 2px solid #3b82f6 !important;
+  background: rgba(30, 58, 138, 0.25) !important;
+}
+
+[data-theme="light"] .portable-day-card.today-portable-card {
+  border: 2px solid #2563eb !important;
+  background: #eff6ff !important;
+}
+
+.portable-day-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  border-bottom: 1px dashed var(--border-color);
+  padding-bottom: 8px;
+}
+
+.portable-day-title {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--text-main);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.portable-day-sub {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.portable-day-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.portable-schedule-item {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-left: 4px solid #3b82f6;
+  border-radius: 6px;
+  padding: 8px 10px;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.portable-schedule-item:hover {
+  filter: brightness(1.1);
+}
+
+.portable-schedule-title {
+  font-weight: 600;
+  font-size: 0.88rem;
+  color: var(--text-main);
+}
+
+.portable-schedule-time {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+/* Portrait 30-Day Table in Light Theme Overrides */
+[data-theme="light"] .portrait-month-container {
+  background: var(--bg-primary);
+}
+
+[data-theme="light"] .portrait-table-wrapper {
+  background: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05) !important;
+}
+
+[data-theme="light"] .portrait-month-table th {
+  background: #e2e8f0 !important;
+  color: #0f172a !important;
+  font-weight: 700 !important;
+  border-bottom: 2px solid #cbd5e1 !important;
+}
+
+[data-theme="light"] .portrait-month-table td {
+  border-bottom: 1px solid #e2e8f0 !important;
+  color: #0f172a !important;
+  background: #ffffff !important;
+}
+
+[data-theme="light"] .portrait-day-row:hover td {
+  background: #f8fafc !important;
+}
+
+[data-theme="light"] .portrait-day-row.today-row td {
+  background: #eff6ff !important;
+}
+
+[data-theme="light"] .portrait-day-row.today-row {
+  border-left: 3px solid #2563eb !important;
+}
+
+[data-theme="light"] .portrait-day-cell-date {
+  color: #0f172a !important;
+  font-weight: 700 !important;
+}
+
+[data-theme="light"] .portrait-day-cell-sub {
+  color: #334155 !important;
+  font-weight: 600 !important;
+}
+
+[data-theme="light"] .portable-schedule-item {
+  background: #f8fafc !important;
+  border: 1px solid #cbd5e1 !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04) !important;
+}
+
+[data-theme="light"] .portable-schedule-item:hover {
+  background: #f1f5f9 !important;
+}
+
+[data-theme="light"] .portable-schedule-title {
+  color: #0f172a !important;
+  font-weight: 700 !important;
+}
+
+[data-theme="light"] .portable-schedule-title span {
+  color: #334155 !important;
+  font-weight: 600 !important;
+}
+
+[data-theme="light"] .portable-schedule-time {
+  color: #1e293b !important;
+  font-weight: 600 !important;
+}
+
+[data-theme="light"] .portable-schedule-time i {
+  color: #1d4ed8 !important;
+}
+
+[data-theme="light"] .portable-schedule-item .btn-secondary {
+  background: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
+  color: #1e293b !important;
+}
+
+[data-theme="light"] .portable-schedule-item .btn-secondary:hover {
+  background: #f1f5f9 !important;
+  color: #0f172a !important;
+}
+
+/* Portrait Note Badge */
+.portrait-note-badge {
+  background: var(--badge-amber-bg);
+  border: 1px solid var(--badge-amber-border);
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  color: var(--badge-amber-text);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+.portrait-note-badge .edit-note-btn {
+  background: transparent !important;
+  border: none !important;
+  color: var(--badge-amber-text) !important;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+/* Portrait Finance Badge */
+.portrait-finance-badge {
+  background: var(--badge-green-bg);
+  border: 1px solid var(--badge-green-border);
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  color: var(--text-main);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+}
+.portrait-finance-badge .fin-in {
+  color: var(--receipt-color);
+  font-weight: 700;
+}
+.portrait-finance-badge .fin-out {
+  color: var(--payment-color);
+  font-weight: 700;
+}
+.portrait-finance-badge .edit-fin-btn {
+  background: transparent !important;
+  border: none !important;
+  color: var(--badge-green-text) !important;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+/* Portrait Actions */
+.portrait-actions {
+  display: flex;
+  gap: 4px;
+  justify-content: center;
+}
+.portrait-actions .add-sch-btn {
+  color: var(--accent-blue) !important;
+}
+.portrait-actions .add-note-btn {
+  color: var(--badge-amber-text) !important;
+}
+.portrait-actions .add-fin-btn {
+  color: var(--badge-green-text) !important;
+}
+[data-theme="light"] .portrait-actions .btn-xs {
+  background: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
+}
+[data-theme="light"] .portrait-actions .btn-xs:hover {
+  background: #f1f5f9 !important;
+}
+
+/* No schedule & placeholder text */
+.no-schedule-placeholder {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  font-style: italic;
+}
+[data-theme="light"] .no-schedule-placeholder {
+  color: #475569 !important;
+  font-weight: 500;
+}
+
+/* Daily Note & Finance Banner in Day View Overrides */
+[data-theme="light"] .daily-note-banner {
+  background: #fef3c7 !important;
+  border: 1px solid #f59e0b !important;
+}
+[data-theme="light"] .daily-note-banner-title {
+  color: #78350f !important;
+  font-weight: 700 !important;
+}
+[data-theme="light"] .daily-note-banner-title i {
+  color: #b45309 !important;
+}
+[data-theme="light"] .daily-note-banner-content {
+  color: #92400e !important;
+}
+
+[data-theme="light"] .daily-finance-banner {
+  background: #ecfdf5 !important;
+  border: 1px solid #10b981 !important;
+}
+[data-theme="light"] .daily-finance-banner-title {
+  color: #064e3b !important;
+  font-weight: 700 !important;
+}
+[data-theme="light"] .daily-finance-banner-title i {
+  color: #047857 !important;
+}
+
+/* Modal text and contrast in Light Theme */
+[data-theme="light"] .modal-body {
+  color: #0f172a !important;
+}
+[data-theme="light"] .modal-body label {
+  color: #334155 !important;
+  font-weight: 600 !important;
 }

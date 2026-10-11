@@ -1,18 +1,30 @@
-const CACHE_NAME = 'srg-calendar-v14';
-const ASSETS = [
+const CACHE_NAME = 'srg-calendar-localdb-v1.0.0';
+const CORE_ASSETS = [
   './',
   './index.html',
   './app.js',
   './styles.css',
   './manifest.json',
-  './seed_data.json',
-  './pako.min.js'
+  './icon-192.png',
+  './icon-512.png',
+  './pako.min.js',
+  './sql-wasm.js',
+  './sql-wasm.wasm',
+  './pdf.min.js',
+  './pdf.worker.min.js',
+  './taxonomy_seed.js'
 ];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(ASSETS);
+    caches.open(CACHE_NAME).then(async (cache) => {
+      await cache.addAll(CORE_ASSETS).catch((err) => {
+        console.warn('Some core assets could not be pre-cached during install:', err);
+      });
+      // Optionally cache bundled db if present (will be omitted on GitHub Pages)
+      try {
+        await cache.add('./SRG_Calendar.db');
+      } catch(e) {}
     })
   );
   self.skipWaiting();
@@ -30,13 +42,28 @@ self.addEventListener('activate', (e) => {
 });
 
 self.addEventListener('fetch', (e) => {
-  // Network first for Google API, cache first for app shell
-  if (e.request.url.includes('googleapis.com') || e.request.url.includes('accounts.google.com')) {
-    return;
-  }
+  // Ignore chrome-extension or unsupported schemes
+  if (!e.request.url.startsWith('http')) return;
+
   e.respondWith(
-    caches.match(e.request).then((res) => {
-      return res || fetch(e.request);
+    caches.match(e.request).then((cachedResponse) => {
+      if (cachedResponse) {
+        return cachedResponse;
+      }
+      return fetch(e.request).then((networkResponse) => {
+        if (networkResponse && networkResponse.status === 200 && networkResponse.type === 'basic') {
+          const responseToCache = networkResponse.clone();
+          caches.open(CACHE_NAME).then((cache) => {
+            cache.put(e.request, responseToCache);
+          });
+        }
+        return networkResponse;
+      }).catch(() => {
+        // Fallback for navigation requests
+        if (e.request.mode === 'navigate') {
+          return caches.match('./index.html');
+        }
+      });
     })
   );
 });
