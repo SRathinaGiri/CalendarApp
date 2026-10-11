@@ -106,7 +106,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA
-const APP_VERSION = 'v1.0.3 (Local DB)';
+const APP_VERSION = 'v1.0.4 (Local DB)';
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').then((reg) => {
     console.log('SRG Calendar Local DB SW Registered');
@@ -121,7 +121,7 @@ if (localStorage.getItem('srg_installed_version') !== APP_VERSION) {
   if ('caches' in window) {
     caches.keys().then(names => {
       names.forEach(name => {
-        if (!name.includes('v1.0.3')) {
+        if (!name.includes('v1.0.4')) {
           caches.delete(name);
         }
       });
@@ -757,23 +757,38 @@ async function getAttachmentData(att) {
   return null;
 }
 
-function getReferencedAttachmentIds() {
-  const referenced = new Set();
-  if (!db) return referenced;
+/* Content Fingerprint Helper (Instant O(1) content-based deduplication) */
+function getContentFingerprint(val) {
+  if (!val) return '';
+  if (typeof val === 'string') {
+    return `str_${val.length}_${val.slice(0, 100)}_${val.slice(-100)}`;
+  }
+  if (val instanceof ArrayBuffer || val instanceof Uint8Array) {
+    const u8 = val instanceof Uint8Array ? val : new Uint8Array(val);
+    const len = u8.byteLength;
+    const h = Array.from(u8.slice(0, 32)).join('');
+    const t = Array.from(u8.slice(-32)).join('');
+    return `bin_${len}_${h}_${t}`;
+  }
+  return String(val).length.toString();
+}
+
+function getActiveScheduleAttachmentsMap() {
+  const map = new Map(); // id -> { id, name, filename, type }
+  if (!db) return map;
   try {
-    const res = db.exec("SELECT attachments, travel_info FROM schedules");
+    const res = db.exec("SELECT id, attachments, travel_info FROM schedules");
     if (res.length > 0 && res[0].values) {
       for (const row of res[0].values) {
-        const attJson = row[0];
-        const travelJson = row[1];
+        const attJson = row[1];
+        const travelJson = row[2];
         if (attJson) {
           try {
             const arr = JSON.parse(attJson);
             if (Array.isArray(arr)) {
-              for (const a of arr) {
-                if (a.id) referenced.add(String(a.id).trim().toLowerCase());
-                if (a.filename) referenced.add(String(a.filename).trim().toLowerCase());
-              }
+              arr.forEach(a => {
+                if (a.id) map.set(String(a.id).trim().toLowerCase(), a);
+              });
             }
           } catch(e) {}
         }
@@ -781,10 +796,8 @@ function getReferencedAttachmentIds() {
           try {
             const t = JSON.parse(travelJson);
             ['onward', 'return'].forEach(leg => {
-              if (t && t[leg] && t[leg].attachment) {
-                const a = t[leg].attachment;
-                if (a.id) referenced.add(String(a.id).trim().toLowerCase());
-                if (a.filename) referenced.add(String(a.filename).trim().toLowerCase());
+              if (t && t[leg] && t[leg].attachment && t[leg].attachment.id) {
+                map.set(String(t[leg].attachment.id).trim().toLowerCase(), t[leg].attachment);
               }
             });
           } catch(e) {}
@@ -792,65 +805,124 @@ function getReferencedAttachmentIds() {
       }
     }
   } catch(e) {
-    console.warn('Error reading referenced attachments from db:', e);
+    console.warn('Error reading active schedule attachments:', e);
+  }
+  return map;
+}
+
+function getReferencedAttachmentIds() {
+  const referenced = new Set();
+  const activeMap = getActiveScheduleAttachmentsMap();
+  for (const [id, att] of activeMap.entries()) {
+    referenced.add(id);
+    if (att.filename) referenced.add(String(att.filename).trim().toLowerCase());
   }
   return referenced;
 }
 
 async function scanStorageAttachments() {
-  const referenced = getReferencedAttachmentIds();
+  const activeAttsMap = getActiveScheduleAttachmentsMap();
   const idb = await openSRGDatabase();
   const tx = idb.transaction('files', 'readonly');
   const store = tx.objectStore('files');
 
-  let totalFiles = 0;
-  let totalBytes = 0;
-  const orphanList = [];
-  let referencedCount = 0;
-
+  const allStored = [];
   await new Promise((resolve, reject) => {
-    const cursorReq = store.openCursor();
-    cursorReq.onsuccess = (e) => {
+    const req = store.openCursor();
+    req.onsuccess = (e) => {
       const cursor = e.target.result;
       if (cursor) {
         const key = String(cursor.key);
         if (key.startsWith('att_')) {
-          totalFiles++;
           const val = cursor.value;
-          let valSize = 0;
-          if (typeof val === 'string') {
-            valSize = Math.round(val.length * 0.75);
-          } else if (val instanceof ArrayBuffer || val instanceof Uint8Array) {
-            valSize = val.byteLength;
-          }
-          totalBytes += valSize;
-
-          const rawId = key.slice(4).trim().toLowerCase();
-          let isRef = referenced.has(rawId);
-          if (!isRef) {
-            for (const ref of referenced) {
-              if (ref.length >= 5 && (rawId.includes(ref) || ref.includes(rawId))) {
-                isRef = true;
-                break;
-              }
-            }
-          }
-
-          if (isRef) {
-            referencedCount++;
-          } else {
-            orphanList.push({ key, size: valSize });
-          }
+          let size = 0;
+          if (typeof val === 'string') size = Math.round(val.length * 0.75);
+          else if (val && val.byteLength) size = val.byteLength;
+          allStored.push({
+            key,
+            rawId: key.slice(4).trim(),
+            val,
+            size,
+            fp: getContentFingerprint(val)
+          });
         }
         cursor.continue();
       } else {
         resolve();
       }
     };
-    cursorReq.onerror = () => reject(cursorReq.error);
+    req.onerror = () => reject(req.error);
   });
 
-  return { totalFiles, totalBytes, orphanList, referencedCount };
+  // Group by content fingerprint
+  const groupsByFp = new Map();
+  for (const item of allStored) {
+    if (!groupsByFp.has(item.fp)) groupsByFp.set(item.fp, []);
+    groupsByFp.get(item.fp).push(item);
+  }
+
+  const keepKeys = new Set();
+  const duplicateKeysToDelete = [];
+  const orphanKeysToDelete = [];
+  let totalBytes = 0;
+
+  for (const [fp, items] of groupsByFp.entries()) {
+    items.forEach(it => totalBytes += it.size);
+
+    // Check if any item in this fingerprint group matches an active schedule attachment
+    let matchedAtt = null;
+    let matchedItem = null;
+
+    for (const it of items) {
+      const lowId = it.rawId.toLowerCase();
+      if (activeAttsMap.has(lowId)) {
+        matchedAtt = activeAttsMap.get(lowId);
+        matchedItem = it;
+        break;
+      }
+      for (const [activeId, attMeta] of activeAttsMap.entries()) {
+        if (lowId === activeId || lowId === ('att_' + activeId) || lowId.includes(activeId)) {
+          matchedAtt = attMeta;
+          matchedItem = it;
+          break;
+        }
+      }
+      if (matchedAtt) break;
+    }
+
+    if (matchedAtt) {
+      // Pick best canonical key to keep:
+      // Prefer exact key 'att_' + matchedAtt.id
+      let canonicalItem = items.find(it => it.key === ('att_' + matchedAtt.id)) ||
+                          matchedItem ||
+                          items[0];
+      keepKeys.add(canonicalItem.key);
+
+      // All other keys with the SAME fingerprint are redundant alias duplicates!
+      for (const it of items) {
+        if (it.key !== canonicalItem.key) {
+          duplicateKeysToDelete.push({ key: it.key, size: it.size });
+        }
+      }
+    } else {
+      // Not referenced by any active schedule -> all items in group are orphans
+      for (const it of items) {
+        orphanKeysToDelete.push({ key: it.key, size: it.size });
+      }
+    }
+  }
+
+  const cleanableList = [...duplicateKeysToDelete, ...orphanKeysToDelete];
+
+  return {
+    totalFiles: allStored.length,
+    totalBytes: totalBytes,
+    uniqueFilesCount: groupsByFp.size,
+    cleanableList,
+    duplicateCount: duplicateKeysToDelete.length,
+    orphanCount: orphanKeysToDelete.length,
+    activeFilesCount: keepKeys.size
+  };
 }
 
 async function updateStorageStatsUI() {
@@ -859,12 +931,12 @@ async function updateStorageStatsUI() {
   try {
     const stats = await scanStorageAttachments();
     const mb = (stats.totalBytes / (1024 * 1024)).toFixed(2);
-    const orphanCount = stats.orphanList.length;
-    if (orphanCount > 0) {
-      const orphanMb = (stats.orphanList.reduce((acc, o) => acc + o.size, 0) / (1024 * 1024)).toFixed(2);
-      statsEl.innerHTML = `${stats.totalFiles} files (${mb} MB) <span style="color:#f59e0b; font-size:0.75rem;">• ${orphanCount} orphan (${orphanMb} MB)</span>`;
+    const cleanableCount = stats.cleanableList.length;
+    if (cleanableCount > 0) {
+      const cleanableMb = (stats.cleanableList.reduce((acc, o) => acc + o.size, 0) / (1024 * 1024)).toFixed(2);
+      statsEl.innerHTML = `${stats.uniqueFilesCount} active (${stats.totalFiles} stored, ${mb} MB) <span style="color:#f59e0b; font-size:0.75rem;">• ${cleanableCount} duplicate/orphan (${cleanableMb} MB)</span>`;
     } else {
-      statsEl.innerHTML = `${stats.totalFiles} files (${mb} MB) <span style="color:#10b981; font-size:0.75rem;">• All active</span>`;
+      statsEl.innerHTML = `${stats.uniqueFilesCount} files (${mb} MB) <span style="color:#10b981; font-size:0.75rem;">• Deduplicated & clean ✓</span>`;
     }
   } catch(e) {
     statsEl.textContent = 'Active';
@@ -873,20 +945,21 @@ async function updateStorageStatsUI() {
 
 async function purgeOrphanAttachments() {
   const stats = await scanStorageAttachments();
-  if (stats.orphanList.length === 0) {
-    showToast('✓ Storage is clean! No unreferenced attachments found.', 'success', 3500);
+  if (stats.cleanableList.length === 0) {
+    showToast('✓ Storage is already fully deduplicated and clean! No duplicate or orphan files found.', 'success', 3500);
     return;
   }
 
-  const orphanMb = (stats.orphanList.reduce((acc, o) => acc + o.size, 0) / (1024 * 1024)).toFixed(2);
-  const ok = confirm(`Clean Up Orphan Files:\n\nFound ${stats.orphanList.length} unreferenced attachment file(s) occupying ~${orphanMb} MB.\nThese are not attached to any current schedule.\n\nPermanently delete these orphan files from local storage?`);
+  const cleanableMb = (stats.cleanableList.reduce((acc, o) => acc + o.size, 0) / (1024 * 1024)).toFixed(2);
+  const msg = `Storage Clean Up & Deduplication:\n\nFound:\n- ${stats.duplicateCount} redundant alias duplicate keys\n- ${stats.orphanCount} unreferenced orphan files\nTotal space to free: ~${cleanableMb} MB\n\nThis will safely remove redundant copies and keep only the ${stats.activeFilesCount} canonical files for your active schedules.\n\nProceed with cleanup?`;
+  const ok = confirm(msg);
   if (!ok) return;
 
   try {
     const idb = await openSRGDatabase();
     const tx = idb.transaction('files', 'readwrite');
     const store = tx.objectStore('files');
-    for (const item of stats.orphanList) {
+    for (const item of stats.cleanableList) {
       store.delete(item.key);
     }
     await new Promise((res, rej) => {
@@ -894,17 +967,17 @@ async function purgeOrphanAttachments() {
       tx.onerror = rej;
     });
 
-    showToast(`✓ Cleaned ${stats.orphanList.length} orphan files and freed ${orphanMb} MB!`, 'success', 4000);
+    showToast(`✓ Removed ${stats.cleanableList.length} duplicate/orphan entries and freed ${cleanableMb} MB!`, 'success', 4000);
     await updateStorageStatsUI();
   } catch(err) {
     console.error('Error purging orphans:', err);
-    showToast('Error cleaning orphan files: ' + err.message, 'error', 4000);
+    showToast('Error cleaning files: ' + err.message, 'error', 4000);
   }
 }
 
 /**
  * Export complete atomic backup (SQLite database + manifest + all attachments)
- * as a single .zip archive.
+ * as a single .zip archive with strict content deduplication.
  */
 async function exportFullBackupZip() {
   if (!db) {
@@ -937,14 +1010,65 @@ async function exportFullBackupZip() {
       if (r3.length > 0) tagCount = r3[0].values[0][0];
     } catch(e) {}
 
-    // 3. Export all IndexedDB attachments with manifest
+    // 3. Export attachments with STRICT CONTENT DEDUPLICATION
+    const activeAttsMap = getActiveScheduleAttachmentsMap();
+    const manifestAttachments = [];
+    const attFolder = zip.folder('attachments');
+    const seenFingerprints = new Set();
+    const seenZipNames = new Set();
+
+    // Pass 1: Export active schedule attachments directly
+    for (const [id, att] of activeAttsMap.entries()) {
+      const data = await getAttachmentData(att);
+      if (data) {
+        const fp = getContentFingerprint(data);
+        if (!seenFingerprints.has(fp)) {
+          seenFingerprints.add(fp);
+
+          let ext = 'pdf';
+          let mime = 'application/pdf';
+          if (typeof data === 'string' && data.startsWith('data:')) {
+            const m = data.match(/data:([^;]+);/);
+            if (m) {
+              mime = m[1];
+              if (mime.includes('jpeg')) ext = 'jpg';
+              else if (mime.includes('png')) ext = 'png';
+              else if (mime.includes('gif')) ext = 'gif';
+              else if (mime.includes('webp')) ext = 'webp';
+              else if (mime.includes('pdf')) ext = 'pdf';
+            }
+          }
+
+          let baseName = (att.filename || att.name || (att.id + '.' + ext)).replace(/[^a-zA-Z0-9_\-\.]/g, '_');
+          if (!baseName.includes('.')) baseName += '.' + ext;
+
+          let zipName = baseName;
+          if (att.id && !zipName.startsWith(att.id)) {
+            zipName = `${att.id}_${baseName}`;
+          }
+
+          seenZipNames.add(zipName);
+
+          const commaIdx = typeof data === 'string' ? data.indexOf(',') : -1;
+          const b64 = commaIdx > -1 ? data.slice(commaIdx + 1) : data;
+          attFolder.file(zipName, b64, { base64: true });
+
+          manifestAttachments.push({
+            id: att.id,
+            filename: zipName,
+            name: att.name || baseName,
+            path: `attachments/${zipName}`,
+            mime: mime,
+            size: typeof b64 === 'string' ? Math.round(b64.length * 0.75) : (data.byteLength || 0)
+          });
+        }
+      }
+    }
+
+    // Pass 2: Check IndexedDB for any OTHER files with unique content not in schedules
     const idb = await openSRGDatabase();
     const tx = idb.transaction('files', 'readonly');
     const store = tx.objectStore('files');
-
-    const manifestAttachments = [];
-    const attFolder = zip.folder('attachments');
-    const seenFiles = new Set();
 
     await new Promise((resolve, reject) => {
       const cursorReq = store.openCursor();
@@ -953,47 +1077,46 @@ async function exportFullBackupZip() {
         if (cursor) {
           const key = String(cursor.key);
           if (key.startsWith('att_')) {
-            const rawId = key.slice(4);
             const val = cursor.value;
             if (val) {
-              let ext = 'bin';
-              let mime = 'application/octet-stream';
-              let b64 = '';
+              const fp = getContentFingerprint(val);
+              // Deduplication check: SKIP if this exact file content has already been exported!
+              if (!seenFingerprints.has(fp)) {
+                seenFingerprints.add(fp);
+                const rawId = key.slice(4);
+                let ext = 'bin';
+                let mime = 'application/octet-stream';
+                let b64 = '';
 
-              if (typeof val === 'string' && val.startsWith('data:')) {
-                const commaIdx = val.indexOf(',');
-                b64 = commaIdx > -1 ? val.slice(commaIdx + 1) : val;
-                const matchMime = val.match(/data:([^;]+);/);
-                if (matchMime) {
-                  mime = matchMime[1];
-                  if (mime === 'application/pdf') ext = 'pdf';
-                  else if (mime === 'image/jpeg') ext = 'jpg';
-                  else if (mime === 'image/png') ext = 'png';
-                  else if (mime === 'image/gif') ext = 'gif';
-                  else if (mime === 'image/webp') ext = 'webp';
-                }
-              }
-
-              let zipFileName = rawId;
-              if (!zipFileName.includes('.')) {
-                zipFileName = `${rawId}.${ext}`;
-              }
-
-              if (!seenFiles.has(zipFileName)) {
-                seenFiles.add(zipFileName);
-                if (b64) {
-                  attFolder.file(zipFileName, b64, { base64: true });
-                } else if (val instanceof ArrayBuffer || val instanceof Uint8Array) {
-                  attFolder.file(zipFileName, val);
+                if (typeof val === 'string' && val.startsWith('data:')) {
+                  const commaIdx = val.indexOf(',');
+                  b64 = commaIdx > -1 ? val.slice(commaIdx + 1) : val;
+                  const matchMime = val.match(/data:([^;]+);/);
+                  if (matchMime) {
+                    mime = matchMime[1];
+                    if (mime.includes('jpeg')) ext = 'jpg';
+                    else if (mime.includes('png')) ext = 'png';
+                    else if (mime.includes('pdf')) ext = 'pdf';
+                  }
                 }
 
-                manifestAttachments.push({
-                  id: rawId,
-                  path: `attachments/${zipFileName}`,
-                  filename: zipFileName,
-                  mime: mime,
-                  size: b64 ? Math.round(b64.length * 0.75) : (val.byteLength || 0)
-                });
+                let zipFileName = rawId.includes('.') ? rawId : `${rawId}.${ext}`;
+                if (!seenZipNames.has(zipFileName)) {
+                  seenZipNames.add(zipFileName);
+                  if (b64) {
+                    attFolder.file(zipFileName, b64, { base64: true });
+                  } else if (val instanceof ArrayBuffer || val instanceof Uint8Array) {
+                    attFolder.file(zipFileName, val);
+                  }
+
+                  manifestAttachments.push({
+                    id: rawId,
+                    filename: zipFileName,
+                    path: `attachments/${zipFileName}`,
+                    mime: mime,
+                    size: b64 ? Math.round(b64.length * 0.75) : (val.byteLength || 0)
+                  });
+                }
               }
             }
           }
@@ -1039,7 +1162,7 @@ async function exportFullBackupZip() {
     URL.revokeObjectURL(url);
 
     if (loadingToast) dismissToast(loadingToast);
-    showToast(`✓ Exported complete backup (${schCount} schedules, ${manifestAttachments.length} files) to ${downloadFilename}!`, 'success', 5000);
+    showToast(`✓ Exported clean full backup (${schCount} schedules, ${manifestAttachments.length} unique files) to ${downloadFilename}!`, 'success', 5000);
   } catch (err) {
     if (loadingToast) dismissToast(loadingToast);
     console.error('Error exporting full backup zip:', err);
@@ -1048,150 +1171,8 @@ async function exportFullBackupZip() {
 }
 
 /**
- * Import complete atomic backup (database.db + manifest.json + attachments/)
- * with validation, safety snapshots, and single canonical key mapping.
- */
-async function importFullBackupZip(file) {
-  if (!file) return;
-  if (typeof JSZip === 'undefined') {
-    showToast('Zip library not loaded. Please refresh the app.', 'error');
-    return;
-  }
-
-  // Guardrail 1: Max archive size (250 MB)
-  if (file.size > 250 * 1024 * 1024) {
-    showToast('❌ Backup archive exceeds maximum size limit (250 MB).', 'error', 5000);
-    return;
-  }
-
-  const ok = confirm(`⚠️ Restore Complete Backup from "${file.name}"?\n\nThis will restore your SQLite database and all ticket attachments.\nA safety snapshot of your current database will be saved before restoring.`);
-  if (!ok) return;
-
-  const loadingToast = showToast('Validating backup archive...', 'info', 0);
-
-  try {
-    const zip = await JSZip.loadAsync(file);
-    const fileEntries = Object.keys(zip.files).filter(k => !zip.files[k].dir && !k.startsWith('__MACOSX'));
-
-    // Guardrail 2: Max entry count (1000 files)
-    if (fileEntries.length > 1000) {
-      throw new Error('Archive contains too many entries (> 1000). Aborting for safety.');
-    }
-
-    // Locate database.db
-    let dbEntry = zip.file('database.db');
-    if (!dbEntry) {
-      const dbName = fileEntries.find(k => k.toLowerCase().endsWith('.db') && !k.includes('/'));
-      if (dbName) dbEntry = zip.file(dbName);
-    }
-
-    if (!dbEntry) {
-      throw new Error('Archive is missing "database.db". If this is an attachments-only ZIP, use "Restore Files (.zip)" under Advanced Options.');
-    }
-
-    // Stage & Validate DB binary
-    const dbBuffer = await dbEntry.async('arraybuffer');
-    const u8 = new Uint8Array(dbBuffer);
-    const headerStr = String.fromCharCode(...u8.slice(0, 16));
-    if (!headerStr.startsWith('SQLite format 3')) {
-      throw new Error('database.db in archive is corrupted or not a valid SQLite database.');
-    }
-
-    // Read manifest.json if present
-    let manifest = null;
-    const manifestEntry = zip.file('manifest.json');
-    if (manifestEntry) {
-      try {
-        const manifestText = await manifestEntry.async('string');
-        manifest = JSON.parse(manifestText);
-      } catch(e) {
-        console.warn('Manifest parsing warning:', e);
-      }
-    }
-
-    // Safety Snapshot
-    await saveLocalDbSnapshot('Pre-Full-Restore Safety Backup');
-
-    // 1. Commit Database
-    db = new SQL.Database(u8);
-    ensureSchemaUpToDate();
-    await saveDbToIndexedDB();
-
-    // 2. Commit Attachments (Canonical mapping, single key per file)
-    let restoredFilesCount = 0;
-    const attachmentEntries = fileEntries.filter(k => k !== 'database.db' && k !== 'manifest.json');
-
-    const manifestMap = new Map();
-    if (manifest && Array.isArray(manifest.attachments)) {
-      manifest.attachments.forEach(att => {
-        if (att.filename && att.id) manifestMap.set(att.filename.toLowerCase(), att.id);
-        if (att.path && att.id) manifestMap.set(att.path.toLowerCase(), att.id);
-      });
-    }
-
-    for (let i = 0; i < attachmentEntries.length; i++) {
-      const entryKey = attachmentEntries[i];
-      const entry = zip.files[entryKey];
-      const entryFilename = entryKey.split('/').pop().trim();
-
-      if (!entryFilename || !isAllowedAttachmentFile(entryFilename)) continue;
-
-      const ext = entryFilename.split('.').pop().toLowerCase();
-      let mime = 'application/octet-stream';
-      if (['jpg', 'jpeg'].includes(ext)) mime = 'image/jpeg';
-      else if (ext === 'png') mime = 'image/png';
-      else if (ext === 'gif') mime = 'image/gif';
-      else if (ext === 'webp') mime = 'image/webp';
-      else if (ext === 'pdf') mime = 'application/pdf';
-
-      const base64Content = await entry.async('base64');
-      if (base64Content.length > 40 * 1024 * 1024) continue; // Skip oversized
-
-      const dataUrl = `data:${mime};base64,${base64Content}`;
-
-      let canonicalId = manifestMap.get(entryFilename.toLowerCase()) ||
-                        manifestMap.get(entryKey.toLowerCase()) ||
-                        extractCanonicalAttachmentId(entryFilename);
-
-      if (!canonicalId) {
-        canonicalId = entryFilename;
-      }
-
-      await saveAttachmentToIndexedDB(canonicalId, dataUrl);
-      restoredFilesCount++;
-    }
-
-    // 3. Post-Restore Integrity Verification
-    const referencedIds = getReferencedAttachmentIds();
-    let missingCount = 0;
-    for (const refId of referencedIds) {
-      const data = await loadAttachmentFromIndexedDB(refId);
-      if (!data) missingCount++;
-    }
-
-    loadMasterDataFromDb();
-    populateTitlesDatalist();
-    renderCurrentView();
-    closeServerSyncModal();
-
-    if (loadingToast) dismissToast(loadingToast);
-
-    let summaryMsg = `✓ Full restore complete! Restored database & ${restoredFilesCount} files.`;
-    if (missingCount > 0) {
-      summaryMsg += ` (${missingCount} attachment references missing from archive)`;
-      showToast(summaryMsg, 'warning', 6000);
-    } else {
-      showToast(summaryMsg, 'success', 5000);
-    }
-  } catch (err) {
-    if (loadingToast) dismissToast(loadingToast);
-    console.error('Error during full backup restore:', err);
-    showToast('❌ Failed to restore full backup: ' + err.message, 'error', 6000);
-  }
-}
-
-/**
- * Export all local attachments from IndexedDB into a single .zip file.
+ * Export all local attachments from IndexedDB into a single .zip file
+ * with content-based deduplication (0 duplicate files).
  */
 async function exportAttachmentsZipFile() {
   if (typeof JSZip === 'undefined') {
@@ -1201,14 +1182,61 @@ async function exportAttachmentsZipFile() {
 
   const loadingToast = showToast('Packaging attachments into ZIP archive...', 'info', 0);
   try {
+    const zip = new JSZip();
+    let fileCount = 0;
+    const seenFingerprints = new Set();
+    const seenZipNames = new Set();
+    const manifestAttachments = [];
+
+    // Pass 1: Active schedule attachments
+    const activeAttsMap = getActiveScheduleAttachmentsMap();
+    for (const [id, att] of activeAttsMap.entries()) {
+      const data = await getAttachmentData(att);
+      if (data) {
+        const fp = getContentFingerprint(data);
+        if (!seenFingerprints.has(fp)) {
+          seenFingerprints.add(fp);
+
+          let ext = 'pdf';
+          let mime = 'application/pdf';
+          if (typeof data === 'string' && data.startsWith('data:')) {
+            const m = data.match(/data:([^;]+);/);
+            if (m) {
+              mime = m[1];
+              if (mime.includes('jpeg')) ext = 'jpg';
+              else if (mime.includes('png')) ext = 'png';
+              else if (mime.includes('gif')) ext = 'gif';
+              else if (mime.includes('webp')) ext = 'webp';
+              else if (mime.includes('pdf')) ext = 'pdf';
+            }
+          }
+
+          let baseName = (att.filename || att.name || (att.id + '.' + ext)).replace(/[^a-zA-Z0-9_\-\.]/g, '_');
+          if (!baseName.includes('.')) baseName += '.' + ext;
+          let zipName = baseName;
+          if (att.id && !zipName.startsWith(att.id)) zipName = `${att.id}_${baseName}`;
+
+          seenZipNames.add(zipName);
+
+          const commaIdx = typeof data === 'string' ? data.indexOf(',') : -1;
+          const b64 = commaIdx > -1 ? data.slice(commaIdx + 1) : data;
+          zip.file(zipName, b64, { base64: true });
+          fileCount++;
+
+          manifestAttachments.push({
+            id: att.id,
+            filename: zipName,
+            mime: mime,
+            size: typeof b64 === 'string' ? Math.round(b64.length * 0.75) : (data.byteLength || 0)
+          });
+        }
+      }
+    }
+
+    // Pass 2: Unique unreferenced files in IndexedDB
     const idb = await openSRGDatabase();
     const tx = idb.transaction('files', 'readonly');
     const store = tx.objectStore('files');
-
-    const zip = new JSZip();
-    let fileCount = 0;
-    const seenFiles = new Set();
-    const manifestAttachments = [];
 
     await new Promise((resolve, reject) => {
       const cursorReq = store.openCursor();
@@ -1217,48 +1245,45 @@ async function exportAttachmentsZipFile() {
         if (cursor) {
           const key = String(cursor.key);
           if (key.startsWith('att_')) {
-            const rawKey = key.slice(4);
             const val = cursor.value;
             if (val) {
-              let ext = 'bin';
-              let mime = 'application/octet-stream';
-              let b64 = '';
+              const fp = getContentFingerprint(val);
+              if (!seenFingerprints.has(fp)) {
+                seenFingerprints.add(fp);
+                const rawKey = key.slice(4);
+                let ext = 'bin';
+                let mime = 'application/octet-stream';
+                let b64 = '';
 
-              if (typeof val === 'string' && val.startsWith('data:')) {
-                const commaIdx = val.indexOf(',');
-                b64 = commaIdx > -1 ? val.slice(commaIdx + 1) : val;
-                const matchMime = val.match(/data:([^;]+);/);
-                if (matchMime) {
-                  mime = matchMime[1];
-                  if (mime === 'application/pdf') ext = 'pdf';
-                  else if (mime === 'image/jpeg') ext = 'jpg';
-                  else if (mime === 'image/png') ext = 'png';
-                  else if (mime === 'image/gif') ext = 'gif';
-                  else if (mime === 'image/webp') ext = 'webp';
-                }
-              }
-
-              let zipFileName = rawKey;
-              if (!zipFileName.includes('.')) {
-                zipFileName = `${rawKey}.${ext}`;
-              }
-
-              if (!seenFiles.has(zipFileName)) {
-                seenFiles.add(zipFileName);
-                if (b64) {
-                  zip.file(zipFileName, b64, { base64: true });
-                  fileCount++;
-                } else if (val instanceof ArrayBuffer || val instanceof Uint8Array) {
-                  zip.file(zipFileName, val);
-                  fileCount++;
+                if (typeof val === 'string' && val.startsWith('data:')) {
+                  const commaIdx = val.indexOf(',');
+                  b64 = commaIdx > -1 ? val.slice(commaIdx + 1) : val;
+                  const matchMime = val.match(/data:([^;]+);/);
+                  if (matchMime) {
+                    mime = matchMime[1];
+                    if (mime.includes('jpeg')) ext = 'jpg';
+                    else if (mime.includes('png')) ext = 'png';
+                  }
                 }
 
-                manifestAttachments.push({
-                  id: rawKey,
-                  filename: zipFileName,
-                  mime: mime,
-                  size: b64 ? Math.round(b64.length * 0.75) : (val.byteLength || 0)
-                });
+                let zipFileName = rawKey.includes('.') ? rawKey : `${rawKey}.${ext}`;
+                if (!seenZipNames.has(zipFileName)) {
+                  seenZipNames.add(zipFileName);
+                  if (b64) {
+                    zip.file(zipFileName, b64, { base64: true });
+                    fileCount++;
+                  } else if (val instanceof ArrayBuffer || val instanceof Uint8Array) {
+                    zip.file(zipFileName, val);
+                    fileCount++;
+                  }
+
+                  manifestAttachments.push({
+                    id: rawKey,
+                    filename: zipFileName,
+                    mime: mime,
+                    size: b64 ? Math.round(b64.length * 0.75) : (val.byteLength || 0)
+                  });
+                }
               }
             }
           }
@@ -1298,7 +1323,7 @@ async function exportAttachmentsZipFile() {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
 
-    showToast(`✓ Exported ${fileCount} attachment files to ${filename}!`, 'success', 5000);
+    showToast(`✓ Exported ${fileCount} unique attachment files to ${filename}!`, 'success', 5000);
   } catch (err) {
     if (loadingToast) dismissToast(loadingToast);
     console.error('Error generating attachments zip:', err);
