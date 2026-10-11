@@ -1,4 +1,4 @@
-const CACHE_NAME = 'srg-calendar-localdb-v1.0.1';
+const CACHE_NAME = 'srg-calendar-localdb-v1.0.2';
 const CORE_ASSETS = [
   './',
   './index.html',

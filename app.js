@@ -106,7 +106,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA
-const APP_VERSION = 'v1.0.1 (Local DB)';
+const APP_VERSION = 'v1.0.2 (Local DB)';
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').then((reg) => {
     console.log('SRG Calendar Local DB SW Registered');
@@ -121,7 +121,7 @@ if (localStorage.getItem('srg_installed_version') !== APP_VERSION) {
   if ('caches' in window) {
     caches.keys().then(names => {
       names.forEach(name => {
-        if (!name.includes('v1.0.1')) {
+        if (!name.includes('v1.0.2')) {
           caches.delete(name);
         }
       });
@@ -615,9 +615,23 @@ function loadAttachmentFromIndexedDB(attId) {
       const idb = await openSRGDatabase();
       const tx = idb.transaction('files', 'readonly');
       const store = tx.objectStore('files');
-      const getReq = store.get('att_' + attId);
-      getReq.onsuccess = () => resolve(getReq.result || null);
-      getReq.onerror = () => resolve(null);
+
+      // Try with 'att_' prefix, without 'att_' prefix, and clean key
+      const key1 = attId.startsWith('att_') ? attId : ('att_' + attId);
+      const key2 = attId.startsWith('att_') ? attId.slice(4) : attId;
+
+      const req1 = store.get(key1);
+      req1.onsuccess = () => {
+        if (req1.result) return resolve(req1.result);
+
+        const req2 = store.get(key2);
+        req2.onsuccess = () => {
+          if (req2.result) return resolve(req2.result);
+          resolve(null);
+        };
+        req2.onerror = () => resolve(null);
+      };
+      req1.onerror = () => resolve(null);
     } catch(e) {
       resolve(null);
     }
@@ -636,38 +650,78 @@ async function getAttachmentData(att) {
   if (!att) return null;
   if (att.data) return att.data;
 
-  // 1. Try local IndexedDB store by att.id
-  let data = await loadAttachmentFromIndexedDB(att.id);
-  if (data) {
-    att.data = data;
-    return data;
-  }
+  // Build candidate keys to try directly in IndexedDB
+  const candidateKeys = new Set();
 
-  // 2. Try exact stored filename
+  if (att.id) {
+    candidateKeys.add(att.id);
+    candidateKeys.add('att_' + att.id);
+  }
   if (att.filename) {
-    data = await loadAttachmentFromIndexedDB(att.filename);
-    if (data) {
-      att.data = data;
-      return data;
-    }
-  }
-
-  // 3. Try fallback combinations: att.id + '_' + att.name, or att.name
-  if (att.id && att.name) {
-    const fn1 = att.id + '_' + att.name.replace(/[^a-zA-Z0-9_\-\.]/g, '_');
-    data = await loadAttachmentFromIndexedDB(fn1);
-    if (data) {
-      att.data = data;
-      return data;
-    }
+    candidateKeys.add(att.filename);
+    candidateKeys.add('att_' + att.filename);
   }
   if (att.name) {
-    const fn2 = att.name.replace(/[^a-zA-Z0-9_\-\.]/g, '_');
-    data = await loadAttachmentFromIndexedDB(fn2);
-    if (data) {
-      att.data = data;
-      return data;
+    candidateKeys.add(att.name);
+    candidateKeys.add('att_' + att.name);
+  }
+  if (att.id && att.name) {
+    const fn1 = att.id + '_' + att.name;
+    const fn1Clean = att.id + '_' + att.name.replace(/[^a-zA-Z0-9_\-\.]/g, '_');
+    candidateKeys.add(fn1);
+    candidateKeys.add(fn1Clean);
+  }
+
+  // 1. Check direct keys
+  for (const k of candidateKeys) {
+    const val = await loadAttachmentFromIndexedDB(k);
+    if (val) {
+      att.data = val;
+      return val;
     }
+  }
+
+  // 2. Fallback: Search IndexedDB files store for any key containing filename, ticket ID, or basename
+  try {
+    const idb = await openSRGDatabase();
+    const tx = idb.transaction('files', 'readonly');
+    const store = tx.objectStore('files');
+    const searchTargets = [
+      att.id,
+      att.filename,
+      att.name
+    ].filter(Boolean).map(s => s.toLowerCase());
+
+    const matchedData = await new Promise((resolve) => {
+      const cursorReq = store.openCursor();
+      cursorReq.onsuccess = (e) => {
+        const cursor = e.target.result;
+        if (cursor) {
+          const kStr = String(cursor.key).toLowerCase();
+          // Check if cursor key matches or contains any of the search targets
+          const isMatch = searchTargets.some(target => {
+            if (target.length < 4) return false;
+            return kStr.includes(target) || target.includes(kStr.replace(/^att_/, ''));
+          });
+          if (isMatch && cursor.value) {
+            return resolve(cursor.value);
+          }
+          cursor.continue();
+        } else {
+          resolve(null);
+        }
+      };
+      cursorReq.onerror = () => resolve(null);
+    });
+
+    if (matchedData) {
+      att.data = matchedData;
+      // Cache under att.id for faster subsequent loads
+      if (att.id) await saveAttachmentToIndexedDB(att.id, matchedData);
+      return matchedData;
+    }
+  } catch(e) {
+    console.warn('Fallback attachment search error:', e);
   }
 
   return null;
@@ -785,15 +839,35 @@ async function importAttachmentsZipFile(file) {
       const base64Content = await zipEntry.async('base64');
       const dataUrl = `data:${mime};base64,${base64Content}`;
 
-      // Store in IndexedDB under multiple accessible keys:
-      // 1) att_<filename>
-      await saveAttachmentToIndexedDB(filename, dataUrl);
+      // Build aliases for robust matching across server backups and local apps:
+      const aliases = new Set();
+      aliases.add(filename);
 
-      // 2) If filename has ticket ID prefix (e.g., ticket_onward_123456_myphoto.jpg), also index by ticket ID
-      const parts = filename.split('_');
-      if (parts.length >= 3 && parts[0] === 'ticket') {
-        const ticketId = parts[0] + '_' + parts[1] + '_' + parts[2];
-        await saveAttachmentToIndexedDB(ticketId, dataUrl);
+      // A) Strip server random hash prefix (e.g. att_1791635569_2f102dd1_...)
+      const cleanedServerName = filename.replace(/^att_\d+_[a-f0-9]+_/, '');
+      if (cleanedServerName && cleanedServerName !== filename) {
+        aliases.add(cleanedServerName);
+      }
+
+      // B) Extract ticket ID (e.g. ticket_onward_1791635563947 or ticket_return_...)
+      const ticketMatch = filename.match(/(ticket_(?:onward|return)_\d+)/);
+      if (ticketMatch) {
+        const ticketId = ticketMatch[1];
+        aliases.add(ticketId);
+        // Also add remainder after ticket ID (e.g. 4558439399.pdf)
+        const subName = filename.slice(filename.indexOf(ticketId) + ticketId.length).replace(/^_+/, '');
+        if (subName) aliases.add(subName);
+      }
+
+      // C) Direct basename if not covered
+      const pureBaseName = filename.split('_').pop();
+      if (pureBaseName && pureBaseName.includes('.')) {
+        aliases.add(pureBaseName);
+      }
+
+      // Save under all alias keys in IndexedDB
+      for (const aliasKey of aliases) {
+        await saveAttachmentToIndexedDB(aliasKey, dataUrl);
       }
 
       importedCount++;
