@@ -124,47 +124,62 @@ body {
   background-color: rgba(30, 41, 59, 0.96);
   backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--border-color);
-  padding: 8px 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  padding: 6px 16px;
+  width: 100%;
+  max-width: 100vw;
+  box-sizing: border-box;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
 }
 
-.header-row {
+/* Sized to match all view containers (Month, Calendar, Day, etc.) */
+.header-container {
+  max-width: 1600px;
+  margin: 0 auto;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  box-sizing: border-box;
+}
+
+.header-row-nav {
   display: flex;
   align-items: center;
   justify-content: space-between;
   width: 100%;
-  gap: 12px;
+  gap: 10px;
+  box-sizing: border-box;
 }
 
-.header-row-top {
-  padding-bottom: 2px;
-}
-
-.header-row-bottom {
-  padding-top: 2px;
+.header-row-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 10px;
+  box-sizing: border-box;
 }
 
 .header-brand-group {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .header-menu-btn {
-  font-size: 1.15rem;
+  font-size: 1.05rem;
   color: var(--text-main);
   background: var(--bg-primary);
   border: 1px solid var(--border-color);
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   border-radius: var(--radius-md);
   display: flex;
   align-items: center;
   justify-content: center;
   transition: all 0.2s ease;
+  flex-shrink: 0;
 }
 
 .header-menu-btn:hover {
@@ -173,10 +188,46 @@ body {
   border-color: #38bdf8;
 }
 
-.header-right-tools {
+.header-nav-right {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* Tool icon buttons (Notes, Finance, Reports, Tags, Backup, Info, Lock) */
+.header-icon-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.tool-icon-btn {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  color: var(--text-main);
+  font-size: 0.92rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.tool-icon-btn:hover {
+  background: var(--bg-tertiary);
+  border-color: #38bdf8;
+  transform: translateY(-1px);
+}
+
+.tool-icon-btn:active {
+  transform: scale(0.95);
 }
 
 /* In-App Install & Update Button */
@@ -261,11 +312,13 @@ body {
 }
 
 .current-period {
-  font-size: 1.15rem;
+  font-size: 1.05rem;
   font-weight: 700;
-  min-width: 170px;
   text-align: center;
   letter-spacing: -0.2px;
+  white-space: nowrap;
+  min-width: 0;
+  padding: 0 4px;
 }
 
 /* BUTTONS */
@@ -1912,120 +1965,91 @@ input:focus, select:focus, textarea:focus {
    ========================================================================== */
 @media (max-width: 768px) {
   .app-header {
-    padding: 6px 12px;
+    padding: 6px 10px;
+  }
+
+  .header-container {
+    gap: 4px;
+  }
+
+  .header-row-nav {
     gap: 6px;
   }
 
-  .header-row {
-    gap: 8px;
-  }
-
-  .header-row-top {
-    padding-bottom: 0;
-  }
-
-  .header-row-bottom {
-    padding-top: 0;
+  .header-row-tools {
+    gap: 6px;
   }
 
   .header-menu-btn {
-    width: 34px;
-    height: 34px;
-    font-size: 1.05rem;
-  }
-
-  .brand-logo {
-    width: 32px;
-    height: 32px;
-    font-size: 1rem;
-  }
-
-  .brand-name {
+    width: 30px;
+    height: 30px;
     font-size: 0.95rem;
   }
 
-  .brand-badge {
-    display: none;
+  .brand-logo {
+    width: 28px;
+    height: 28px;
+    font-size: 0.9rem;
+  }
+
+  .brand-name {
+    font-size: 0.9rem;
   }
 
   .calendar-nav-bar {
-    gap: 4px;
+    gap: 3px;
   }
 
   .calendar-nav-bar .btn-icon {
-    width: 28px;
-    height: 28px;
-    font-size: 0.85rem;
+    width: 26px;
+    height: 26px;
+    font-size: 0.78rem;
   }
 
   .calendar-nav-bar #todayBtn {
-    padding: 3px 8px;
-    font-size: 0.74rem;
+    padding: 2px 6px;
+    font-size: 0.72rem;
   }
 
   .current-period {
-    min-width: auto;
-    font-size: 0.88rem;
-    padding: 0 4px;
+    font-size: 0.84rem;
+    padding: 0 2px;
   }
 
-  .header-right-tools {
-    gap: 6px;
-  }
-
-  .header-right-tools .btn-icon {
-    width: 32px;
-    height: 32px;
-    font-size: 0.85rem;
-  }
-
-  /* Row 2 layout on Mobile */
-  .view-switchers {
-    flex: 1;
-    display: flex;
-    justify-content: space-around;
-    padding: 2px;
-  }
-
-  .view-btn {
-    padding: 5px 6px;
-    font-size: 0.76rem;
-    flex: 1;
-    text-align: center;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+  .header-nav-right {
     gap: 4px;
   }
 
-  .header-actions {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-  }
-
-  /* Keep essential quick actions on Row 2 with compact icon buttons */
-  .header-actions #headerNoteBtn,
-  .header-actions #headerFinanceBtn,
-  .header-actions #syncDriveBtn {
-    display: inline-flex;
-    padding: 6px 8px;
+  .header-nav-right .btn-icon {
+    width: 28px;
+    height: 28px;
     font-size: 0.8rem;
   }
 
-  .header-actions #headerNoteBtn .btn-label,
-  .header-actions #headerFinanceBtn .btn-label,
-  .header-actions #syncDriveBtn #syncStatusText {
-    display: none;
+  /* Row 2: View switchers + icon tools */
+  .view-switchers {
+    padding: 2px;
+    flex-shrink: 0;
   }
 
-  /* Secondary desktop-only buttons on header toolbar hidden on mobile (available via Side Drawer) */
-  .header-actions #openReportsModalBtn,
-  .header-actions #openTagMasterBtn,
-  .header-actions #resetCacheBtn,
-  .header-actions #openAboutBtn,
-  .header-actions #openChangePinBtn {
-    display: none;
+  .view-btn {
+    padding: 4px 6px;
+    font-size: 0.74rem;
+    gap: 3px;
+  }
+
+  .view-btn i {
+    display: none; /* Hide icon inside view buttons on mobile so tab names fit */
+  }
+
+  .header-icon-tools {
+    gap: 3px;
+  }
+
+  .tool-icon-btn {
+    width: 28px;
+    height: 28px;
+    font-size: 0.82rem;
   }
 
   .day-cell {
@@ -2057,29 +2081,34 @@ input:focus, select:focus, textarea:focus {
 
 @media (max-width: 480px) {
   .app-header {
-    padding: 5px 8px;
-    gap: 4px;
+    padding: 4px 6px;
   }
 
   .brand-name {
-    font-size: 0.88rem;
-  }
-
-  #appVersionBadge {
-    display: none;
+    display: none; /* On narrow portrait screens, logo icon is enough */
   }
 
   .current-period {
-    font-size: 0.82rem;
+    font-size: 0.8rem;
   }
 
   .view-btn {
-    padding: 4px 4px;
-    font-size: 0.72rem;
+    padding: 3px 5px;
+    font-size: 0.7rem;
   }
 
   .view-btn .tab-label {
     font-size: 0.7rem;
+  }
+
+  .header-icon-tools {
+    gap: 2px;
+  }
+
+  .tool-icon-btn {
+    width: 26px;
+    height: 26px;
+    font-size: 0.78rem;
   }
 }
 

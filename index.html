@@ -29,110 +29,91 @@
     
     <!-- TOP NAVIGATION BAR -->
     <header class="app-header">
-      <!-- ROW 1: BRAND, NAV & QUICK UTILITIES -->
-      <div class="header-row header-row-top">
-        <div class="header-brand-group">
-          <!-- Side Menu / Drawer Toggle Button -->
-          <button id="sideMenuToggleBtn" class="btn-icon header-menu-btn" title="Open Navigation & Tools Menu" aria-label="Open Menu">
-            <i class="fa-solid fa-bars"></i>
-          </button>
-          
-          <div class="brand">
-            <div class="brand-logo">
-              <i class="fa-solid fa-calendar-days"></i>
+      <div class="header-container">
+        
+        <!-- ROW 1: BRAND & CALENDAR NAVIGATION -->
+        <div class="header-row-nav">
+          <div class="header-brand-group">
+            <button id="sideMenuToggleBtn" class="btn-icon header-menu-btn" title="Navigation Menu" aria-label="Open Menu">
+              <i class="fa-solid fa-bars"></i>
+            </button>
+            <div class="brand">
+              <div class="brand-logo">
+                <i class="fa-solid fa-calendar-days"></i>
+              </div>
+              <span class="brand-name">Calendar App <small id="appVersionBadge" style="font-size:0.7rem; font-weight:600; color:#38bdf8; background:rgba(56,189,248,0.15); padding:1px 5px; border-radius:4px; margin-left:3px;">v1.0.6</small></span>
             </div>
-            <div class="brand-text">
-              <span class="brand-name">Calendar App <small id="appVersionBadge" style="font-size:0.7rem; font-weight:600; color:#38bdf8; background:rgba(56,189,248,0.15); padding:1px 6px; border-radius:4px; margin-left:4px;">v1.0.5</small></span>
-              <span class="brand-badge" id="sourceBadge">Offline PWA</span>
-            </div>
+          </div>
+
+          <!-- Quick Nav Controls (< Today > Month Year) -->
+          <div class="calendar-nav-bar">
+            <button id="prevBtn" class="btn-icon" title="Previous Month"><i class="fa-solid fa-chevron-left"></i></button>
+            <button id="todayBtn" class="btn-secondary btn-sm">Today</button>
+            <button id="nextBtn" class="btn-icon" title="Next Month"><i class="fa-solid fa-chevron-right"></i></button>
+            <h2 id="currentPeriodTitle" class="current-period">October 2026</h2>
+          </div>
+
+          <!-- Right utilities: Update Pill + Theme Toggle -->
+          <div class="header-nav-right">
+            <button id="headerInstallUpdateBtn" class="btn-update-pill hidden" title="Update Available">
+              <i class="fa-solid fa-arrows-rotate"></i>
+              <span class="btn-label">Update</span>
+            </button>
+            <button id="themeToggleBtn" class="btn-icon" title="Toggle Light / Dark Theme">
+              <i class="fa-solid fa-sun" id="themeToggleIcon"></i>
+            </button>
           </div>
         </div>
 
-        <!-- Quick Nav Controls -->
-        <div class="calendar-nav-bar">
-          <button id="prevBtn" class="btn-icon" title="Previous Month"><i class="fa-solid fa-chevron-left"></i></button>
-          <button id="todayBtn" class="btn-secondary btn-sm">Today</button>
-          <button id="nextBtn" class="btn-icon" title="Next Month"><i class="fa-solid fa-chevron-right"></i></button>
-          <h2 id="currentPeriodTitle" class="current-period">October 2026</h2>
+        <!-- ROW 2: VIEW SWITCHERS + ONLY ICONS FOR NOTES, FINANCE, REPORTS, TAGS, BACKUP, INFO, LOCK -->
+        <div class="header-row-tools">
+          <!-- View selector tabs -->
+          <div class="view-switchers">
+            <button class="view-btn active" data-view="calendar" title="Calendar Grid View"><i class="fa-solid fa-calendar-days"></i><span class="tab-label">Calendar</span></button>
+            <button class="view-btn" data-view="month" title="Portrait 30-Day Table View"><i class="fa-solid fa-table-list"></i><span class="tab-label">Month</span></button>
+            <button class="view-btn" data-view="day" title="Day Schedule View"><i class="fa-solid fa-clock"></i><span class="tab-label">Day</span></button>
+            <button class="view-btn" data-view="agenda" title="Agenda & Filters"><i class="fa-solid fa-list-check"></i><span class="tab-label">Agenda</span></button>
+          </div>
+
+          <!-- Tools: ONLY ICONS (Notes, Finance, Reports, Tags, Backup, Info, Lock) -->
+          <div class="header-icon-tools">
+            <!-- Notes -->
+            <button id="headerNoteBtn" class="tool-icon-btn" title="Daily Note">
+              <i class="fa-solid fa-book-bookmark" style="color: #fbbf24;"></i>
+            </button>
+
+            <!-- Finance -->
+            <button id="headerFinanceBtn" class="tool-icon-btn" title="Daily Receipts & Payments">
+              <i class="fa-solid fa-coins" style="color: #34d399;"></i>
+            </button>
+
+            <!-- Reports -->
+            <button id="openReportsModalBtn" class="tool-icon-btn" title="Statements & Reports">
+              <i class="fa-solid fa-chart-column" style="color: #38bdf8;"></i>
+            </button>
+
+            <!-- Tags -->
+            <button id="openTagMasterBtn" class="tool-icon-btn" title="Manage Tags & Categories">
+              <i class="fa-solid fa-tags" style="color: #f43f5e;"></i>
+            </button>
+
+            <!-- Backup & Restore -->
+            <button id="syncDriveBtn" class="tool-icon-btn" title="Backup & Restore Database & Files">
+              <i class="fa-solid fa-database" id="syncDriveIcon" style="color: #a855f7;"></i>
+            </button>
+
+            <!-- Info / About -->
+            <button id="openAboutBtn" class="tool-icon-btn" title="About Calendar App">
+              <i class="fa-solid fa-circle-info" style="color: #06b6d4;"></i>
+            </button>
+
+            <!-- Lock -->
+            <button id="lockAppBtn" class="tool-icon-btn" title="Lock App Security">
+              <i class="fa-solid fa-lock" style="color: #fb7185;"></i>
+            </button>
+          </div>
         </div>
 
-        <!-- Top Right Utilities -->
-        <div class="header-right-tools">
-          <!-- In-App Install / Update Button (Dynamically managed) -->
-          <button id="headerInstallUpdateBtn" class="btn-update-pill hidden" title="Install / Update Calendar App">
-            <i class="fa-solid fa-arrow-down-to-bracket"></i>
-            <span class="btn-label">Install</span>
-          </button>
-
-          <!-- Light / Dark Theme Switcher -->
-          <button id="themeToggleBtn" class="btn-icon" title="Toggle Light / Dark Theme">
-            <i class="fa-solid fa-sun" id="themeToggleIcon"></i>
-          </button>
-
-          <!-- Lock Security -->
-          <button id="lockAppBtn" class="btn-icon" title="Lock App Security">
-            <i class="fa-solid fa-lock"></i>
-          </button>
-        </div>
-      </div>
-
-      <!-- ROW 2: VIEW SWITCHERS & ACTION BUTTONS -->
-      <div class="header-row header-row-bottom">
-        <!-- View selector tabs -->
-        <div class="view-switchers">
-          <button class="view-btn active" data-view="calendar" title="Calendar Grid View"><i class="fa-solid fa-calendar-days"></i> <span class="tab-label">Calendar</span></button>
-          <button class="view-btn" data-view="month" title="Portrait 30-Day Table View"><i class="fa-solid fa-table-list"></i> <span class="tab-label">Month</span></button>
-          <button class="view-btn" data-view="day" title="Day Schedule View"><i class="fa-solid fa-clock"></i> <span class="tab-label">Day</span></button>
-          <button class="view-btn" data-view="agenda" title="Agenda & Filters"><i class="fa-solid fa-list-check"></i> <span class="tab-label">Agenda</span></button>
-        </div>
-
-        <!-- Action Tools Toolbar -->
-        <div class="header-actions">
-          <!-- Daily Note Quick Button -->
-          <button id="headerNoteBtn" class="btn-secondary btn-sm" title="View / Add Daily Note">
-            <i class="fa-solid fa-book-bookmark"></i>
-            <span class="btn-label">Note</span>
-          </button>
-
-          <!-- Daily Finance Quick Button -->
-          <button id="headerFinanceBtn" class="btn-secondary btn-sm" title="View / Add Daily Finance">
-            <i class="fa-solid fa-coins"></i>
-            <span class="btn-label">Finance</span>
-          </button>
-
-          <!-- Reports & Statements Button -->
-          <button id="openReportsModalBtn" class="btn-secondary btn-sm" title="View Reports & Financial Statements">
-            <i class="fa-solid fa-chart-column"></i>
-            <span class="btn-label">Reports</span>
-          </button>
-
-          <!-- Database Backup & Restore Button -->
-          <button id="syncDriveBtn" class="btn-sync" title="Backup & Restore Database">
-            <i class="fa-solid fa-database" id="syncDriveIcon"></i>
-            <span id="syncStatusText">Backup & Restore</span>
-          </button>
-
-          <!-- Manage Tags Button -->
-          <button id="openTagMasterBtn" class="btn-secondary" title="Manage Tag Categories & Custom Fields">
-            <i class="fa-solid fa-tags"></i>
-            <span class="btn-label">Tags</span>
-          </button>
-
-          <!-- Reset Cache Button -->
-          <button id="resetCacheBtn" class="btn-icon" title="Purge Cache & Hard Reload App">
-            <i class="fa-solid fa-arrows-rotate"></i>
-          </button>
-
-          <!-- About App -->
-          <button id="openAboutBtn" class="btn-icon" title="About Calendar App">
-            <i class="fa-solid fa-circle-info"></i>
-          </button>
-
-          <!-- Change Security PIN -->
-          <button id="openChangePinBtn" class="btn-icon" title="Change Security PIN / Access Key">
-            <i class="fa-solid fa-key"></i>
-          </button>
-        </div>
       </div>
     </header>
 
@@ -146,7 +127,7 @@
           </div>
           <div class="brand-text">
             <span class="brand-name">Calendar App</span>
-            <span class="brand-badge" id="drawerVersionBadge">v1.0.5 &bull; Offline PWA</span>
+            <span class="brand-badge" id="drawerVersionBadge">v1.0.6 &bull; Offline PWA</span>
           </div>
         </div>
         <button id="closeSideMenuBtn" class="btn-icon" title="Close Menu"><i class="fa-solid fa-xmark"></i></button>
@@ -163,7 +144,7 @@
               <div class="drawer-card-title" id="drawerInstallUpdateTitle">Install / Update App</div>
               <div class="drawer-card-desc" id="drawerInstallUpdateDesc">Install or check for updates</div>
             </div>
-            <span id="drawerInstallUpdateBadge" class="drawer-badge">v1.0.5</span>
+            <span id="drawerInstallUpdateBadge" class="drawer-badge">v1.0.6</span>
           </button>
         </div>
 
@@ -224,6 +205,10 @@
           <button id="drawerThemeBtn" class="drawer-nav-item">
             <i class="fa-solid fa-circle-half-stroke text-amber"></i>
             <span id="drawerThemeText">Switch Theme</span>
+          </button>
+          <button id="drawerBiometricBtn" class="drawer-nav-item">
+            <i class="fa-solid fa-fingerprint text-emerald"></i>
+            <span id="drawerBiometricText">Biometric / Fingerprint Unlock</span>
           </button>
           <button id="drawerChangePinBtn" class="drawer-nav-item">
             <i class="fa-solid fa-key text-blue"></i>
@@ -1014,7 +999,7 @@
           </div>
           <h2 style="font-size: 1.45rem; font-weight: 700; margin-bottom: 4px; color: var(--text-main);">Calendar App</h2>
           <div style="display: inline-block; font-size: 0.8rem; font-weight: 600; color: #38bdf8; background: rgba(56,189,248,0.12); padding: 3px 10px; border-radius: 12px; margin-bottom: 16px; border: 1px solid rgba(56,189,248,0.3);">
-            Version <span id="aboutModalVersion">v1.0.5 (PWA)</span>
+            Version <span id="aboutModalVersion">v1.0.6 (PWA)</span>
           </div>
 
           <div style="background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 14px 16px; text-align: left; font-size: 0.88rem; line-height: 1.55; margin-bottom: 16px;">
@@ -1052,17 +1037,37 @@
 
     <!-- FULL-SCREEN SECURITY ACCESS KEY LOCK -->
     <div id="appLockOverlay" class="modal-backdrop hidden" style="z-index: 10000; background: rgba(15, 23, 42, 0.98); backdrop-filter: blur(16px); display: flex; align-items: center; justify-content: center;">
-      <div class="modal-card" style="max-width: 400px; text-align: center; padding: 30px 24px; border: 1px solid var(--border-color);">
-        <div style="width: 60px; height: 60px; background: linear-gradient(135deg, #3b82f6, #6366f1); border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 1.8rem; color: #fff; margin-bottom: 16px; box-shadow: 0 4px 15px rgba(59, 130, 246, 0.4);">
+      <div class="modal-card" style="max-width: 400px; text-align: center; padding: 28px 22px; border: 1px solid var(--border-color);">
+        <div style="width: 58px; height: 58px; background: linear-gradient(135deg, #3b82f6, #6366f1); border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 1.7rem; color: #fff; margin-bottom: 14px; box-shadow: 0 4px 15px rgba(59, 130, 246, 0.4);">
           <i class="fa-solid fa-shield-halved"></i>
         </div>
-        <h3 style="font-size: 1.3rem; margin-bottom: 8px;">Calendar App Lock</h3>
-        <p style="font-size: 0.88rem; color: var(--text-muted); margin-bottom: 20px;">Enter your Security Access Key / PIN to unlock your personal calendar.</p>
+        <h3 style="font-size: 1.25rem; margin-bottom: 6px;">Calendar App Lock</h3>
+        <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 18px;">Unlock your calendar using biometrics or your 4-digit PIN.</p>
         
+        <!-- BIOMETRIC UNLOCK BUTTON -->
+        <div id="biometricUnlockContainer" class="hidden" style="margin-bottom: 16px;">
+          <button type="button" id="biometricUnlockBtn" class="btn-primary" style="width: 100%; justify-content: center; padding: 12px; font-size: 0.96rem; background: linear-gradient(135deg, #10b981, #059669); border: 1px solid #34d399; box-shadow: 0 4px 14px rgba(16, 185, 129, 0.35);">
+            <i class="fa-solid fa-fingerprint" style="font-size: 1.2rem;"></i> Unlock with Biometrics
+          </button>
+          <div style="display: flex; align-items: center; margin: 14px 0 8px; color: var(--text-dim); font-size: 0.76rem;">
+            <div style="flex: 1; height: 1px; background: var(--border-color);"></div>
+            <span style="padding: 0 10px;">or enter PIN</span>
+            <div style="flex: 1; height: 1px; background: var(--border-color);"></div>
+          </div>
+        </div>
+
         <form id="appUnlockForm" style="display: flex; flex-direction: column; gap: 12px;">
           <input type="password" id="appLockKeyInput" placeholder="Enter Access Key / PIN" required style="width: 100%; box-sizing: border-box; padding: 12px; font-size: 1rem; text-align: center; border-radius: var(--radius-md); border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-main); font-family: inherit;">
-          <button type="submit" class="btn-primary" style="width: 100%; justify-content: center; padding: 12px; font-size: 1rem;"><i class="fa-solid fa-key"></i> Unlock Calendar</button>
+          <button type="submit" class="btn-primary" style="width: 100%; justify-content: center; padding: 12px; font-size: 0.96rem;"><i class="fa-solid fa-key"></i> Unlock with PIN</button>
         </form>
+
+        <!-- Biometric Setup Button (visible if device supports sensor but not enrolled) -->
+        <div id="enableBiometricPrompt" class="hidden" style="margin-top: 14px;">
+          <button type="button" id="enableBiometricBtn" class="btn-ghost btn-sm" style="font-size: 0.8rem; color: #34d399; border: 1px dashed rgba(52, 211, 153, 0.4); width: 100%; justify-content: center; padding: 8px;">
+            <i class="fa-solid fa-fingerprint"></i> Set up Fingerprint / Face Unlock
+          </button>
+        </div>
+
         <div id="appLockErrorMsg" style="color: #fb7185; font-size: 0.85rem; margin-top: 10px;" class="hidden">Incorrect Access Key. Access Denied.</div>
       </div>
     </div>

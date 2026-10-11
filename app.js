@@ -106,7 +106,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.0.5';
+const APP_VERSION = 'v1.0.6';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -250,7 +250,7 @@ if (localStorage.getItem('srg_installed_version') !== APP_VERSION) {
   if ('caches' in window) {
     caches.keys().then(names => {
       names.forEach(name => {
-        if (!name.includes('v1.0.5')) {
+        if (!name.includes('v1.0.6')) {
           caches.delete(name);
         }
       });
@@ -1860,14 +1860,164 @@ function getStoredAppPin() {
   return localStorage.getItem('srg_app_pin') || '1234';
 }
 
+/* ==========================================================================
+   BIOMETRIC AUTHENTICATION (WEBAUTHN FINGERPRINT / FACE ID)
+   ========================================================================== */
+
+async function isBiometricAvailable() {
+  if (window.PublicKeyCredential && 
+      typeof PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable === 'function') {
+    try {
+      return await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+    } catch(e) {
+      return false;
+    }
+  }
+  return false;
+}
+
+function updateBiometricUI() {
+  const bioContainer = document.getElementById('biometricUnlockContainer');
+  const bioPrompt = document.getElementById('enableBiometricPrompt');
+  const drawerBioText = document.getElementById('drawerBiometricText');
+  const isEnabled = localStorage.getItem('srg_biometric_enabled') === 'true';
+
+  isBiometricAvailable().then(available => {
+    if (bioContainer) {
+      bioContainer.classList.toggle('hidden', !(available && isEnabled));
+    }
+    if (bioPrompt) {
+      bioPrompt.classList.toggle('hidden', !(available && !isEnabled));
+    }
+    if (drawerBioText) {
+      drawerBioText.textContent = isEnabled ? 'Biometrics: Enabled' : 'Enable Biometrics';
+    }
+  });
+}
+
+async function registerBiometricCredential() {
+  if (!(await isBiometricAvailable())) {
+    showToast('Biometric sensor is not available on this device.', 'warning', 4000);
+    return false;
+  }
+
+  const loadingToast = showToast('Scan fingerprint or face to register...', 'info', 0);
+  try {
+    const challenge = new Uint8Array(16);
+    crypto.getRandomValues(challenge);
+    const userId = new Uint8Array(8);
+    crypto.getRandomValues(userId);
+
+    const cred = await navigator.credentials.create({
+      publicKey: {
+        challenge: challenge,
+        rp: { name: 'Calendar App' },
+        user: {
+          id: userId,
+          name: 'calendar_user',
+          displayName: 'Calendar User'
+        },
+        pubKeyCredParams: [
+          { alg: -7, type: 'public-key' },
+          { alg: -257, type: 'public-key' }
+        ],
+        authenticatorSelection: {
+          authenticatorAttachment: 'platform',
+          userVerification: 'required'
+        },
+        timeout: 60000
+      }
+    });
+
+    if (loadingToast) dismissToast(loadingToast);
+
+    if (cred && cred.rawId) {
+      const credIdBase64 = btoa(String.fromCharCode(...new Uint8Array(cred.rawId)));
+      localStorage.setItem('srg_biometric_cred_id', credIdBase64);
+      localStorage.setItem('srg_biometric_enabled', 'true');
+      showToast('✓ Biometric unlock enabled successfully!', 'success', 4000);
+      updateBiometricUI();
+      return true;
+    }
+  } catch(err) {
+    if (loadingToast) dismissToast(loadingToast);
+    console.warn('Biometric registration error:', err);
+    if (err.name !== 'NotAllowedError') {
+      showToast('Could not register biometrics: ' + err.message, 'error', 4000);
+    }
+  }
+  return false;
+}
+
+async function unlockAppWithBiometric(autoPrompt = false) {
+  const credIdBase64 = localStorage.getItem('srg_biometric_cred_id');
+  if (!credIdBase64 || localStorage.getItem('srg_biometric_enabled') !== 'true') {
+    if (!autoPrompt) {
+      await registerBiometricCredential();
+    }
+    return;
+  }
+
+  try {
+    const rawId = Uint8Array.from(atob(credIdBase64), c => c.charCodeAt(0));
+    const challenge = new Uint8Array(16);
+    crypto.getRandomValues(challenge);
+
+    const assertion = await navigator.credentials.get({
+      publicKey: {
+        challenge: challenge,
+        allowCredentials: [{
+          id: rawId,
+          type: 'public-key'
+        }],
+        userVerification: 'required',
+        timeout: 60000
+      }
+    });
+
+    if (assertion) {
+      isAppUnlocked = true;
+      sessionStorage.setItem('srg_app_unlocked', 'true');
+      const overlay = document.getElementById('appLockOverlay');
+      if (overlay) overlay.classList.add('hidden');
+      const errEl = document.getElementById('appLockErrorMsg');
+      if (errEl) errEl.classList.add('hidden');
+      showToast('✓ Unlocked with Biometrics!', 'success', 3000);
+    }
+  } catch(err) {
+    console.warn('Biometric verification error:', err);
+    if (!autoPrompt && err.name !== 'NotAllowedError') {
+      showToast('Biometric verification cancelled or failed. Please enter PIN.', 'error', 3000);
+    }
+  }
+}
+
+async function toggleBiometricSetting() {
+  const isEnabled = localStorage.getItem('srg_biometric_enabled') === 'true';
+  if (isEnabled) {
+    localStorage.removeItem('srg_biometric_enabled');
+    localStorage.removeItem('srg_biometric_cred_id');
+    showToast('Biometric unlock disabled.', 'info');
+    updateBiometricUI();
+  } else {
+    await registerBiometricCredential();
+  }
+}
+
 async function checkAppSecurityLock() {
   const overlay = document.getElementById('appLockOverlay');
   if (!overlay) return;
 
   if (!isAppUnlocked) {
     overlay.classList.remove('hidden');
+    updateBiometricUI();
     const keyInp = document.getElementById('appLockKeyInput');
     if (keyInp) keyInp.focus();
+
+    // Auto-prompt biometrics if already registered
+    if (localStorage.getItem('srg_biometric_enabled') === 'true') {
+      setTimeout(() => unlockAppWithBiometric(true), 400);
+    }
   } else {
     overlay.classList.add('hidden');
   }
@@ -1894,6 +2044,19 @@ async function unlockAppWithKey(enteredKey) {
     if (overlay) overlay.classList.add('hidden');
     if (errEl) errEl.classList.add('hidden');
     showToast('✓ Calendar Authenticated & Unlocked', 'success');
+
+    // Prompt to enable biometrics if supported on this mobile device but not yet enabled
+    if (localStorage.getItem('srg_biometric_enabled') !== 'true') {
+      isBiometricAvailable().then(available => {
+        if (available) {
+          setTimeout(() => {
+            if (confirm('Enable fingerprint / biometric unlock on this device for instant access?')) {
+              registerBiometricCredential();
+            }
+          }, 600);
+        }
+      });
+    }
   } else {
     if (errEl) {
       errEl.textContent = 'Incorrect Security PIN. Access Denied.';
@@ -1909,12 +2072,17 @@ async function lockAppSecurity() {
 
   const overlay = document.getElementById('appLockOverlay');
   if (overlay) overlay.classList.remove('hidden');
+  updateBiometricUI();
   const keyInp = document.getElementById('appLockKeyInput');
   if (keyInp) {
     keyInp.value = '';
     keyInp.focus();
   }
   showToast('Calendar Locked', 'info');
+
+  if (localStorage.getItem('srg_biometric_enabled') === 'true') {
+    setTimeout(() => unlockAppWithBiometric(true), 400);
+  }
 }
 
 /* ==========================================================================
@@ -5413,6 +5581,13 @@ function setupUIEventListeners() {
       openChangePinModal();
     });
   }
+  const drawerBiometricBtn = document.getElementById('drawerBiometricBtn');
+  if (drawerBiometricBtn) {
+    drawerBiometricBtn.addEventListener('click', async () => {
+      closeSideMenu();
+      await toggleBiometricSetting();
+    });
+  }
   const drawerLockBtn = document.getElementById('drawerLockBtn');
   if (drawerLockBtn) {
     drawerLockBtn.addEventListener('click', () => {
@@ -5420,12 +5595,25 @@ function setupUIEventListeners() {
       lockAppSecurity();
     });
   }
+  const purgeAppCaches = () => {
+    if (confirm('This will purge browser caches and reload the latest version of Calendar App. Continue?')) {
+      if ('caches' in window) {
+        caches.keys().then(names => {
+          Promise.all(names.map(name => caches.delete(name))).then(() => {
+            location.reload(true);
+          });
+        });
+      } else {
+        location.reload(true);
+      }
+    }
+  };
+
   const drawerResetCacheBtn = document.getElementById('drawerResetCacheBtn');
   if (drawerResetCacheBtn) {
     drawerResetCacheBtn.addEventListener('click', () => {
       closeSideMenu();
-      const resetBtn = document.getElementById('resetCacheBtn');
-      if (resetBtn) resetBtn.click();
+      purgeAppCaches();
     });
   }
   const drawerAboutBtn = document.getElementById('drawerAboutBtn');
@@ -5491,19 +5679,7 @@ function setupUIEventListeners() {
 
   const resetCacheBtn = document.getElementById('resetCacheBtn');
   if (resetCacheBtn) {
-    resetCacheBtn.addEventListener('click', () => {
-      if (confirm('This will purge browser caches and reload the latest version of Calendar App. Continue?')) {
-        if ('caches' in window) {
-          caches.keys().then(names => {
-            Promise.all(names.map(name => caches.delete(name))).then(() => {
-              location.reload(true);
-            });
-          });
-        } else {
-          location.reload(true);
-        }
-      }
-    });
+    resetCacheBtn.addEventListener('click', purgeAppCaches);
   }
 
   const lockAppBtn = document.getElementById('lockAppBtn');
@@ -5574,12 +5750,27 @@ function setupUIEventListeners() {
     });
   }
 
+  // App Lock & Biometrics
   const unlockForm = document.getElementById('appUnlockForm');
   if (unlockForm) {
     unlockForm.addEventListener('submit', (e) => {
       e.preventDefault();
       const enteredKey = document.getElementById('appLockKeyInput').value;
       unlockAppWithKey(enteredKey);
+    });
+  }
+
+  const biometricUnlockBtn = document.getElementById('biometricUnlockBtn');
+  if (biometricUnlockBtn) {
+    biometricUnlockBtn.addEventListener('click', () => {
+      unlockAppWithBiometric(false);
+    });
+  }
+
+  const enableBiometricBtn = document.getElementById('enableBiometricBtn');
+  if (enableBiometricBtn) {
+    enableBiometricBtn.addEventListener('click', () => {
+      registerBiometricCredential();
     });
   }
 
