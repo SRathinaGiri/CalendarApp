@@ -105,14 +105,143 @@ function dismissToast(toastEl) {
   }
 }
 
-// Register Service Worker for Offline PWA
-const APP_VERSION = 'v1.0.4 (Local DB)';
+// Register Service Worker for Offline PWA & Lifecycle Management
+const APP_VERSION = 'v1.0.5';
+let deferredInstallPrompt = null;
+let swRegistration = null;
+let updateWaiting = false;
+
+// Listen for PWA installation prompt
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  updateInstallButtonState();
+});
+
+window.addEventListener('appinstalled', () => {
+  deferredInstallPrompt = null;
+  updateInstallButtonState();
+  showToast('Calendar App installed successfully!', 'success');
+});
+
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').then((reg) => {
-    console.log('SRG Calendar Local DB SW Registered');
+    swRegistration = reg;
+    console.log('Calendar App SW Registered');
+
+    // If an updated worker is already waiting
+    if (reg.waiting) {
+      updateWaiting = true;
+      updateInstallButtonState();
+    }
+
+    reg.addEventListener('updatefound', () => {
+      const newWorker = reg.installing;
+      if (newWorker) {
+        newWorker.addEventListener('statechange', () => {
+          if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+            updateWaiting = true;
+            updateInstallButtonState();
+            showToast('A new update for Calendar App is ready! Click "Update App" to apply.', 'info', 6000);
+          }
+        });
+      }
+    });
+
     // Check for updates on load
     reg.update().catch(() => {});
   }).catch(err => console.log('SW registration error:', err));
+
+  let refreshing = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!refreshing) {
+      refreshing = true;
+      window.location.reload();
+    }
+  });
+}
+
+function updateInstallButtonState() {
+  const headerBtn = document.getElementById('headerInstallUpdateBtn');
+  const drawerBtn = document.getElementById('drawerInstallUpdateBtn');
+  const drawerTitle = document.getElementById('drawerInstallUpdateTitle');
+  const drawerDesc = document.getElementById('drawerInstallUpdateDesc');
+  const drawerBadge = document.getElementById('drawerInstallUpdateBadge');
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+
+  if (updateWaiting) {
+    if (headerBtn) {
+      headerBtn.classList.remove('hidden');
+      headerBtn.className = 'btn-update-pill btn-update-active';
+      headerBtn.innerHTML = '<i class="fa-solid fa-arrows-rotate fa-spin"></i> <span class="btn-label">Update App</span>';
+      headerBtn.title = 'New version available - Click to apply update now';
+    }
+    if (drawerTitle) drawerTitle.textContent = 'Update Calendar App';
+    if (drawerDesc) drawerDesc.textContent = 'New version ready - Click to apply update';
+    if (drawerBadge) {
+      drawerBadge.textContent = 'Update Ready';
+      drawerBadge.className = 'drawer-badge badge-warning';
+    }
+  } else if (deferredInstallPrompt) {
+    if (headerBtn) {
+      headerBtn.classList.remove('hidden');
+      headerBtn.className = 'btn-update-pill btn-install-ready';
+      headerBtn.innerHTML = '<i class="fa-solid fa-download"></i> <span class="btn-label">Install</span>';
+      headerBtn.title = 'Install Calendar App on your device';
+    }
+    if (drawerTitle) drawerTitle.textContent = 'Install Calendar App';
+    if (drawerDesc) drawerDesc.textContent = 'Install as standalone mobile/desktop app';
+    if (drawerBadge) {
+      drawerBadge.textContent = 'Install';
+      drawerBadge.className = 'drawer-badge badge-info';
+    }
+  } else {
+    if (headerBtn) {
+      headerBtn.classList.add('hidden');
+    }
+    if (drawerTitle) drawerTitle.textContent = isStandalone ? 'Check for Updates' : 'Install / Update App';
+    if (drawerDesc) drawerDesc.textContent = isStandalone ? `Version ${APP_VERSION} (Installed)` : 'Add to Home Screen or update';
+    if (drawerBadge) {
+      drawerBadge.textContent = APP_VERSION;
+      drawerBadge.className = 'drawer-badge';
+    }
+  }
+}
+
+async function handleInstallOrUpdateClick() {
+  if (updateWaiting && swRegistration && swRegistration.waiting) {
+    showToast('Applying update and refreshing Calendar App...', 'info', 2000);
+    swRegistration.waiting.postMessage({ type: 'SKIP_WAITING' });
+    return;
+  }
+
+  if (deferredInstallPrompt) {
+    deferredInstallPrompt.prompt();
+    const { outcome } = await deferredInstallPrompt.userChoice;
+    if (outcome === 'accepted') {
+      showToast('Installing Calendar App...', 'success', 3000);
+    }
+    deferredInstallPrompt = null;
+    updateInstallButtonState();
+    return;
+  }
+
+  // If already installed or no prompt, perform a manual update check
+  if (swRegistration) {
+    showToast('Checking for Calendar App updates...', 'info', 2500);
+    try {
+      await swRegistration.update();
+      setTimeout(() => {
+        if (!updateWaiting) {
+          showToast(`Calendar App is up to date (${APP_VERSION})`, 'success', 3000);
+        }
+      }, 1200);
+    } catch (err) {
+      showToast(`Calendar App is running ${APP_VERSION}`, 'info', 3000);
+    }
+  } else {
+    showToast(`Calendar App is running ${APP_VERSION}`, 'info', 3000);
+  }
 }
 
 // Automatic cache invalidation on version update
@@ -121,7 +250,7 @@ if (localStorage.getItem('srg_installed_version') !== APP_VERSION) {
   if ('caches' in window) {
     caches.keys().then(names => {
       names.forEach(name => {
-        if (!name.includes('v1.0.4')) {
+        if (!name.includes('v1.0.5')) {
           caches.delete(name);
         }
       });
@@ -135,6 +264,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (vBadge) vBadge.textContent = APP_VERSION;
   initAppTheme();
   setupUIEventListeners();
+  updateInstallButtonState();
   await initSqliteDatabase();
   await checkAppSecurityLock();
   loadMasterDataFromDb();
@@ -1171,6 +1301,143 @@ async function exportFullBackupZip() {
 }
 
 /**
+ * Restore an atomic Full Backup (.zip) containing:
+ * 1. SQLite relational database (database.db)
+ * 2. Attachment tickets and documents (attachments/ folder)
+ * 3. manifest.json
+ */
+async function importFullBackupZip(file) {
+  if (!file) return;
+  if (typeof JSZip === 'undefined') {
+    showToast('Zip library not loaded. Please refresh the app.', 'error');
+    return;
+  }
+
+  // Guardrail: Max archive size (250 MB)
+  if (file.size > 250 * 1024 * 1024) {
+    showToast('❌ Backup archive exceeds maximum size limit (250 MB).', 'error', 5000);
+    return;
+  }
+
+  if (!confirm(`⚠️ Are you sure you want to restore full backup from "${file.name}"?\n\nThis will restore your complete database and all ticket attachments. An automatic safety snapshot of your current database will be saved first.`)) {
+    return;
+  }
+
+  const loadingToast = showToast(`Unpacking and restoring full backup "${file.name}"...`, 'info', 0);
+  try {
+    const zip = await JSZip.loadAsync(file);
+
+    // 1. Locate SQLite database file
+    let dbEntry = zip.file('database.db');
+    if (!dbEntry) {
+      const dbKeys = Object.keys(zip.files).filter(k => k.toLowerCase().endsWith('.db') && !k.startsWith('__MACOSX') && !zip.files[k].dir);
+      if (dbKeys.length > 0) {
+        dbEntry = zip.files[dbKeys[0]];
+      }
+    }
+
+    if (!dbEntry) {
+      throw new Error('No SQLite database file (.db) found in the backup archive.');
+    }
+
+    // Safety snapshot of existing data before restoring
+    try {
+      await saveLocalDbSnapshot('Pre-Full-Restore Auto Snapshot');
+    } catch (e) {
+      console.warn('Safety snapshot error:', e);
+    }
+
+    // 2. Restore SQLite database
+    const dbBinary = await dbEntry.async('uint8array');
+    const headerStr = String.fromCharCode(...dbBinary.slice(0, 16));
+    if (!headerStr.startsWith('SQLite format 3')) {
+      throw new Error('Database file in archive is not a valid SQLite database.');
+    }
+
+    db = new SQL.Database(dbBinary);
+    ensureSchemaUpToDate();
+    await saveDbToIndexedDB();
+    loadMasterDataFromDb();
+    populateTitlesDatalist();
+
+    // 3. Parse manifest.json if present
+    let manifestMap = new Map();
+    const manifestEntry = zip.file('manifest.json');
+    if (manifestEntry) {
+      try {
+        const manifestText = await manifestEntry.async('string');
+        const manifest = JSON.parse(manifestText);
+        if (Array.isArray(manifest.attachments)) {
+          manifest.attachments.forEach(att => {
+            if (att.filename && att.id) {
+              manifestMap.set(att.filename.toLowerCase(), att.id);
+            }
+            if (att.name && att.id) {
+              manifestMap.set(att.name.toLowerCase(), att.id);
+            }
+            if (att.path && att.id) {
+              manifestMap.set(att.path.toLowerCase(), att.id);
+            }
+          });
+        }
+      } catch (e) {
+        console.warn('Could not parse manifest.json:', e);
+      }
+    }
+
+    // 4. Restore attachments
+    let importedAttachmentsCount = 0;
+    const attFiles = Object.keys(zip.files).filter(k => {
+      if (zip.files[k].dir || k.startsWith('__MACOSX') || k === 'manifest.json' || k.toLowerCase().endsWith('.db')) {
+        return false;
+      }
+      return true;
+    });
+
+    for (const relPath of attFiles) {
+      const zipEntry = zip.files[relPath];
+      const filename = relPath.split('/').pop().trim();
+      if (!filename || filename === '.htaccess' || !isAllowedAttachmentFile(filename)) continue;
+
+      const ext = filename.split('.').pop().toLowerCase();
+      let mime = 'application/octet-stream';
+      if (['jpg', 'jpeg'].includes(ext)) mime = 'image/jpeg';
+      else if (ext === 'png') mime = 'image/png';
+      else if (ext === 'gif') mime = 'image/gif';
+      else if (ext === 'webp') mime = 'image/webp';
+      else if (ext === 'pdf') mime = 'application/pdf';
+
+      const base64Content = await zipEntry.async('base64');
+      if (base64Content.length > 40 * 1024 * 1024) continue;
+
+      const dataUrl = `data:${mime};base64,${base64Content}`;
+
+      let canonicalId = manifestMap.get(filename.toLowerCase()) ||
+                        manifestMap.get(relPath.toLowerCase()) ||
+                        extractCanonicalAttachmentId(filename) ||
+                        filename;
+
+      await saveAttachmentToIndexedDB(canonicalId, dataUrl);
+      if (filename && filename !== canonicalId) {
+        await saveAttachmentToIndexedDB(filename, dataUrl);
+      }
+      importedAttachmentsCount++;
+    }
+
+    renderCurrentView();
+    await updateStorageStatsUI();
+    closeServerSyncModal();
+
+    if (loadingToast) dismissToast(loadingToast);
+    showToast(`✓ Full backup restored successfully! Database loaded and ${importedAttachmentsCount} attachments restored.`, 'success', 5000);
+  } catch (err) {
+    if (loadingToast) dismissToast(loadingToast);
+    console.error('Error importing full backup zip:', err);
+    showToast('Failed to restore full backup: ' + err.message, 'error', 5000);
+  }
+}
+
+/**
  * Export all local attachments from IndexedDB into a single .zip file
  * with content-based deduplication (0 duplicate files).
  */
@@ -1536,14 +1803,42 @@ function updateNavHeader() {
 }
 
 /* ==========================================================================
-   THEME & SECURITY LOCK & READONLY MODE MANAGEMENT
+   SIDE NAVIGATION DRAWER & THEME MANAGEMENT
    ========================================================================== */
+
+function openSideMenu() {
+  const drawer = document.getElementById('sideMenuDrawer');
+  const backdrop = document.getElementById('sideMenuBackdrop');
+  if (drawer) drawer.classList.remove('closed');
+  if (backdrop) backdrop.classList.remove('hidden');
+  updateInstallButtonState();
+}
+
+function closeSideMenu() {
+  const drawer = document.getElementById('sideMenuDrawer');
+  const backdrop = document.getElementById('sideMenuBackdrop');
+  if (drawer) drawer.classList.add('closed');
+  if (backdrop) backdrop.classList.add('hidden');
+}
+
+function toggleSideMenu() {
+  const drawer = document.getElementById('sideMenuDrawer');
+  if (drawer && drawer.classList.contains('closed')) {
+    openSideMenu();
+  } else {
+    closeSideMenu();
+  }
+}
 
 function initAppTheme() {
   document.documentElement.setAttribute('data-theme', currentTheme);
   const icon = document.getElementById('themeToggleIcon');
   if (icon) {
     icon.className = currentTheme === 'light' ? 'fa-solid fa-moon' : 'fa-solid fa-sun';
+  }
+  const drawerThemeText = document.getElementById('drawerThemeText');
+  if (drawerThemeText) {
+    drawerThemeText.textContent = currentTheme === 'light' ? 'Switch to Dark Theme' : 'Switch to Light Theme';
   }
 }
 
@@ -5026,6 +5321,121 @@ function importSqliteFile(e) {
    ========================================================================== */
 
 function setupUIEventListeners() {
+  // Ensure side drawer starts closed
+  closeSideMenu();
+
+  // Side Menu Navigation Drawer Controls
+  const sideMenuToggleBtn = document.getElementById('sideMenuToggleBtn');
+  if (sideMenuToggleBtn) {
+    sideMenuToggleBtn.addEventListener('click', toggleSideMenu);
+  }
+  const closeSideMenuBtn = document.getElementById('closeSideMenuBtn');
+  if (closeSideMenuBtn) {
+    closeSideMenuBtn.addEventListener('click', closeSideMenu);
+  }
+  const sideMenuBackdrop = document.getElementById('sideMenuBackdrop');
+  if (sideMenuBackdrop) {
+    sideMenuBackdrop.addEventListener('click', closeSideMenu);
+  }
+
+  // In-App Install & Update Buttons
+  const headerInstallUpdateBtn = document.getElementById('headerInstallUpdateBtn');
+  if (headerInstallUpdateBtn) {
+    headerInstallUpdateBtn.addEventListener('click', handleInstallOrUpdateClick);
+  }
+  const drawerInstallUpdateBtn = document.getElementById('drawerInstallUpdateBtn');
+  if (drawerInstallUpdateBtn) {
+    drawerInstallUpdateBtn.addEventListener('click', () => {
+      closeSideMenu();
+      handleInstallOrUpdateClick();
+    });
+  }
+
+  // Drawer View Switchers
+  document.querySelectorAll('[data-drawer-view]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const view = btn.getAttribute('data-drawer-view');
+      switchToView(view);
+      closeSideMenu();
+    });
+  });
+
+  // Drawer Quick Daily Tools
+  const drawerNoteBtn = document.getElementById('drawerNoteBtn');
+  if (drawerNoteBtn) {
+    drawerNoteBtn.addEventListener('click', () => {
+      closeSideMenu();
+      openDailyNoteModal(formatDateYMD(currentDate));
+    });
+  }
+  const drawerFinanceBtn = document.getElementById('drawerFinanceBtn');
+  if (drawerFinanceBtn) {
+    drawerFinanceBtn.addEventListener('click', () => {
+      closeSideMenu();
+      openDailyFinanceModal(formatDateYMD(currentDate));
+    });
+  }
+
+  // Drawer Reports & Data
+  const drawerReportsBtn = document.getElementById('drawerReportsBtn');
+  if (drawerReportsBtn) {
+    drawerReportsBtn.addEventListener('click', () => {
+      closeSideMenu();
+      openReportsModal();
+    });
+  }
+  const drawerBackupBtn = document.getElementById('drawerBackupBtn');
+  if (drawerBackupBtn) {
+    drawerBackupBtn.addEventListener('click', () => {
+      closeSideMenu();
+      openServerSyncModal();
+    });
+  }
+  const drawerTagsBtn = document.getElementById('drawerTagsBtn');
+  if (drawerTagsBtn) {
+    drawerTagsBtn.addEventListener('click', () => {
+      closeSideMenu();
+      openTagMasterModal();
+    });
+  }
+
+  // Drawer Settings & Security
+  const drawerThemeBtn = document.getElementById('drawerThemeBtn');
+  if (drawerThemeBtn) {
+    drawerThemeBtn.addEventListener('click', () => {
+      toggleAppTheme();
+    });
+  }
+  const drawerChangePinBtn = document.getElementById('drawerChangePinBtn');
+  if (drawerChangePinBtn) {
+    drawerChangePinBtn.addEventListener('click', () => {
+      closeSideMenu();
+      openChangePinModal();
+    });
+  }
+  const drawerLockBtn = document.getElementById('drawerLockBtn');
+  if (drawerLockBtn) {
+    drawerLockBtn.addEventListener('click', () => {
+      closeSideMenu();
+      lockAppSecurity();
+    });
+  }
+  const drawerResetCacheBtn = document.getElementById('drawerResetCacheBtn');
+  if (drawerResetCacheBtn) {
+    drawerResetCacheBtn.addEventListener('click', () => {
+      closeSideMenu();
+      const resetBtn = document.getElementById('resetCacheBtn');
+      if (resetBtn) resetBtn.click();
+    });
+  }
+  const drawerAboutBtn = document.getElementById('drawerAboutBtn');
+  if (drawerAboutBtn) {
+    drawerAboutBtn.addEventListener('click', () => {
+      closeSideMenu();
+      openAboutModal();
+    });
+  }
+
   document.getElementById('prevBtn').addEventListener('click', () => {
     if (currentView === 'day') {
       currentDate.setDate(currentDate.getDate() - 1);
@@ -5082,7 +5492,7 @@ function setupUIEventListeners() {
   const resetCacheBtn = document.getElementById('resetCacheBtn');
   if (resetCacheBtn) {
     resetCacheBtn.addEventListener('click', () => {
-      if (confirm('This will purge browser caches and reload the latest version of SRG Calendar. Continue?')) {
+      if (confirm('This will purge browser caches and reload the latest version of Calendar App. Continue?')) {
         if ('caches' in window) {
           caches.keys().then(names => {
             Promise.all(names.map(name => caches.delete(name))).then(() => {
@@ -6741,7 +7151,7 @@ function printCurrentReport() {
     <!DOCTYPE html>
     <html>
       <head>
-        <title>SRG Calendar Pro - Official Report Statement</title>
+        <title>Calendar App - Official Report Statement</title>
         <style>
           body { font-family: system-ui, -apple-system, sans-serif; padding: 25px; color: #0f172a; background: #fff; }
           table { width: 100%; border-collapse: collapse; margin-top: 15px; }

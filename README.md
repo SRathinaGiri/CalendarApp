@@ -1,4 +1,4 @@
-# SRG Calendar Pro (Local DB - Single Device PWA)
+# Calendar App (Offline PWA)
 
 A fully standalone, 100% offline Personal Calendar & Daily Organizer Progressive Web App (PWA) with client-side **SQLite (WASM)** and **IndexedDB** local storage.
 

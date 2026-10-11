@@ -1,9 +1,12 @@
 {
-  "name": "SRG Calendar Pro (Local DB)",
-  "short_name": "SRG Calendar",
-  "description": "Single-device offline PWA Calendar with local SQLite & IndexedDB storage",
+  "id": "calendar-app-pwa",
+  "name": "Calendar App",
+  "short_name": "Calendar App",
+  "description": "Offline Calendar App with local SQLite & IndexedDB storage",
   "start_url": "./index.html",
+  "scope": "./",
   "display": "standalone",
+  "orientation": "any",
   "background_color": "#0f172a",
   "theme_color": "#1e293b",
   "icons": [
@@ -11,13 +14,25 @@
       "src": "icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
     },
     {
       "src": "icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     }
   ]
 }

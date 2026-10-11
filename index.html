@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SRG Calendar Pro (Local DB)</title>
+  <title>Calendar App</title>
   <link rel="manifest" href="manifest.json">
   <meta name="theme-color" content="#1e293b">
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
@@ -29,90 +29,221 @@
     
     <!-- TOP NAVIGATION BAR -->
     <header class="app-header">
-      <div class="brand">
-        <div class="brand-logo">
-          <i class="fa-solid fa-calendar-days"></i>
+      <!-- ROW 1: BRAND, NAV & QUICK UTILITIES -->
+      <div class="header-row header-row-top">
+        <div class="header-brand-group">
+          <!-- Side Menu / Drawer Toggle Button -->
+          <button id="sideMenuToggleBtn" class="btn-icon header-menu-btn" title="Open Navigation & Tools Menu" aria-label="Open Menu">
+            <i class="fa-solid fa-bars"></i>
+          </button>
+          
+          <div class="brand">
+            <div class="brand-logo">
+              <i class="fa-solid fa-calendar-days"></i>
+            </div>
+            <div class="brand-text">
+              <span class="brand-name">Calendar App <small id="appVersionBadge" style="font-size:0.7rem; font-weight:600; color:#38bdf8; background:rgba(56,189,248,0.15); padding:1px 6px; border-radius:4px; margin-left:4px;">v1.0.5</small></span>
+              <span class="brand-badge" id="sourceBadge">Offline PWA</span>
+            </div>
+          </div>
         </div>
-        <div class="brand-text">
-          <span class="brand-name">SRG Calendar <small id="appVersionBadge" style="font-size:0.7rem; font-weight:600; color:#38bdf8; background:rgba(56,189,248,0.15); padding:1px 6px; border-radius:4px; margin-left:4px;">v1.0.4</small></span>
-          <span class="brand-badge" id="sourceBadge">Offline Local DB</span>
+
+        <!-- Quick Nav Controls -->
+        <div class="calendar-nav-bar">
+          <button id="prevBtn" class="btn-icon" title="Previous Month"><i class="fa-solid fa-chevron-left"></i></button>
+          <button id="todayBtn" class="btn-secondary btn-sm">Today</button>
+          <button id="nextBtn" class="btn-icon" title="Next Month"><i class="fa-solid fa-chevron-right"></i></button>
+          <h2 id="currentPeriodTitle" class="current-period">October 2026</h2>
+        </div>
+
+        <!-- Top Right Utilities -->
+        <div class="header-right-tools">
+          <!-- In-App Install / Update Button (Dynamically managed) -->
+          <button id="headerInstallUpdateBtn" class="btn-update-pill hidden" title="Install / Update Calendar App">
+            <i class="fa-solid fa-arrow-down-to-bracket"></i>
+            <span class="btn-label">Install</span>
+          </button>
+
+          <!-- Light / Dark Theme Switcher -->
+          <button id="themeToggleBtn" class="btn-icon" title="Toggle Light / Dark Theme">
+            <i class="fa-solid fa-sun" id="themeToggleIcon"></i>
+          </button>
+
+          <!-- Lock Security -->
+          <button id="lockAppBtn" class="btn-icon" title="Lock App Security">
+            <i class="fa-solid fa-lock"></i>
+          </button>
         </div>
       </div>
 
-      <!-- Quick Nav Controls -->
-      <div class="calendar-nav-bar">
-        <button id="prevBtn" class="btn-icon" title="Previous Month"><i class="fa-solid fa-chevron-left"></i></button>
-        <button id="todayBtn" class="btn-secondary btn-sm">Today</button>
-        <button id="nextBtn" class="btn-icon" title="Next Month"><i class="fa-solid fa-chevron-right"></i></button>
-        <h2 id="currentPeriodTitle" class="current-period">October 2026</h2>
-      </div>
-
-      <!-- Action Tools -->
-      <div class="header-actions">
-        <!-- View selector -->
+      <!-- ROW 2: VIEW SWITCHERS & ACTION BUTTONS -->
+      <div class="header-row header-row-bottom">
+        <!-- View selector tabs -->
         <div class="view-switchers">
-          <button class="view-btn active" data-view="calendar" title="Calendar Grid View">Calendar</button>
-          <button class="view-btn" data-view="month" title="Portrait 30-Day Table View">Month</button>
-          <button class="view-btn" data-view="day">Day</button>
-          <button class="view-btn" data-view="agenda">Agenda</button>
+          <button class="view-btn active" data-view="calendar" title="Calendar Grid View"><i class="fa-solid fa-calendar-days"></i> <span class="tab-label">Calendar</span></button>
+          <button class="view-btn" data-view="month" title="Portrait 30-Day Table View"><i class="fa-solid fa-table-list"></i> <span class="tab-label">Month</span></button>
+          <button class="view-btn" data-view="day" title="Day Schedule View"><i class="fa-solid fa-clock"></i> <span class="tab-label">Day</span></button>
+          <button class="view-btn" data-view="agenda" title="Agenda & Filters"><i class="fa-solid fa-list-check"></i> <span class="tab-label">Agenda</span></button>
         </div>
 
-        <!-- Light / Dark Theme Switcher -->
-        <button id="themeToggleBtn" class="btn-icon" title="Toggle Light / Dark Theme">
-          <i class="fa-solid fa-sun" id="themeToggleIcon"></i>
-        </button>
+        <!-- Action Tools Toolbar -->
+        <div class="header-actions">
+          <!-- Daily Note Quick Button -->
+          <button id="headerNoteBtn" class="btn-secondary btn-sm" title="View / Add Daily Note">
+            <i class="fa-solid fa-book-bookmark"></i>
+            <span class="btn-label">Note</span>
+          </button>
 
-        <!-- Daily Note Quick Button -->
-        <button id="headerNoteBtn" class="btn-secondary btn-sm" title="View / Add Daily Note">
-          <i class="fa-solid fa-book-bookmark"></i>
-          <span class="btn-label">Note</span>
-        </button>
+          <!-- Daily Finance Quick Button -->
+          <button id="headerFinanceBtn" class="btn-secondary btn-sm" title="View / Add Daily Finance">
+            <i class="fa-solid fa-coins"></i>
+            <span class="btn-label">Finance</span>
+          </button>
 
-        <!-- Daily Finance Quick Button -->
-        <button id="headerFinanceBtn" class="btn-secondary btn-sm" title="View / Add Daily Finance">
-          <i class="fa-solid fa-coins"></i>
-          <span class="btn-label">Finance</span>
-        </button>
+          <!-- Reports & Statements Button -->
+          <button id="openReportsModalBtn" class="btn-secondary btn-sm" title="View Reports & Financial Statements">
+            <i class="fa-solid fa-chart-column"></i>
+            <span class="btn-label">Reports</span>
+          </button>
 
-        <!-- Reports & Statements Button -->
-        <button id="openReportsModalBtn" class="btn-secondary btn-sm" title="View Reports & Financial Statements">
-          <i class="fa-solid fa-chart-column"></i>
-          <span class="btn-label">Reports</span>
-        </button>
+          <!-- Database Backup & Restore Button -->
+          <button id="syncDriveBtn" class="btn-sync" title="Backup & Restore Database">
+            <i class="fa-solid fa-database" id="syncDriveIcon"></i>
+            <span id="syncStatusText">Backup & Restore</span>
+          </button>
 
-        <!-- Database Backup & Restore Button -->
-        <button id="syncDriveBtn" class="btn-sync" title="Backup & Restore Database">
-          <i class="fa-solid fa-database" id="syncDriveIcon"></i>
-          <span id="syncStatusText">Backup & Restore</span>
-        </button>
+          <!-- Manage Tags Button -->
+          <button id="openTagMasterBtn" class="btn-secondary" title="Manage Tag Categories & Custom Fields">
+            <i class="fa-solid fa-tags"></i>
+            <span class="btn-label">Tags</span>
+          </button>
 
-        <!-- Manage Tags Button -->
-        <button id="openTagMasterBtn" class="btn-secondary" title="Manage Tag Categories & Custom Fields">
-          <i class="fa-solid fa-tags"></i>
-          <span class="btn-label">Tags</span>
-        </button>
+          <!-- Reset Cache Button -->
+          <button id="resetCacheBtn" class="btn-icon" title="Purge Cache & Hard Reload App">
+            <i class="fa-solid fa-arrows-rotate"></i>
+          </button>
 
-        <!-- Reset Cache Button -->
-        <button id="resetCacheBtn" class="btn-icon" title="Purge Cache & Hard Reload App">
-          <i class="fa-solid fa-arrows-rotate"></i>
-        </button>
+          <!-- About App -->
+          <button id="openAboutBtn" class="btn-icon" title="About Calendar App">
+            <i class="fa-solid fa-circle-info"></i>
+          </button>
 
-        <!-- About App -->
-        <button id="openAboutBtn" class="btn-icon" title="About SRG Calendar Pro">
-          <i class="fa-solid fa-circle-info"></i>
-        </button>
-
-        <!-- Change Security PIN -->
-        <button id="openChangePinBtn" class="btn-icon" title="Change Security PIN / Access Key">
-          <i class="fa-solid fa-key"></i>
-        </button>
-
-        <!-- Lock Security -->
-        <button id="lockAppBtn" class="btn-icon" title="Lock App Security">
-          <i class="fa-solid fa-lock"></i>
-        </button>
+          <!-- Change Security PIN -->
+          <button id="openChangePinBtn" class="btn-icon" title="Change Security PIN / Access Key">
+            <i class="fa-solid fa-key"></i>
+          </button>
+        </div>
       </div>
     </header>
+
+    <!-- SIDE NAVIGATION DRAWER & BACKDROP -->
+    <div id="sideMenuBackdrop" class="side-drawer-backdrop hidden"></div>
+    <aside id="sideMenuDrawer" class="side-drawer">
+      <div class="side-drawer-header">
+        <div class="brand">
+          <div class="brand-logo">
+            <i class="fa-solid fa-calendar-days"></i>
+          </div>
+          <div class="brand-text">
+            <span class="brand-name">Calendar App</span>
+            <span class="brand-badge" id="drawerVersionBadge">v1.0.5 &bull; Offline PWA</span>
+          </div>
+        </div>
+        <button id="closeSideMenuBtn" class="btn-icon" title="Close Menu"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+
+      <div class="side-drawer-body">
+        <!-- Install / Update Action Card -->
+        <div class="drawer-section">
+          <button id="drawerInstallUpdateBtn" class="drawer-action-card">
+            <div class="drawer-card-icon" id="drawerInstallIcon">
+              <i class="fa-solid fa-cloud-arrow-down"></i>
+            </div>
+            <div class="drawer-card-content">
+              <div class="drawer-card-title" id="drawerInstallUpdateTitle">Install / Update App</div>
+              <div class="drawer-card-desc" id="drawerInstallUpdateDesc">Install or check for updates</div>
+            </div>
+            <span id="drawerInstallUpdateBadge" class="drawer-badge">v1.0.5</span>
+          </button>
+        </div>
+
+        <!-- Views -->
+        <div class="drawer-section">
+          <div class="drawer-section-title">Views</div>
+          <button class="drawer-nav-item" data-drawer-view="calendar">
+            <i class="fa-solid fa-calendar-days text-blue"></i>
+            <span>Calendar Grid</span>
+          </button>
+          <button class="drawer-nav-item" data-drawer-view="month">
+            <i class="fa-solid fa-table-list text-indigo"></i>
+            <span>30-Day Table View</span>
+          </button>
+          <button class="drawer-nav-item" data-drawer-view="day">
+            <i class="fa-solid fa-clock text-amber"></i>
+            <span>Day Schedule</span>
+          </button>
+          <button class="drawer-nav-item" data-drawer-view="agenda">
+            <i class="fa-solid fa-list-check text-emerald"></i>
+            <span>Agenda & Filters</span>
+          </button>
+        </div>
+
+        <!-- Quick Daily Tools -->
+        <div class="drawer-section">
+          <div class="drawer-section-title">Daily Tools</div>
+          <button id="drawerNoteBtn" class="drawer-nav-item">
+            <i class="fa-solid fa-book-bookmark text-amber"></i>
+            <span>Daily Diary Note</span>
+          </button>
+          <button id="drawerFinanceBtn" class="drawer-nav-item">
+            <i class="fa-solid fa-coins text-emerald"></i>
+            <span>Daily Receipts & Payments</span>
+          </button>
+        </div>
+
+        <!-- Data & Statements -->
+        <div class="drawer-section">
+          <div class="drawer-section-title">Reports & Data</div>
+          <button id="drawerReportsBtn" class="drawer-nav-item">
+            <i class="fa-solid fa-chart-column text-cyan"></i>
+            <span>Statements & Reports</span>
+          </button>
+          <button id="drawerBackupBtn" class="drawer-nav-item">
+            <i class="fa-solid fa-database text-purple"></i>
+            <span>Backup & Restore (ZIP / DB)</span>
+          </button>
+          <button id="drawerTagsBtn" class="drawer-nav-item">
+            <i class="fa-solid fa-tags text-rose"></i>
+            <span>Manage Tags & Custom Fields</span>
+          </button>
+        </div>
+
+        <!-- App Settings & Security -->
+        <div class="drawer-section">
+          <div class="drawer-section-title">Settings & Security</div>
+          <button id="drawerThemeBtn" class="drawer-nav-item">
+            <i class="fa-solid fa-circle-half-stroke text-amber"></i>
+            <span id="drawerThemeText">Switch Theme</span>
+          </button>
+          <button id="drawerChangePinBtn" class="drawer-nav-item">
+            <i class="fa-solid fa-key text-blue"></i>
+            <span>Change Security PIN</span>
+          </button>
+          <button id="drawerLockBtn" class="drawer-nav-item">
+            <i class="fa-solid fa-lock text-rose"></i>
+            <span>Lock Calendar App</span>
+          </button>
+          <button id="drawerResetCacheBtn" class="drawer-nav-item">
+            <i class="fa-solid fa-arrows-rotate text-muted"></i>
+            <span>Purge Cache & Hard Reload</span>
+          </button>
+          <button id="drawerAboutBtn" class="drawer-nav-item">
+            <i class="fa-solid fa-circle-info text-cyan"></i>
+            <span>About Calendar App</span>
+          </button>
+        </div>
+      </div>
+    </aside>
 
     <!-- OFFLINE READ-ONLY WARNING BANNER -->
     <div id="offlineReadOnlyBanner" class="offline-readonly-banner hidden">
@@ -870,25 +1001,25 @@
       </div>
     </div>
 
-    <!-- MODAL: ABOUT SRG CALENDAR PRO -->
+    <!-- MODAL: ABOUT CALENDAR APP -->
     <div id="aboutModal" class="modal-backdrop hidden">
       <div class="modal-card" style="max-width: 480px;">
         <div class="modal-header">
-          <h3><i class="fa-solid fa-circle-info" style="color: #38bdf8;"></i> About SRG Calendar Pro</h3>
+          <h3><i class="fa-solid fa-circle-info" style="color: #38bdf8;"></i> About Calendar App</h3>
           <button class="modal-close-btn" id="closeAboutModalBtn"><i class="fa-solid fa-xmark"></i></button>
         </div>
         <div class="modal-body" style="padding: 24px; text-align: center;">
           <div style="width: 68px; height: 68px; background: linear-gradient(135deg, #0284c7, #2563eb); border-radius: 18px; display: inline-flex; align-items: center; justify-content: center; font-size: 2rem; color: #fff; margin-bottom: 16px; box-shadow: 0 8px 20px rgba(2, 132, 199, 0.35);">
             <i class="fa-solid fa-calendar-days"></i>
           </div>
-          <h2 style="font-size: 1.45rem; font-weight: 700; margin-bottom: 4px; color: var(--text-main);">SRG Calendar Pro</h2>
+          <h2 style="font-size: 1.45rem; font-weight: 700; margin-bottom: 4px; color: var(--text-main);">Calendar App</h2>
           <div style="display: inline-block; font-size: 0.8rem; font-weight: 600; color: #38bdf8; background: rgba(56,189,248,0.12); padding: 3px 10px; border-radius: 12px; margin-bottom: 16px; border: 1px solid rgba(56,189,248,0.3);">
-            Version <span id="aboutModalVersion">v1.0.4 (Local DB PWA)</span>
+            Version <span id="aboutModalVersion">v1.0.5 (PWA)</span>
           </div>
 
           <div style="background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 14px 16px; text-align: left; font-size: 0.88rem; line-height: 1.55; margin-bottom: 16px;">
             <p style="margin-bottom: 8px;">
-              <strong>SRG Calendar Pro (Local DB)</strong> is a standalone, single-device Progressive Web App featuring full offline scheduling (Month, 30-Day Portrait Table, Day, Agenda), travel transit tracking, daily notes, double-entry financial statements, and local attachment archives.
+              <strong>Calendar App</strong> is a standalone, single-device Progressive Web App featuring full offline scheduling (Month, 30-Day Portrait Table, Day, Agenda), travel transit tracking, daily notes, double-entry financial statements, and local attachment archives.
             </p>
             <p style="margin: 0; color: var(--text-muted); font-size: 0.83rem;">
               Built with SQLite WASM and browser IndexedDB storage. Operates 100% offline on any device without requiring PHP or an external server.
@@ -925,7 +1056,7 @@
         <div style="width: 60px; height: 60px; background: linear-gradient(135deg, #3b82f6, #6366f1); border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 1.8rem; color: #fff; margin-bottom: 16px; box-shadow: 0 4px 15px rgba(59, 130, 246, 0.4);">
           <i class="fa-solid fa-shield-halved"></i>
         </div>
-        <h3 style="font-size: 1.3rem; margin-bottom: 8px;">SRG Calendar Lock</h3>
+        <h3 style="font-size: 1.3rem; margin-bottom: 8px;">Calendar App Lock</h3>
         <p style="font-size: 0.88rem; color: var(--text-muted); margin-bottom: 20px;">Enter your Security Access Key / PIN to unlock your personal calendar.</p>
         
         <form id="appUnlockForm" style="display: flex; flex-direction: column; gap: 12px;">

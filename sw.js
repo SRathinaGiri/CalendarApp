@@ -1,4 +1,4 @@
-const CACHE_NAME = 'srg-calendar-localdb-v1.0.4';
+const CACHE_NAME = 'calendar-app-v1.0.5';
 const CORE_ASSETS = [
   './',
   './index.html',
@@ -40,6 +40,13 @@ self.addEventListener('activate', (e) => {
     })
   );
   self.clients.claim();
+});
+
+// Support manual or instant update skip waiting
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
 });
 
 self.addEventListener('fetch', (e) => {
