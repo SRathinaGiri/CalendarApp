@@ -1,4 +1,4 @@
-const CACHE_NAME = 'calendar-app-v1.0.8';
+const CACHE_NAME = 'calendar-app-v1.0.9';
 const CORE_ASSETS = [
   './',
   './index.html',
@@ -35,7 +35,7 @@ self.addEventListener('activate', (e) => {
   e.waitUntil(
     caches.keys().then((keys) => {
       return Promise.all(
-        keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))
+        keys.filter((key) => key.startsWith('calendar-app-') && key !== CACHE_NAME).map((key) => caches.delete(key))
       );
     })
   );

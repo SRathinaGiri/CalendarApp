@@ -1,55 +1,57 @@
-# Calendar App (Offline PWA)
+# Calendar App (Offline PWA) — Beta v1.0.9
 
-A fully standalone, 100% offline Personal Calendar & Daily Organizer Progressive Web App (PWA) with client-side **SQLite (WASM)** and **IndexedDB** local storage.
+A standalone, local-first Personal Calendar & Daily Organizer Progressive Web App (PWA) powered by client-side **SQLite (WASM)** and **IndexedDB** local storage.
+
+> **Status: Public Beta (v1.0.9)**  
+> Calendar App is currently in public beta. While core offline workflows, transactional backups, and reporting features are fully functional, please maintain regular `.zip` backups as described below.
 
 ---
 
 ## 🌟 Key Features
 
-- **100% Offline & Private:** Runs entirely inside your browser. No web server, PHP, or external database required. All data remains exclusively on your device.
-- **SQLite WASM Engine (`sql.js`):** Embedded relational database providing full ACID compliance, lightning-fast queries, and easy `.db` file exports.
-- **IndexedDB Persistence (`SRGCalendarDB`):** Automatically saves every edit, schedule, note, and attachment into your browser's persistent storage.
-- **1-Click Complete Backup & Restore (`.zip`):**
-  - Export a complete timestamped `.zip` containing both your SQLite database and all uploaded ticket attachments (PDFs & images).
-  - Restore anytime from a `.zip` archive on any device with automatic pre-restore safety snapshots.
-- **Local Snapshots:** Save named snapshots in browser storage anytime.
-- **Biometric & PIN Security:**
-  - Native **Fingerprint & Face ID** biometric unlock on mobile and biometric-capable laptops via WebAuthn Platform Authenticator.
-  - 4-digit master PIN lock fallback (Default PIN: `1234`).
+- **Local-First & Offline Architecture:** Calendar data and attachments are stored exclusively on your device in IndexedDB. All assets including SQLite WASM (`sql.js`), PDF.js, and workers are bundled locally so core features work 100% offline once installed or cached.
+- **Embedded SQLite WASM Engine (`sql.js`):** Embedded relational database providing SQL queries, atomic transaction guarantees on schedule saves, and direct `.db` file exports.
+- **IndexedDB Persistence (`SRGCalendarDB`):** Automatically persists edits, schedules, daily notes, financial entries, and file attachments in browser storage.
+- **Atomic 1-Click Complete Backup & Restore (`.zip`):**
+  - **Full Export:** Creates an archive containing your SQLite database, an integrity manifest, and deduplicated ticket attachments (PDFs & images) verified with SHA-256 fingerprints.
+  - **Atomic Restore:** Pre-validates the archive and stages all attachments before activating the new database. Automatically rolls back to the previous database if restoration fails.
+- **Local Snapshots:** Save named database safety snapshots in browser storage anytime.
+- **Convenience Screen Lock & Biometrics:**
+  - Fast **Fingerprint & Face ID** biometric unlock on supported mobile and desktop browsers via WebAuthn Platform Authenticator.
+  - 4-digit PIN lock fallback (Default PIN: `1234`).
+  - *Note:* The screen lock is a UI access gate designed for casual privacy; data at rest is not encrypted. We recommend enabling device-level encryption (BitLocker, FileVault, or mobile device passcode/biometrics).
 - **PWA (Progressive Web App):**
-  - Installable directly to home screen / desktop from Chrome, Edge, Safari, or Brave.
-  - Native offline caching with Service Worker.
+  - Installable directly to home screen or desktop from Chrome, Edge, Safari, or Brave.
+  - Version-scoped Service Worker cache cleanup (`v1.0.9`).
   - In-app install and check for updates buttons.
 - **Comprehensive Calendar Views:**
-  - **Calendar View:** 7-column month grid. In portrait mode, day cards automatically display compact icon indicators (schedules, travel, notes, finance) for clear readability. In landscape mode, full titles, times, and notes are shown.
+  - **Calendar View:** 7-column month grid. In portrait mode, compact icon badges (schedules, travel, notes, finance) maximize space. In landscape mode, full titles, times, and notes are shown.
   - **Portrait Month View:** 30-day tabular view with day notes, income/expense totals, and travel leg badges.
   - **Day View:** Hourly timeline, daily notes editor, and double-entry transaction manager.
-  - **Agenda View:** Bi-directional timeline centered on Today, with one-tap jump to Today and load earlier/later buttons.
+  - **Agenda View:** Bi-directional timeline centered on Today, with one-tap jump to Today and load earlier/later navigation.
 - **Travel Management & IRCTC PDF Ticket Parser:**
-  - Schedule travel with onward/return legs, PNR, train/flight details, departure/arrival times (with overnight auto-calculation).
-  - Attach e-tickets (PDF/Images) and automatically parse IRCTC PDF tickets client-side.
+  - Schedule travel with onward/return legs, PNR, train/flight details, and overnight arrival calculation.
+  - Attach e-tickets (PDF/Images) and parse IRCTC PDF tickets client-side using bundled offline PDF.js.
 - **Print / PDF Monthly Calendar Export:**
   - 1-click export of the active month to clean, formatted PDF or paper printer.
-  - Supports **Landscape 7-Column Wall Calendar Grid** sheet and **Portrait 30-Day Detailed Diary Table**.
-  - Accessible via the top toolbar printer icon, side menu drawer, or the Statements & Reports module.
+  - Supports **Landscape 7-Column Wall Calendar Grid** and **Portrait 30-Day Detailed Diary Table**.
+  - Accessible via top toolbar printer icon, side menu drawer, or Statements & Reports module.
 - **Event Reminders & Local Notifications:**
-  - Integrated Web Notification API alerts for mobile and desktop browsers.
-  - Synthetic offline Web Audio chime (no external audio files required).
-  - Customizable alert timing per schedule (15 min, 30 min, 1 hour, 2 hours, or exact start time; default 30 min for travel departures).
-  - One-tap toggle in Side Drawer to activate or mute reminder notifications.
+  - Integrated Web Notification API alerts with dynamic countdown display and synthetic offline Web Audio chime.
+  - Customizable alert timing per schedule (15 min, 30 min, 1 hour, 2 hours, or exact start time; default 30 min for travel).
+  - *Note:* Reminders trigger reliably while the app or browser tab is active or backgrounded. When the browser is closed, delivery depends on OS background policies.
 - **Statements & Accounting Reports:**
   - Free Days Report
   - Journal & Ledger Accounts
   - Schedules & Summary Reports
   - Travel Ticket Cost Statement
   - Ticket Reimbursement Claim Statement with embedded ticket copies and print-ready layout.
-  - Monthly Calendar Sheet and Agenda Diary Statement.
 
 ---
 
 ## 🚀 How to Run
 
-### Method 1: Python Local Server (Easiest & Recommended)
+### Method 1: Python Local Server (Recommended for local dev)
 Modern browsers require HTTP/HTTPS to load WebAssembly (`.wasm`) files due to browser security policies on `file://` URLs.
 
 1. Open PowerShell or Terminal in the project folder:
@@ -66,7 +68,6 @@ Modern browsers require HTTP/HTTPS to load WebAssembly (`.wasm`) files due to br
 ---
 
 ### Method 2: Node.js `npx serve`
-If you have Node.js installed:
 ```bash
 npx serve . -p 8080
 ```
@@ -75,35 +76,35 @@ Then visit [http://localhost:8080](http://localhost:8080).
 ---
 
 ### Method 3: GitHub Pages
-The repository is published directly to GitHub Pages at:
+The web app is deployed directly at:
 [https://srathinagiri.github.io/CalendarApp/](https://srathinagiri.github.io/CalendarApp/)
 
 ---
 
 ## 📲 How to Install as a PWA (Desktop / Mobile)
 
-1. Open the app in **Google Chrome**, **Microsoft Edge**, or **Brave** at `http://localhost:8080` or via GitHub Pages.
+1. Open the app in **Google Chrome**, **Microsoft Edge**, **Safari**, or **Brave** at `http://localhost:8080` or via GitHub Pages.
 2. Look for the **Install App** icon in the address bar or tap **"Install / Update App"** in the app's side drawer.
 3. Once installed, launch the app directly from your mobile home screen, Desktop, Taskbar, or Start Menu like a native app.
 
 ---
 
-## 🔐 App Security Lock & Biometrics
+## 🔐 App Security & Privacy
 
-- **Default PIN:** `1234`
-- **Biometric Unlock:** On mobile devices (Android Fingerprint, iOS Touch ID / Face ID) and laptops with biometric sensors, the app supports instant biometric unlock.
-- **Biometric Setup:** Click the lock icon or open the side drawer -> tap **"Biometric / Fingerprint Unlock"**.
+- **Convenience Screen Lock:** Calendar App features an overlay screen lock supporting WebAuthn biometrics and a PIN (default: `1234`).
+- **Data At Rest:** Calendar data is stored locally in SQLite WASM and browser IndexedDB unencrypted. This provides rapid query execution and offline independence, but anyone with full access to the device file system or profile can inspect the data. For sensitive data, pair with full-disk operating system encryption (Android Knox/Device Encryption, iOS Data Protection, Windows BitLocker, macOS FileVault).
 - **Change PIN:** Open the side drawer -> tap **"Change Security PIN"**.
+- **Biometric Setup:** Click the lock icon or open the side drawer -> tap **"Biometric / Fingerprint Unlock"**.
 
 ---
 
-## 💾 Backup, Restore & Migrating Data Between Devices
+## 💾 Backup, Restore & Data Migration
 
-All your data is stored in the browser's persistent IndexedDB database (`SRGCalendarDB`).
+Because Calendar App is a single-device, local-first application, all your data lives inside your device's browser profile. **Always keep recent full backups!**
 
 ### 1. Complete Full Backup & Restore (`.zip`) — Recommended
-- **To Backup:** Click the database icon in the top header -> Click **"💾 Export Full (.zip)"**. This generates a single archive containing your SQLite database and all uploaded ticket PDFs/images.
-- **To Restore:** Click **"📁 Restore Full (.zip)"** -> Select your backup `.zip` file. All schedules, notes, and attachments will be restored immediately.
+- **To Backup:** Click the database icon in the top header -> Click **"💾 Export Full (.zip)"**. This generates an integrity-hashed `.zip` containing your SQLite database and all uploaded ticket PDFs/images.
+- **To Restore:** Click **"📁 Restore Full (.zip)"** -> Select your backup `.zip` file. Staged atomically with pre-restore fallback rollback.
 
 ### 2. Database-Only Backup & Restore (`.db`)
 - **To Backup:** Click **"📥 Download DB (.db)"** to download just the SQLite database file.
@@ -112,3 +113,9 @@ All your data is stored in the browser's persistent IndexedDB database (`SRGCale
 ### 3. Attachments-Only Backup & Restore (`.zip`)
 - **To Backup:** In the backup dialog, click **"📦 Backup Files (.zip)"**.
 - **To Restore:** Click **"📥 Restore Files (.zip)"** -> Select your attachments `.zip` file.
+
+---
+
+## 📄 License
+
+This project is licensed under the [MIT License](LICENSE) - see the [LICENSE](LICENSE) file for details.

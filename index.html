@@ -242,11 +242,6 @@
       </div>
     </aside>
 
-    <!-- OFFLINE READ-ONLY WARNING BANNER -->
-    <div id="offlineReadOnlyBanner" class="offline-readonly-banner hidden">
-      <i class="fa-solid fa-lock"></i> Server Offline / Disconnected &mdash; App is running in <strong>Read-Only Mode</strong>. (Connect to network to edit schedules, notes & finance)
-    </div>
-
     <!-- MULTI-SELECT FLOATING ACTION BAR -->
     <div id="selectionActionBar" class="selection-action-bar hidden">
       <div class="selection-info">
@@ -418,6 +413,9 @@
               <option value="120">🔔 2 hours before</option>
               <option value="-1">🔕 No reminder</option>
             </select>
+            <div style="font-size: 0.73rem; color: var(--text-muted); margin-top: 4px; line-height: 1.3;">
+              <i class="fa-solid fa-circle-info"></i> Reminders trigger while app or browser tab is active or backgrounded. When completely closed, delivery depends on OS background policies.
+            </div>
           </div>
 
           <!-- TRAVEL TRANSIT SCHEDULING (PREVIOUS DAY & NEXT DAY RETURN) -->
@@ -1014,7 +1012,7 @@
         </div>
         <div class="modal-body" style="padding: 20px;">
           <p style="font-size: 0.88rem; color: var(--text-muted); margin-bottom: 16px; line-height: 1.4;">
-            Update your Security PIN / Access Key. Your new PIN will be securely saved in your local database on this device.
+            Update your Security PIN / Access Key. This acts as a convenient screen lock on this device.
           </p>
           <form id="changePinForm" style="display: flex; flex-direction: column; gap: 14px;">
             <div class="form-group">
@@ -1052,12 +1050,12 @@
           </div>
           <h2 style="font-size: 1.45rem; font-weight: 700; margin-bottom: 4px; color: var(--text-main);">Calendar App</h2>
           <div style="display: inline-block; font-size: 0.8rem; font-weight: 600; color: #38bdf8; background: rgba(56,189,248,0.12); padding: 3px 10px; border-radius: 12px; margin-bottom: 16px; border: 1px solid rgba(56,189,248,0.3);">
-            Version <span id="aboutModalVersion">v1.0.8 (PWA)</span>
+            Version <span id="aboutModalVersion">v1.0.9 (Beta PWA)</span>
           </div>
 
           <div style="background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 14px 16px; text-align: left; font-size: 0.88rem; line-height: 1.55; margin-bottom: 16px;">
             <p style="margin-bottom: 8px;">
-              <strong>Calendar App</strong> is a standalone, single-device Progressive Web App featuring full offline scheduling (Month, 30-Day Portrait Table, Day, Agenda), travel transit tracking, daily notes, double-entry financial statements, and local attachment archives.
+              <strong>Calendar App</strong> is a standalone, single-device Progressive Web App (Beta Release) featuring full offline scheduling (Month, 30-Day Portrait Table, Day, Agenda), travel transit tracking, daily notes, double-entry financial statements, and local attachment archives.
             </p>
             <p style="margin: 0; color: var(--text-muted); font-size: 0.83rem;">
               Built with SQLite WASM and browser IndexedDB storage. Operates 100% offline on any device without requiring PHP or an external server.
@@ -1095,7 +1093,7 @@
           <i class="fa-solid fa-shield-halved"></i>
         </div>
         <h3 style="font-size: 1.25rem; margin-bottom: 6px;">Calendar App Lock</h3>
-        <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 18px;">Unlock your calendar using biometrics or your 4-digit PIN.</p>
+        <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 18px;">Screen Lock (Convenience Protection). Unlock using biometrics or your 4-digit PIN (default: 1234).</p>
         
         <!-- BIOMETRIC UNLOCK BUTTON -->
         <div id="biometricUnlockContainer" class="hidden" style="margin-bottom: 16px;">

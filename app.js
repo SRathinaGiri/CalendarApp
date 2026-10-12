@@ -69,13 +69,17 @@ function showToast(message, type = 'info', duration = 3500) {
   const toast = document.createElement('div');
   toast.className = `toast toast-${type}`;
 
-  let iconHtml = '<i class="fa-solid fa-circle-info"></i>';
-  if (type === 'success') iconHtml = '<i class="fa-solid fa-circle-check"></i>';
-  if (type === 'error') iconHtml = '<i class="fa-solid fa-triangle-exclamation"></i>';
-  if (type === 'warning') iconHtml = '<i class="fa-solid fa-triangle-exclamation"></i>';
-  if (type === 'loading') iconHtml = '<i class="fa-solid fa-spinner fa-spin"></i>';
+  const iconEl = document.createElement('i');
+  if (type === 'success') iconEl.className = 'fa-solid fa-circle-check';
+  else if (type === 'error' || type === 'warning') iconEl.className = 'fa-solid fa-triangle-exclamation';
+  else if (type === 'loading') iconEl.className = 'fa-solid fa-spinner fa-spin';
+  else iconEl.className = 'fa-solid fa-circle-info';
 
-  toast.innerHTML = `${iconHtml}<span>${message}</span>`;
+  const textEl = document.createElement('span');
+  textEl.textContent = String(message || '');
+
+  toast.appendChild(iconEl);
+  toast.appendChild(textEl);
   container.appendChild(toast);
 
   if (type !== 'loading' && duration > 0) {
@@ -106,7 +110,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.0.8';
+const APP_VERSION = 'v1.0.9';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -244,13 +248,13 @@ async function handleInstallOrUpdateClick() {
   }
 }
 
-// Automatic cache invalidation on version update
+// Automatic cache cleanup on version update (scoped exclusively to calendar-app caches)
 if (localStorage.getItem('srg_installed_version') !== APP_VERSION) {
   localStorage.setItem('srg_installed_version', APP_VERSION);
   if ('caches' in window) {
     caches.keys().then(names => {
       names.forEach(name => {
-        if (!name.includes('v1.0.6')) {
+        if (name.startsWith('calendar-app-') && name !== `calendar-app-${APP_VERSION}`) {
           caches.delete(name);
         }
       });
@@ -766,18 +770,27 @@ function extractCanonicalAttachmentId(filename) {
 }
 
 function saveAttachmentToIndexedDB(attId, dataBase64) {
-  return new Promise(async (resolve) => {
-    if (!attId || !dataBase64) return resolve();
+  return new Promise(async (resolve, reject) => {
+    if (!attId || !dataBase64) return resolve(false);
     try {
       const idb = await openSRGDatabase();
       const tx = idb.transaction('files', 'readwrite');
       const store = tx.objectStore('files');
       const canonicalKey = attId.startsWith('att_') ? attId : ('att_' + attId);
-      store.put(dataBase64, canonicalKey);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => resolve();
+      const req = store.put(dataBase64, canonicalKey);
+
+      req.onerror = () => {
+        reject(req.error || new Error('Failed to put attachment to IndexedDB store'));
+      };
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => {
+        reject(tx.error || new Error('IndexedDB transaction failed while saving attachment'));
+      };
+      tx.onabort = () => {
+        reject(tx.error || new Error('IndexedDB transaction aborted while saving attachment'));
+      };
     } catch(e) {
-      resolve();
+      reject(e);
     }
   });
 }
@@ -898,20 +911,36 @@ async function getAttachmentData(att) {
   return null;
 }
 
-/* Content Fingerprint Helper (Instant O(1) content-based deduplication) */
-function getContentFingerprint(val) {
+/* Content Fingerprint Helper (Cryptographic SHA-256 full-content hash) */
+async function getContentFingerprint(val) {
   if (!val) return '';
-  if (typeof val === 'string') {
-    return `str_${val.length}_${val.slice(0, 100)}_${val.slice(-100)}`;
+  try {
+    let buffer;
+    if (typeof val === 'string') {
+      buffer = new TextEncoder().encode(val);
+    } else if (val instanceof ArrayBuffer) {
+      buffer = val;
+    } else if (val instanceof Uint8Array) {
+      buffer = val.buffer;
+    } else {
+      buffer = new TextEncoder().encode(String(val));
+    }
+    if (window.crypto && window.crypto.subtle) {
+      const hashBuf = await window.crypto.subtle.digest('SHA-256', buffer);
+      const hashArr = Array.from(new Uint8Array(hashBuf));
+      return hashArr.map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+  } catch(e) {}
+
+  // Synchronous robust full-content hash fallback (64-bit FNV-1a)
+  let h1 = 0x811c9dc5, h2 = 0x811c9dc5;
+  const str = typeof val === 'string' ? val : (val.length ? String.fromCharCode.apply(null, val.slice(0, 10000)) : String(val));
+  for (let i = 0; i < str.length; i++) {
+    const ch = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 0x01000193);
+    h2 = Math.imul(h2 ^ (ch >>> 4), 0x01000193);
   }
-  if (val instanceof ArrayBuffer || val instanceof Uint8Array) {
-    const u8 = val instanceof Uint8Array ? val : new Uint8Array(val);
-    const len = u8.byteLength;
-    const h = Array.from(u8.slice(0, 32)).join('');
-    const t = Array.from(u8.slice(-32)).join('');
-    return `bin_${len}_${h}_${t}`;
-  }
-  return String(val).length.toString();
+  return `h_${str.length}_${(h1 >>> 0).toString(16)}_${(h2 >>> 0).toString(16)}`;
 }
 
 function getActiveScheduleAttachmentsMap() {
@@ -984,7 +1013,7 @@ async function scanStorageAttachments() {
             rawId: key.slice(4).trim(),
             val,
             size,
-            fp: getContentFingerprint(val)
+            fp: ''
           });
         }
         cursor.continue();
@@ -994,6 +1023,11 @@ async function scanStorageAttachments() {
     };
     req.onerror = () => reject(req.error);
   });
+
+  // Calculate cryptographic SHA-256 fingerprint for all items
+  for (const item of allStored) {
+    item.fp = await getContentFingerprint(item.val);
+  }
 
   // Group by content fingerprint
   const groupsByFp = new Map();
@@ -1151,58 +1185,61 @@ async function exportFullBackupZip() {
       if (r3.length > 0) tagCount = r3[0].values[0][0];
     } catch(e) {}
 
-    // 3. Export attachments with STRICT CONTENT DEDUPLICATION
+    // 3. Export attachments with STRICT CONTENT DEDUPLICATION & EXPLICIT MAPPING
     const activeAttsMap = getActiveScheduleAttachmentsMap();
     const manifestAttachments = [];
     const attFolder = zip.folder('attachments');
-    const seenFingerprints = new Set();
+    const fingerprintToFileMap = new Map();
     const seenZipNames = new Set();
 
     // Pass 1: Export active schedule attachments directly
     for (const [id, att] of activeAttsMap.entries()) {
       const data = await getAttachmentData(att);
       if (data) {
-        const fp = getContentFingerprint(data);
-        if (!seenFingerprints.has(fp)) {
-          seenFingerprints.add(fp);
+        const fp = await getContentFingerprint(data);
+        let zipName = fingerprintToFileMap.get(fp);
 
-          let ext = 'pdf';
-          let mime = 'application/pdf';
-          if (typeof data === 'string' && data.startsWith('data:')) {
-            const m = data.match(/data:([^;]+);/);
-            if (m) {
-              mime = m[1];
-              if (mime.includes('jpeg')) ext = 'jpg';
-              else if (mime.includes('png')) ext = 'png';
-              else if (mime.includes('gif')) ext = 'gif';
-              else if (mime.includes('webp')) ext = 'webp';
-              else if (mime.includes('pdf')) ext = 'pdf';
-            }
+        let ext = 'pdf';
+        let mime = 'application/pdf';
+        if (typeof data === 'string' && data.startsWith('data:')) {
+          const m = data.match(/data:([^;]+);/);
+          if (m) {
+            mime = m[1];
+            if (mime.includes('jpeg')) ext = 'jpg';
+            else if (mime.includes('png')) ext = 'png';
+            else if (mime.includes('gif')) ext = 'gif';
+            else if (mime.includes('webp')) ext = 'webp';
+            else if (mime.includes('pdf')) ext = 'pdf';
           }
+        }
 
-          let baseName = (att.filename || att.name || (att.id + '.' + ext)).replace(/[^a-zA-Z0-9_\-\.]/g, '_');
-          if (!baseName.includes('.')) baseName += '.' + ext;
+        let baseName = (att.filename || att.name || (att.id + '.' + ext)).replace(/[^a-zA-Z0-9_\-\.]/g, '_');
+        if (!baseName.includes('.')) baseName += '.' + ext;
 
-          let zipName = baseName;
+        if (!zipName) {
+          zipName = baseName;
           if (att.id && !zipName.startsWith(att.id)) {
             zipName = `${att.id}_${baseName}`;
           }
-
           seenZipNames.add(zipName);
+          fingerprintToFileMap.set(fp, zipName);
 
           const commaIdx = typeof data === 'string' ? data.indexOf(',') : -1;
           const b64 = commaIdx > -1 ? data.slice(commaIdx + 1) : data;
           attFolder.file(zipName, b64, { base64: true });
-
-          manifestAttachments.push({
-            id: att.id,
-            filename: zipName,
-            name: att.name || baseName,
-            path: `attachments/${zipName}`,
-            mime: mime,
-            size: typeof b64 === 'string' ? Math.round(b64.length * 0.75) : (data.byteLength || 0)
-          });
         }
+
+        const commaIdx = typeof data === 'string' ? data.indexOf(',') : -1;
+        const b64 = commaIdx > -1 ? data.slice(commaIdx + 1) : data;
+
+        manifestAttachments.push({
+          id: att.id,
+          filename: zipName,
+          name: att.name || baseName,
+          path: `attachments/${zipName}`,
+          mime: mime,
+          size: typeof b64 === 'string' ? Math.round(b64.length * 0.75) : (data.byteLength || 0)
+        });
       }
     }
 
@@ -1211,6 +1248,7 @@ async function exportFullBackupZip() {
     const tx = idb.transaction('files', 'readonly');
     const store = tx.objectStore('files');
 
+    const dbFiles = [];
     await new Promise((resolve, reject) => {
       const cursorReq = store.openCursor();
       cursorReq.onsuccess = (e) => {
@@ -1219,47 +1257,7 @@ async function exportFullBackupZip() {
           const key = String(cursor.key);
           if (key.startsWith('att_')) {
             const val = cursor.value;
-            if (val) {
-              const fp = getContentFingerprint(val);
-              // Deduplication check: SKIP if this exact file content has already been exported!
-              if (!seenFingerprints.has(fp)) {
-                seenFingerprints.add(fp);
-                const rawId = key.slice(4);
-                let ext = 'bin';
-                let mime = 'application/octet-stream';
-                let b64 = '';
-
-                if (typeof val === 'string' && val.startsWith('data:')) {
-                  const commaIdx = val.indexOf(',');
-                  b64 = commaIdx > -1 ? val.slice(commaIdx + 1) : val;
-                  const matchMime = val.match(/data:([^;]+);/);
-                  if (matchMime) {
-                    mime = matchMime[1];
-                    if (mime.includes('jpeg')) ext = 'jpg';
-                    else if (mime.includes('png')) ext = 'png';
-                    else if (mime.includes('pdf')) ext = 'pdf';
-                  }
-                }
-
-                let zipFileName = rawId.includes('.') ? rawId : `${rawId}.${ext}`;
-                if (!seenZipNames.has(zipFileName)) {
-                  seenZipNames.add(zipFileName);
-                  if (b64) {
-                    attFolder.file(zipFileName, b64, { base64: true });
-                  } else if (val instanceof ArrayBuffer || val instanceof Uint8Array) {
-                    attFolder.file(zipFileName, val);
-                  }
-
-                  manifestAttachments.push({
-                    id: rawId,
-                    filename: zipFileName,
-                    path: `attachments/${zipFileName}`,
-                    mime: mime,
-                    size: b64 ? Math.round(b64.length * 0.75) : (val.byteLength || 0)
-                  });
-                }
-              }
-            }
+            if (val) dbFiles.push({ key, val });
           }
           cursor.continue();
         } else {
@@ -1268,6 +1266,48 @@ async function exportFullBackupZip() {
       };
       cursorReq.onerror = () => reject(cursorReq.error);
     });
+
+    for (const item of dbFiles) {
+      const fp = await getContentFingerprint(item.val);
+      if (!fingerprintToFileMap.has(fp)) {
+        const rawId = item.key.slice(4);
+        let ext = 'bin';
+        let mime = 'application/octet-stream';
+        let b64 = '';
+
+        if (typeof item.val === 'string' && item.val.startsWith('data:')) {
+          const commaIdx = item.val.indexOf(',');
+          b64 = commaIdx > -1 ? item.val.slice(commaIdx + 1) : item.val;
+          const matchMime = item.val.match(/data:([^;]+);/);
+          if (matchMime) {
+            mime = matchMime[1];
+            if (mime.includes('jpeg')) ext = 'jpg';
+            else if (mime.includes('png')) ext = 'png';
+            else if (mime.includes('pdf')) ext = 'pdf';
+          }
+        }
+
+        let zipFileName = rawId.includes('.') ? rawId : `${rawId}.${ext}`;
+        if (!seenZipNames.has(zipFileName)) {
+          seenZipNames.add(zipFileName);
+          fingerprintToFileMap.set(fp, zipFileName);
+
+          if (b64) {
+            attFolder.file(zipFileName, b64, { base64: true });
+          } else if (item.val instanceof ArrayBuffer || item.val instanceof Uint8Array) {
+            attFolder.file(zipFileName, item.val);
+          }
+
+          manifestAttachments.push({
+            id: rawId,
+            filename: zipFileName,
+            path: `attachments/${zipFileName}`,
+            mime: mime,
+            size: b64 ? Math.round(b64.length * 0.75) : (item.val.byteLength || 0)
+          });
+        }
+      }
+    }
 
     // 4. Manifest
     const nowIso = new Date().toISOString();
@@ -1334,7 +1374,9 @@ async function importFullBackupZip(file) {
     return;
   }
 
-  const loadingToast = showToast(`Unpacking and restoring full backup "${file.name}"...`, 'info', 0);
+  const loadingToast = showToast(`Validating and restoring backup "${file.name}"...`, 'info', 0);
+  const previousDbBinary = db ? db.export() : null;
+
   try {
     const zip = await JSZip.loadAsync(file);
 
@@ -1351,25 +1393,12 @@ async function importFullBackupZip(file) {
       throw new Error('No SQLite database file (.db) found in the backup archive.');
     }
 
-    // Safety snapshot of existing data before restoring
-    try {
-      await saveLocalDbSnapshot('Pre-Full-Restore Auto Snapshot');
-    } catch (e) {
-      console.warn('Safety snapshot error:', e);
-    }
-
-    // 2. Restore SQLite database
+    // 2. Validate SQLite binary
     const dbBinary = await dbEntry.async('uint8array');
     const headerStr = String.fromCharCode(...dbBinary.slice(0, 16));
     if (!headerStr.startsWith('SQLite format 3')) {
       throw new Error('Database file in archive is not a valid SQLite database.');
     }
-
-    db = new SQL.Database(dbBinary);
-    ensureSchemaUpToDate();
-    await saveDbToIndexedDB();
-    loadMasterDataFromDb();
-    populateTitlesDatalist();
 
     // 3. Parse manifest.json if present
     let manifestMap = new Map();
@@ -1396,8 +1425,8 @@ async function importFullBackupZip(file) {
       }
     }
 
-    // 4. Restore attachments
-    let importedAttachmentsCount = 0;
+    // 4. Stage and extract all attachments into memory FIRST
+    const stagedAttachments = [];
     const attFiles = Object.keys(zip.files).filter(k => {
       if (zip.files[k].dir || k.startsWith('__MACOSX') || k === 'manifest.json' || k.toLowerCase().endsWith('.db')) {
         return false;
@@ -1428,12 +1457,32 @@ async function importFullBackupZip(file) {
                         extractCanonicalAttachmentId(filename) ||
                         filename;
 
-      await saveAttachmentToIndexedDB(canonicalId, dataUrl);
-      if (filename && filename !== canonicalId) {
-        await saveAttachmentToIndexedDB(filename, dataUrl);
+      stagedAttachments.push({ canonicalId, filename, dataUrl });
+    }
+
+    // Safety snapshot of existing database before applying restore
+    try {
+      await saveLocalDbSnapshot('Pre-Full-Restore Auto Snapshot');
+    } catch (e) {
+      console.warn('Safety snapshot error:', e);
+    }
+
+    // 5. Commit attachments to IndexedDB with confirmed completion
+    let importedAttachmentsCount = 0;
+    for (const item of stagedAttachments) {
+      await saveAttachmentToIndexedDB(item.canonicalId, item.dataUrl);
+      if (item.filename && item.filename !== item.canonicalId) {
+        await saveAttachmentToIndexedDB(item.filename, item.dataUrl);
       }
       importedAttachmentsCount++;
     }
+
+    // 6. Only activate restored database once all attachments have succeeded!
+    db = new SQL.Database(dbBinary);
+    ensureSchemaUpToDate();
+    await saveDbToIndexedDB();
+    loadMasterDataFromDb();
+    populateTitlesDatalist();
 
     renderCurrentView();
     await updateStorageStatsUI();
@@ -1444,7 +1493,19 @@ async function importFullBackupZip(file) {
   } catch (err) {
     if (loadingToast) dismissToast(loadingToast);
     console.error('Error importing full backup zip:', err);
-    showToast('Failed to restore full backup: ' + err.message, 'error', 5000);
+    // If active database was mutated, safely revert to previous database binary!
+    if (previousDbBinary) {
+      try {
+        db = new SQL.Database(previousDbBinary);
+        await saveDbToIndexedDB(false);
+      } catch(revErr) {
+        console.error('Failed to revert DB after failed restore:', revErr);
+      }
+    }
+    const msg = (err.name === 'QuotaExceededError')
+      ? '❌ Storage quota exceeded! Cannot restore all attachments. Original calendar database preserved intact.'
+      : 'Failed to restore full backup: ' + err.message;
+    showToast(msg, 'error', 6000);
   }
 }
 
@@ -1468,46 +1529,52 @@ async function exportAttachmentsZipFile() {
 
     // Pass 1: Active schedule attachments
     const activeAttsMap = getActiveScheduleAttachmentsMap();
+    const fingerprintToFileMap = new Map();
+
     for (const [id, att] of activeAttsMap.entries()) {
       const data = await getAttachmentData(att);
       if (data) {
-        const fp = getContentFingerprint(data);
-        if (!seenFingerprints.has(fp)) {
-          seenFingerprints.add(fp);
+        const fp = await getContentFingerprint(data);
+        let zipName = fingerprintToFileMap.get(fp);
 
-          let ext = 'pdf';
-          let mime = 'application/pdf';
-          if (typeof data === 'string' && data.startsWith('data:')) {
-            const m = data.match(/data:([^;]+);/);
-            if (m) {
-              mime = m[1];
-              if (mime.includes('jpeg')) ext = 'jpg';
-              else if (mime.includes('png')) ext = 'png';
-              else if (mime.includes('gif')) ext = 'gif';
-              else if (mime.includes('webp')) ext = 'webp';
-              else if (mime.includes('pdf')) ext = 'pdf';
-            }
+        let ext = 'pdf';
+        let mime = 'application/pdf';
+        if (typeof data === 'string' && data.startsWith('data:')) {
+          const m = data.match(/data:([^;]+);/);
+          if (m) {
+            mime = m[1];
+            if (mime.includes('jpeg')) ext = 'jpg';
+            else if (mime.includes('png')) ext = 'png';
+            else if (mime.includes('gif')) ext = 'gif';
+            else if (mime.includes('webp')) ext = 'webp';
+            else if (mime.includes('pdf')) ext = 'pdf';
           }
+        }
 
-          let baseName = (att.filename || att.name || (att.id + '.' + ext)).replace(/[^a-zA-Z0-9_\-\.]/g, '_');
-          if (!baseName.includes('.')) baseName += '.' + ext;
-          let zipName = baseName;
+        let baseName = (att.filename || att.name || (att.id + '.' + ext)).replace(/[^a-zA-Z0-9_\-\.]/g, '_');
+        if (!baseName.includes('.')) baseName += '.' + ext;
+
+        if (!zipName) {
+          zipName = baseName;
           if (att.id && !zipName.startsWith(att.id)) zipName = `${att.id}_${baseName}`;
-
           seenZipNames.add(zipName);
+          fingerprintToFileMap.set(fp, zipName);
 
           const commaIdx = typeof data === 'string' ? data.indexOf(',') : -1;
           const b64 = commaIdx > -1 ? data.slice(commaIdx + 1) : data;
           zip.file(zipName, b64, { base64: true });
           fileCount++;
-
-          manifestAttachments.push({
-            id: att.id,
-            filename: zipName,
-            mime: mime,
-            size: typeof b64 === 'string' ? Math.round(b64.length * 0.75) : (data.byteLength || 0)
-          });
         }
+
+        const commaIdx = typeof data === 'string' ? data.indexOf(',') : -1;
+        const b64 = commaIdx > -1 ? data.slice(commaIdx + 1) : data;
+
+        manifestAttachments.push({
+          id: att.id,
+          filename: zipName,
+          mime: mime,
+          size: typeof b64 === 'string' ? Math.round(b64.length * 0.75) : (data.byteLength || 0)
+        });
       }
     }
 
@@ -1516,6 +1583,7 @@ async function exportAttachmentsZipFile() {
     const tx = idb.transaction('files', 'readonly');
     const store = tx.objectStore('files');
 
+    const dbFiles = [];
     await new Promise((resolve, reject) => {
       const cursorReq = store.openCursor();
       cursorReq.onsuccess = (e) => {
@@ -1524,46 +1592,7 @@ async function exportAttachmentsZipFile() {
           const key = String(cursor.key);
           if (key.startsWith('att_')) {
             const val = cursor.value;
-            if (val) {
-              const fp = getContentFingerprint(val);
-              if (!seenFingerprints.has(fp)) {
-                seenFingerprints.add(fp);
-                const rawKey = key.slice(4);
-                let ext = 'bin';
-                let mime = 'application/octet-stream';
-                let b64 = '';
-
-                if (typeof val === 'string' && val.startsWith('data:')) {
-                  const commaIdx = val.indexOf(',');
-                  b64 = commaIdx > -1 ? val.slice(commaIdx + 1) : val;
-                  const matchMime = val.match(/data:([^;]+);/);
-                  if (matchMime) {
-                    mime = matchMime[1];
-                    if (mime.includes('jpeg')) ext = 'jpg';
-                    else if (mime.includes('png')) ext = 'png';
-                  }
-                }
-
-                let zipFileName = rawKey.includes('.') ? rawKey : `${rawKey}.${ext}`;
-                if (!seenZipNames.has(zipFileName)) {
-                  seenZipNames.add(zipFileName);
-                  if (b64) {
-                    zip.file(zipFileName, b64, { base64: true });
-                    fileCount++;
-                  } else if (val instanceof ArrayBuffer || val instanceof Uint8Array) {
-                    zip.file(zipFileName, val);
-                    fileCount++;
-                  }
-
-                  manifestAttachments.push({
-                    id: rawKey,
-                    filename: zipFileName,
-                    mime: mime,
-                    size: b64 ? Math.round(b64.length * 0.75) : (val.byteLength || 0)
-                  });
-                }
-              }
-            }
+            if (val) dbFiles.push({ key, val });
           }
           cursor.continue();
         } else {
@@ -1572,6 +1601,48 @@ async function exportAttachmentsZipFile() {
       };
       cursorReq.onerror = () => reject(cursorReq.error);
     });
+
+    for (const item of dbFiles) {
+      const fp = await getContentFingerprint(item.val);
+      if (!fingerprintToFileMap.has(fp)) {
+        const rawKey = item.key.slice(4);
+        let ext = 'bin';
+        let mime = 'application/octet-stream';
+        let b64 = '';
+
+        if (typeof item.val === 'string' && item.val.startsWith('data:')) {
+          const commaIdx = item.val.indexOf(',');
+          b64 = commaIdx > -1 ? item.val.slice(commaIdx + 1) : item.val;
+          const matchMime = item.val.match(/data:([^;]+);/);
+          if (matchMime) {
+            mime = matchMime[1];
+            if (mime.includes('jpeg')) ext = 'jpg';
+            else if (mime.includes('png')) ext = 'png';
+          }
+        }
+
+        let zipFileName = rawKey.includes('.') ? rawKey : `${rawKey}.${ext}`;
+        if (!seenZipNames.has(zipFileName)) {
+          seenZipNames.add(zipFileName);
+          fingerprintToFileMap.set(fp, zipFileName);
+
+          if (b64) {
+            zip.file(zipFileName, b64, { base64: true });
+            fileCount++;
+          } else if (item.val instanceof ArrayBuffer || item.val instanceof Uint8Array) {
+            zip.file(zipFileName, item.val);
+            fileCount++;
+          }
+
+          manifestAttachments.push({
+            id: rawKey,
+            filename: zipFileName,
+            mime: mime,
+            size: b64 ? Math.round(b64.length * 0.75) : (item.val.byteLength || 0)
+          });
+        }
+      }
+    }
 
     if (loadingToast) dismissToast(loadingToast);
 
@@ -1783,9 +1854,9 @@ function switchToView(viewName, targetDate = null) {
   currentView = viewName;
   localStorage.setItem('srg_current_view', viewName);
   if (targetDate) {
-    currentDate = targetDate;
-  } else {
-    currentDate = new Date(); // Default to Today on view switch per user request!
+    currentDate = (targetDate instanceof Date) ? targetDate : new Date(targetDate);
+  } else if (!currentDate || isNaN(currentDate.getTime())) {
+    currentDate = new Date();
   }
   document.querySelectorAll('.view-btn').forEach(b => {
     b.classList.toggle('active', b.dataset.view === viewName);
@@ -2199,14 +2270,12 @@ async function handleChangePinSubmit(e) {
   }
 }
 
-function updateReadOnlyState(forceReadOnly = false) {
+function updateReadOnlyState() {
   isReadOnly = false;
-  const banner = document.getElementById('offlineReadOnlyBanner');
-  if (banner) banner.classList.add('hidden');
 }
 
 async function checkServerSyncOnStartup() {
-  updateReadOnlyState(false);
+  updateReadOnlyState();
 }
 
 /* ==========================================================================
@@ -2232,6 +2301,12 @@ async function openAttachmentViewer(att) {
     return;
   }
 
+  // Validate allowed safe URL protocols (reject javascript: or untrusted schemes)
+  if (!dataUrl.startsWith('data:') && !dataUrl.startsWith('blob:') && !dataUrl.startsWith('http://') && !dataUrl.startsWith('https://')) {
+    body.innerHTML = '<div style="padding:40px; color:#fb7185;"><i class="fa-solid fa-triangle-exclamation fa-2x"></i><br><br>Blocked attachment with invalid or unsafe URL scheme.</div>';
+    return;
+  }
+
   if (downloadLink) {
     downloadLink.href = dataUrl;
     downloadLink.download = att.filename || att.name || 'attachment';
@@ -2239,11 +2314,31 @@ async function openAttachmentViewer(att) {
 
   const mime = att.type || '';
   if (mime.startsWith('image/') || (dataUrl.startsWith('data:image/'))) {
-    body.innerHTML = `<img src="${dataUrl}" style="max-width:100%; max-height:70vh; border-radius:var(--radius-md); box-shadow:var(--shadow-md);">`;
+    body.innerHTML = '';
+    const img = document.createElement('img');
+    img.src = dataUrl;
+    img.alt = att.name || 'Attachment Preview';
+    img.style.cssText = 'max-width:100%; max-height:70vh; border-radius:var(--radius-md); box-shadow:var(--shadow-md);';
+    body.appendChild(img);
   } else if (mime.includes('pdf') || dataUrl.includes('pdf')) {
-    body.innerHTML = `<iframe src="${dataUrl}" style="width:100%; height:70vh; border:none; border-radius:var(--radius-md);"></iframe>`;
+    body.innerHTML = '';
+    const iframe = document.createElement('iframe');
+    iframe.src = dataUrl;
+    iframe.title = att.name || 'PDF Preview';
+    iframe.style.cssText = 'width:100%; height:70vh; border:none; border-radius:var(--radius-md);';
+    body.appendChild(iframe);
   } else {
-    body.innerHTML = `<div style="padding:40px;"><a href="${dataUrl}" download="${att.name}" class="btn-primary"><i class="fa-solid fa-download"></i> Download ${att.name}</a></div>`;
+    body.innerHTML = '';
+    const wrap = document.createElement('div');
+    wrap.style.padding = '40px';
+    const dlBtn = document.createElement('a');
+    dlBtn.href = dataUrl;
+    dlBtn.download = att.filename || att.name || 'attachment';
+    dlBtn.className = 'btn-primary';
+    dlBtn.innerHTML = '<i class="fa-solid fa-download"></i> ';
+    dlBtn.appendChild(document.createTextNode(` Download ${att.name || 'Attachment'}`));
+    wrap.appendChild(dlBtn);
+    body.appendChild(wrap);
   }
 }
 
@@ -2652,10 +2747,15 @@ function renderPortraitMonthView() {
 
     // 1. Date Cell
     const tdDate = document.createElement('td');
+    tdDate.style.cursor = 'pointer';
+    tdDate.title = 'Click to open Day View';
     tdDate.innerHTML = `
       <div class="portrait-day-cell-date">${indianDateStr} ${isToday ? '<span class="today-badge">TODAY</span>' : ''}</div>
       <div class="portrait-day-cell-sub">${dayOfWeekStr} (${tamilDayStr})</div>
     `;
+    tdDate.addEventListener('click', () => {
+      switchToView('day', dObj);
+    });
 
     // 2. Schedules Cell
     const tdSch = document.createElement('td');
@@ -2788,8 +2888,8 @@ function createDayCell(dateStr, dayNum, isOtherMonth, schedules, dayOfWeekIdx, i
   numSpan.addEventListener('click', (e) => {
     e.stopPropagation();
     const [y, m, d] = dateStr.split('-').map(Number);
-    currentDate = new Date(y, m - 1, d);
-    switchToView('day');
+    const targetDate = new Date(y, m - 1, d);
+    switchToView('day', targetDate);
   });
 
   const noteContent = dailyNotesMap ? dailyNotesMap[dateStr] : null;
@@ -4106,7 +4206,7 @@ async function extractTextFromPdf(arrayBuffer) {
   }
 
   try {
-    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    pdfjsLib.GlobalWorkerOptions.workerSrc = './pdf.worker.min.js';
     const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
     const pdf = await loadingTask.promise;
     const allTokens = [];
@@ -4694,19 +4794,27 @@ async function handleScheduleFormSubmit(e) {
 
   // 1. Process & Decouple General Attachments (save Base64 to IndexedDB + Upload to Server, strip Base64 for SQLite)
   const cleanedAttachments = [];
-  for (const att of currentModalAttachments) {
-    const filename = att.filename || (att.id + '_' + (att.name ? att.name.replace(/[^a-zA-Z0-9_\-\.]/g, '_') : 'file.dat'));
-    if (att.data && att.data.startsWith('data:')) {
-      await saveAttachmentToIndexedDB(att.id, att.data);
-      uploadAttachmentFileToServer(att.id, filename, att.data);
+  try {
+    for (const att of currentModalAttachments) {
+      const filename = att.filename || (att.id + '_' + (att.name ? att.name.replace(/[^a-zA-Z0-9_\-\.]/g, '_') : 'file.dat'));
+      if (att.data && att.data.startsWith('data:')) {
+        await saveAttachmentToIndexedDB(att.id, att.data);
+        uploadAttachmentFileToServer(att.id, filename, att.data);
+      }
+      cleanedAttachments.push({
+        id: att.id,
+        name: att.name,
+        type: att.type,
+        size: att.size,
+        filename: filename
+      });
     }
-    cleanedAttachments.push({
-      id: att.id,
-      name: att.name,
-      type: att.type,
-      size: att.size,
-      filename: filename
-    });
+  } catch (attErr) {
+    console.error('Failed to save schedule attachment:', attErr);
+    showToast(attErr.name === 'QuotaExceededError'
+      ? '❌ Storage quota exceeded! Attachment cannot be saved. Please clear old attachments or export a backup.'
+      : '❌ Failed to save attachment to local storage: ' + attErr.message, 'error', 6000);
+    return;
   }
   const attachmentsJson = JSON.stringify(cleanedAttachments);
 
@@ -4715,9 +4823,15 @@ async function handleScheduleFormSubmit(e) {
   if (onwardChecked && onwardTicketAttachment) {
     const att = onwardTicketAttachment;
     const filename = att.filename || (att.id + '_' + (att.name ? att.name.replace(/[^a-zA-Z0-9_\-\.]/g, '_') : 'file.dat'));
-    if (att.data && att.data.startsWith('data:')) {
-      await saveAttachmentToIndexedDB(att.id, att.data);
-      uploadAttachmentFileToServer(att.id, filename, att.data);
+    try {
+      if (att.data && att.data.startsWith('data:')) {
+        await saveAttachmentToIndexedDB(att.id, att.data);
+        uploadAttachmentFileToServer(att.id, filename, att.data);
+      }
+    } catch (attErr) {
+      console.error('Failed to save onward ticket attachment:', attErr);
+      showToast('❌ Failed to save onward ticket attachment: ' + attErr.message, 'error', 6000);
+      return;
     }
     cleanedOnwardAtt = {
       id: att.id,
@@ -4733,9 +4847,15 @@ async function handleScheduleFormSubmit(e) {
   if (returnChecked && returnTicketAttachment) {
     const att = returnTicketAttachment;
     const filename = att.filename || (att.id + '_' + (att.name ? att.name.replace(/[^a-zA-Z0-9_\-\.]/g, '_') : 'file.dat'));
-    if (att.data && att.data.startsWith('data:')) {
-      await saveAttachmentToIndexedDB(att.id, att.data);
-      uploadAttachmentFileToServer(att.id, filename, att.data);
+    try {
+      if (att.data && att.data.startsWith('data:')) {
+        await saveAttachmentToIndexedDB(att.id, att.data);
+        uploadAttachmentFileToServer(att.id, filename, att.data);
+      }
+    } catch (attErr) {
+      console.error('Failed to save return ticket attachment:', attErr);
+      showToast('❌ Failed to save return ticket attachment: ' + attErr.message, 'error', 6000);
+      return;
     }
     cleanedReturnAtt = {
       id: att.id,
@@ -5016,6 +5136,8 @@ async function handleScheduleFormSubmit(e) {
 
   // Direct Local SQLite Persistence: Atomically save schedules & tags to local database
   try {
+    db.run("BEGIN TRANSACTION;");
+
     // 1. If editId or groupId, clean existing travel legs for this group or schedule first
     if (groupId) {
       db.run("DELETE FROM schedules WHERE group_id = ? AND (title LIKE 'Travel:%' OR title LIKE 'Return Travel:%' OR title LIKE 'Travel Arrival:%' OR title LIKE 'Return Travel Arrival:%')", [groupId]);
@@ -5041,6 +5163,8 @@ async function handleScheduleFormSubmit(e) {
       }
     }
 
+    db.run("COMMIT;");
+
     await saveDbToIndexedDB();
     populateTitlesDatalist();
     closeScheduleModal();
@@ -5048,6 +5172,7 @@ async function handleScheduleFormSubmit(e) {
     renderCurrentView();
     showToast('✓ Saved directly to local database!', 'success', 3000);
   } catch(err) {
+    try { db.run("ROLLBACK;"); } catch(r) {}
     console.error('Error saving schedule locally:', err);
     showToast('❌ Error saving schedule: ' + err.message, 'error', 5000);
   }
@@ -7058,7 +7183,7 @@ async function convertAttachmentToImageDataUrl(att) {
 async function renderPdfDataUrlToImage(dataUrl) {
   if (typeof pdfjsLib === 'undefined') return null;
   try {
-    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    pdfjsLib.GlobalWorkerOptions.workerSrc = './pdf.worker.min.js';
     
     let base64Str = dataUrl;
     if (dataUrl.includes(',')) base64Str = dataUrl.split(',')[1];
@@ -7080,7 +7205,7 @@ async function renderPdfDataUrlToImage(dataUrl) {
 async function renderPdfArrayBufferToImage(arrayBuffer) {
   if (typeof pdfjsLib === 'undefined' || !arrayBuffer) return null;
   try {
-    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    pdfjsLib.GlobalWorkerOptions.workerSrc = './pdf.worker.min.js';
     const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
     const pdf = await loadingTask.promise;
     if (pdf.numPages === 0) return null;
@@ -8056,6 +8181,7 @@ function checkUpcomingEventReminders() {
     for (const ev of events) {
       const remMin = (ev.reminder_min !== undefined && ev.reminder_min !== null) ? parseInt(ev.reminder_min, 10) : 15;
       if (remMin === -1) continue; // User opted out of reminders
+      if (ev.status === 'cancelled') continue; // Suppress cancelled events
 
       const timeStr = ev.from_time || '09:00';
       const eventDate = new Date(`${dateStr}T${timeStr}:00`);
@@ -8072,14 +8198,25 @@ function checkUpcomingEventReminders() {
           sessionStorage.setItem(notifiedKey, JSON.stringify(notifiedMap));
 
           const isTravel = ev.title.toLowerCase().startsWith('travel:') || ev.title.toLowerCase().startsWith('return travel:');
-          let titleText = `Reminder: ${ev.title}`;
+          let titleText = isTravel ? `🚆 ${ev.title}` : `🔔 ${ev.title}`;
           let bodyText = '';
 
-          if (isTravel) {
-            titleText = `🚗 ${ev.title}`;
-            bodyText = `Departure at ${ev.from_time}${ev.location ? ' (' + ev.location + ')' : ''}`;
+          const diffMs = eventMs - nowMs;
+          const diffMins = Math.round(diffMs / 60000);
+          let timeDesc = '';
+          if (diffMins > 1) {
+            timeDesc = `starting in ${diffMins} mins`;
+          } else if (diffMins === 1) {
+            timeDesc = `starting in 1 min`;
+          } else if (diffMins === 0) {
+            timeDesc = `starting now`;
           } else {
-            const timeDesc = remMin === 0 ? 'starting now' : `starting in ${remMin} mins`;
+            timeDesc = `started ${Math.abs(diffMins)} min${Math.abs(diffMins) === 1 ? '' : 's'} ago`;
+          }
+
+          if (isTravel) {
+            bodyText = `Departure ${diffMins > 0 ? `in ${diffMins} mins at ` : 'at '}${ev.from_time}${ev.location ? ' (' + ev.location + ')' : ''}`;
+          } else {
             bodyText = `${timeDesc} at ${ev.from_time}${ev.location ? ' • ' + ev.location : ''}`;
           }
 
