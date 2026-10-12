@@ -6,19 +6,25 @@ A fully standalone, 100% offline Personal Calendar & Daily Organizer Progressive
 
 ## 🌟 Key Features
 
-- **100% Offline & Private:** Runs entirely inside your browser. No web server, PHP, or cloud database required. All data remains exclusively on your device.
+- **100% Offline & Private:** Runs entirely inside your browser. No web server, PHP, or external database required. All data remains exclusively on your device.
 - **SQLite WASM Engine (`sql.js`):** Embedded relational database providing full ACID compliance, lightning-fast queries, and easy `.db` file exports.
 - **IndexedDB Persistence (`SRGCalendarDB`):** Automatically saves every edit, schedule, note, and attachment into your browser's persistent storage.
-- **Local Snapshots & Backups:** 
-  - Save named local snapshots directly in browser storage.
-  - Export full SQLite `.db` database files to disk anytime with a single click.
-  - Restore anytime from a `.db` file.
-- **PWA (Progressive Web App):** Installable as a desktop or mobile application directly from Chrome, Edge, Safari, or Brave.
-- **Comprehensive Calendar Tools:**
-  - **Month Calendar View** with status dots and badges.
-  - **Portrait 30-Day Table View** with day notes, income/expense totals, and travel leg badges.
-  - **Day View** with hourly blocks, daily notes editor, and double-entry transaction manager.
-  - **Agenda View** with multi-date selection and filtering.
+- **1-Click Complete Backup & Restore (`.zip`):**
+  - Export a complete timestamped `.zip` containing both your SQLite database and all uploaded ticket attachments (PDFs & images).
+  - Restore anytime from a `.zip` archive on any device with automatic pre-restore safety snapshots.
+- **Local Snapshots:** Save named snapshots in browser storage anytime.
+- **Biometric & PIN Security:**
+  - Native **Fingerprint & Face ID** biometric unlock on mobile and biometric-capable laptops via WebAuthn Platform Authenticator.
+  - 4-digit master PIN lock fallback (Default PIN: `1234`).
+- **PWA (Progressive Web App):**
+  - Installable directly to home screen / desktop from Chrome, Edge, Safari, or Brave.
+  - Native offline caching with Service Worker.
+  - In-app install and check for updates buttons.
+- **Comprehensive Calendar Views:**
+  - **Calendar View:** 7-column month grid. In portrait mode, day cards automatically display compact icon indicators (schedules, travel, notes, finance) for clear readability. In landscape mode, full titles, times, and notes are shown.
+  - **Portrait Month View:** 30-day tabular view with day notes, income/expense totals, and travel leg badges.
+  - **Day View:** Hourly timeline, daily notes editor, and double-entry transaction manager.
+  - **Agenda View:** Bi-directional timeline centered on Today, with one-tap jump to Today and load earlier/later buttons.
 - **Travel Management & IRCTC PDF Ticket Parser:**
   - Schedule travel with onward/return legs, PNR, train/flight details, departure/arrival times (with overnight auto-calculation).
   - Attach e-tickets (PDF/Images) and automatically parse IRCTC PDF tickets client-side.
@@ -28,21 +34,19 @@ A fully standalone, 100% offline Personal Calendar & Daily Organizer Progressive
   - Schedules & Summary Reports
   - Travel Ticket Cost Statement
   - Ticket Reimbursement Claim Statement with embedded ticket copies and print-ready layout.
-- **App Security PIN:**
-  - Lock/Unlock your calendar with a secure 4-digit PIN (Default PIN: `1234`).
 
 ---
 
 ## 🚀 How to Run
 
 ### Method 1: Python Local Server (Easiest & Recommended)
-Modern browsers require HTTP/HTTPS to load WebAssembly (`.wasm`) files due to CORS security policies on `file://` URLs.
+Modern browsers require HTTP/HTTPS to load WebAssembly (`.wasm`) files due to browser security policies on `file://` URLs.
 
-1. Open PowerShell or Terminal in this `localdb` folder:
+1. Open PowerShell or Terminal in the project folder:
    ```bash
-   cd path/to/localdb
+   cd CalendarApp
    ```
-2. Run Python's built-in lightweight web server:
+2. Run Python's built-in web server:
    ```bash
    python -m http.server 8080
    ```
@@ -51,7 +55,7 @@ Modern browsers require HTTP/HTTPS to load WebAssembly (`.wasm`) files due to CO
 
 ---
 
-### Method 2: Node.js `npx serve` or `http-server`
+### Method 2: Node.js `npx serve`
 If you have Node.js installed:
 ```bash
 npx serve . -p 8080
@@ -60,38 +64,41 @@ Then visit [http://localhost:8080](http://localhost:8080).
 
 ---
 
-### Method 3: VS Code / Cursor "Live Server" Extension
-1. Open the `localdb` folder in VS Code or Cursor.
-2. Right-click `index.html` and click **"Open with Live Server"**.
+### Method 3: GitHub Pages
+The repository is published directly to GitHub Pages at:
+[https://srathinagiri.github.io/CalendarApp/](https://srathinagiri.github.io/CalendarApp/)
 
 ---
 
 ## 📲 How to Install as a PWA (Desktop / Mobile)
 
-1. Open the app in **Google Chrome**, **Microsoft Edge**, or **Brave** at `http://localhost:8080`.
-2. Look for the **Install App** icon in the browser address bar (top right) or open the browser menu (`⋮`) and select **"Install SRG Calendar Pro"**.
-3. Once installed, launch the app directly from your Desktop, Taskbar, or Start Menu like a native desktop app.
+1. Open the app in **Google Chrome**, **Microsoft Edge**, or **Brave** at `http://localhost:8080` or via GitHub Pages.
+2. Look for the **Install App** icon in the address bar or tap **"Install / Update App"** in the app's side drawer.
+3. Once installed, launch the app directly from your mobile home screen, Desktop, Taskbar, or Start Menu like a native app.
 
 ---
 
-## 🔐 Default Access PIN
+## 🔐 App Security Lock & Biometrics
 
 - **Default PIN:** `1234`
-- To change the PIN: Click on the shield/lock icon or gear menu -> **Change Security PIN**.
+- **Biometric Unlock:** On mobile devices (Android Fingerprint, iOS Touch ID / Face ID) and laptops with biometric sensors, the app supports instant biometric unlock.
+- **Biometric Setup:** Click the lock icon or open the side drawer -> tap **"Biometric / Fingerprint Unlock"**.
+- **Change PIN:** Open the side drawer -> tap **"Change Security PIN"**.
 
 ---
 
-## 💾 Backup, Restore & Migrating Data Between Devices / Server
+## 💾 Backup, Restore & Migrating Data Between Devices
 
-All your data is stored in the browser's persistent IndexedDB database (`SRGCalendarDB`). The app includes separate one-click tools for the database and all ticket attachments:
+All your data is stored in the browser's persistent IndexedDB database (`SRGCalendarDB`).
 
-### 1. Database Backup & Restore (`.db`)
-- **To Backup:** Click the **database icon** in the top header -> Click **"📥 Download DB (.db)"**. This downloads your full relational SQLite file containing all schedules, notes, tags, and accounts.
-- **To Restore:** Click **"📤 Restore DB (.db)"** -> Select your `.db` file. The app validates the SQLite format, creates an automatic safety snapshot of your previous state, and restores your calendar instantly.
-- **From Server-Based App:** You can take the `SRG_Calendar.db` file from your hosted server (or `api.php?action=download_db`) and restore it here directly with **"📤 Restore DB (.db)"**.
+### 1. Complete Full Backup & Restore (`.zip`) — Recommended
+- **To Backup:** Click the database icon in the top header -> Click **"💾 Export Full (.zip)"**. This generates a single archive containing your SQLite database and all uploaded ticket PDFs/images.
+- **To Restore:** Click **"📁 Restore Full (.zip)"** -> Select your backup `.zip` file. All schedules, notes, and attachments will be restored immediately.
 
-### 2. File & Ticket Attachments Backup & Restore (`.zip`)
-- **To Backup:** In the same dialog, click **"📦 Backup Files (.zip)"**. This packages all uploaded ticket PDFs and images from IndexedDB into a single compressed `.zip` file.
-- **To Restore in Another Device:** On the new device, click **"📥 Restore Files (.zip)"** -> Select your `.zip` file. All attachments will be extracted and saved into local storage.
-- **From Server-Based App:** If you have an `uploads/` folder or a zip of attachments from your server, upload that `.zip` file using **"📥 Restore Files (.zip)"**. The app extracts and links the tickets automatically to their corresponding journeys.
+### 2. Database-Only Backup & Restore (`.db`)
+- **To Backup:** Click **"📥 Download DB (.db)"** to download just the SQLite database file.
+- **To Restore:** Click **"📤 Restore DB (.db)"** -> Select your `.db` file.
 
+### 3. Attachments-Only Backup & Restore (`.zip`)
+- **To Backup:** In the backup dialog, click **"📦 Backup Files (.zip)"**.
+- **To Restore:** Click **"📥 Restore Files (.zip)"** -> Select your attachments `.zip` file.
