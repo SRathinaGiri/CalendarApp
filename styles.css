@@ -3449,3 +3449,62 @@ input:focus, select:focus, textarea:focus {
   color: #334155 !important;
   font-weight: 600 !important;
 }
+
+/* ==========================================================================
+   PRINT / PDF EXPORT STYLES
+   ========================================================================== */
+@media print {
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+    font-size: 11pt;
+  }
+  .app-header,
+  .side-drawer,
+  .side-drawer-backdrop,
+  .modal-backdrop,
+  .toast-container,
+  .btn-icon,
+  .btn-primary,
+  .btn-secondary,
+  .no-print {
+    display: none !important;
+  }
+  .app-main {
+    padding: 0 !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+  }
+  .calendar-grid {
+    border: 1px solid #cbd5e1 !important;
+    page-break-inside: avoid;
+  }
+  .day-cell {
+    border: 1px solid #cbd5e1 !important;
+    min-height: 80px !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+  .schedule-chip {
+    background: #f1f5f9 !important;
+    color: #0f172a !important;
+    border: 1px solid #94a3b8 !important;
+    font-size: 8pt !important;
+  }
+  .chip-title {
+    display: block !important;
+    color: #000000 !important;
+  }
+  .chip-time {
+    display: inline !important;
+    color: #334155 !important;
+  }
+  .pill-text {
+    display: inline !important;
+    color: #000000 !important;
+  }
+  @page {
+    margin: 1cm;
+    size: auto;
+  }
+}

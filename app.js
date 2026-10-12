@@ -106,7 +106,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.0.7';
+const APP_VERSION = 'v1.0.8';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -265,11 +265,17 @@ document.addEventListener('DOMContentLoaded', async () => {
   initAppTheme();
   setupUIEventListeners();
   updateInstallButtonState();
+  updateReminderUI();
   await initSqliteDatabase();
   await checkAppSecurityLock();
   loadMasterDataFromDb();
   populateTitlesDatalist();
   switchToView(currentView, currentDate);
+
+  // Periodic reminder checking for events & travel
+  checkUpcomingEventReminders();
+  setInterval(checkUpcomingEventReminders, 45000);
+  window.addEventListener('focus', checkUpcomingEventReminders);
 });
 
 /* ==========================================================================
@@ -365,6 +371,7 @@ function ensureSchemaUpToDate() {
         notes TEXT,
         attachments TEXT,
         travel_info TEXT,
+        reminder_min INTEGER DEFAULT 15,
         status TEXT DEFAULT 'confirmed',
         created_at TEXT,
         updated_at TEXT
@@ -414,6 +421,10 @@ function ensureSchemaUpToDate() {
     // Add travel_info if missing
     if (!colNames.includes('travel_info')) {
       db.run("ALTER TABLE schedules ADD COLUMN travel_info TEXT");
+    }
+    // Add reminder_min if missing
+    if (!colNames.includes('reminder_min')) {
+      try { db.run("ALTER TABLE schedules ADD COLUMN reminder_min INTEGER DEFAULT 15"); } catch(e) {}
     }
 
     // Safe schema migrations for tags, categories, and field definitions
@@ -2943,7 +2954,7 @@ function getSchedulesMap(startDate, endDate) {
   if (!db) return {};
   const query = `
     SELECT 
-      s.id, s.group_id, s.schedule_date, s.from_time, s.to_time, s.delivery_mode, s.location, s.title, s.notes, s.attachments, s.travel_info, s.status,
+      s.id, s.group_id, s.schedule_date, s.from_time, s.to_time, s.delivery_mode, s.location, s.title, s.notes, s.attachments, s.travel_info, s.reminder_min, s.status,
       GROUP_CONCAT(t.id || '::' || t.name || '::' || t.category_id || '::' || COALESCE(t.color,''), ';;') as tag_data
     FROM schedules s
     LEFT JOIN schedule_tags st ON s.id = st.schedule_id
@@ -3647,6 +3658,10 @@ function openScheduleModal(existingSchedule = null) {
     document.getElementById('schedFromTime').value = existingSchedule.from_time || '09:30';
     document.getElementById('schedToTime').value = existingSchedule.to_time || '13:30';
     document.getElementById('schedNotes').value = existingSchedule.notes || '';
+    const remSelect = document.getElementById('schedReminderMin');
+    if (remSelect) {
+      remSelect.value = (existingSchedule.reminder_min !== undefined && existingSchedule.reminder_min !== null) ? String(existingSchedule.reminder_min) : '15';
+    }
 
     // Load attachments
     try {
@@ -3694,6 +3709,8 @@ function openScheduleModal(existingSchedule = null) {
     document.getElementById('schedFromTime').value = '09:30';
     document.getElementById('schedToTime').value = '13:30';
     document.getElementById('schedNotes').value = '';
+    const remSelect = document.getElementById('schedReminderMin');
+    if (remSelect) remSelect.value = '15';
 
     datesToApply = selectedDates.size > 0 ? Array.from(selectedDates).sort() : [formatDateYMD(new Date())];
     
@@ -4588,6 +4605,8 @@ async function handleScheduleFormSubmit(e) {
   const toTime = document.getElementById('schedToTime').value;
   const notes = document.getElementById('schedNotes').value.trim();
   const applyAsGroup = document.getElementById('applyAsGroupCheckbox').checked;
+  const remSelectEl = document.getElementById('schedReminderMin');
+  const reminderMin = remSelectEl ? parseInt(remSelectEl.value, 10) : 15;
 
   // Auto-derive delivery mode & location directly from selected tags
   let deliveryMode = 'offline';
@@ -4802,6 +4821,7 @@ async function handleScheduleFormSubmit(e) {
       notes: notes,
       attachments: attachmentsJson,
       travel_info: travelInfoJson,
+      reminder_min: isNaN(reminderMin) ? 15 : reminderMin,
       status: status,
       created_at: existingCreatedAt,
       updated_at: nowIso,
@@ -4828,6 +4848,7 @@ async function handleScheduleFormSubmit(e) {
           notes: notes,
           attachments: attachmentsJson,
           travel_info: travelInfoJson,
+          reminder_min: isNaN(reminderMin) ? 15 : reminderMin,
           status: status,
           created_at: schCreated,
           updated_at: nowIso,
@@ -4852,6 +4873,7 @@ async function handleScheduleFormSubmit(e) {
         notes: notes,
         attachments: attachmentsJson,
         travel_info: travelInfoJson,
+        reminder_min: isNaN(reminderMin) ? 15 : reminderMin,
         status: status,
         created_at: nowIso,
         updated_at: nowIso,
@@ -4891,6 +4913,7 @@ async function handleScheduleFormSubmit(e) {
       notes: oNotes,
       attachments: oAttachments,
       travel_info: travelInfoJson,
+      reminder_min: (reminderMin === -1) ? -1 : 30,
       status: status,
       created_at: nowIso,
       updated_at: nowIso,
@@ -4916,6 +4939,7 @@ async function handleScheduleFormSubmit(e) {
         notes: oArrNotes,
         attachments: oAttachments,
         travel_info: travelInfoJson,
+        reminder_min: -1,
         status: status,
         created_at: nowIso,
         updated_at: nowIso,
@@ -4955,6 +4979,7 @@ async function handleScheduleFormSubmit(e) {
       notes: rNotes,
       attachments: rAttachments,
       travel_info: travelInfoJson,
+      reminder_min: (reminderMin === -1) ? -1 : 30,
       status: status,
       created_at: nowIso,
       updated_at: nowIso,
@@ -4980,6 +5005,7 @@ async function handleScheduleFormSubmit(e) {
         notes: rArrNotes,
         attachments: rAttachments,
         travel_info: travelInfoJson,
+        reminder_min: -1,
         status: status,
         created_at: nowIso,
         updated_at: nowIso,
@@ -5000,9 +5026,9 @@ async function handleScheduleFormSubmit(e) {
     // 2. Insert or replace all schedules and tags
     for (const sch of schedulesToSave) {
       db.run(`
-        INSERT OR REPLACE INTO schedules (id, group_id, schedule_date, from_time, to_time, delivery_mode, location, title, notes, attachments, travel_info, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, [sch.id, sch.group_id, sch.schedule_date, sch.from_time, sch.to_time, sch.delivery_mode, sch.location, sch.title, sch.notes, sch.attachments, sch.travel_info, sch.status, sch.created_at, sch.updated_at]);
+        INSERT OR REPLACE INTO schedules (id, group_id, schedule_date, from_time, to_time, delivery_mode, location, title, notes, attachments, travel_info, reminder_min, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [sch.id, sch.group_id, sch.schedule_date, sch.from_time, sch.to_time, sch.delivery_mode, sch.location, sch.title, sch.notes, sch.attachments, sch.travel_info, (sch.reminder_min !== undefined ? sch.reminder_min : 15), sch.status, sch.created_at, sch.updated_at]);
 
       // Tags
       db.run('DELETE FROM schedule_tags WHERE schedule_id = ?', [sch.id]);
@@ -5635,6 +5661,13 @@ function setupUIEventListeners() {
       openReportsModal();
     });
   }
+  const drawerPrintBtn = document.getElementById('drawerPrintBtn');
+  if (drawerPrintBtn) {
+    drawerPrintBtn.addEventListener('click', () => {
+      closeSideMenu();
+      openPrintMonthModal();
+    });
+  }
   const drawerBackupBtn = document.getElementById('drawerBackupBtn');
   if (drawerBackupBtn) {
     drawerBackupBtn.addEventListener('click', () => {
@@ -5651,6 +5684,12 @@ function setupUIEventListeners() {
   }
 
   // Drawer Settings & Security
+  const drawerRemindersBtn = document.getElementById('drawerRemindersBtn');
+  if (drawerRemindersBtn) {
+    drawerRemindersBtn.addEventListener('click', () => {
+      toggleReminderNotifications();
+    });
+  }
   const drawerThemeBtn = document.getElementById('drawerThemeBtn');
   if (drawerThemeBtn) {
     drawerThemeBtn.addEventListener('click', () => {
@@ -5748,6 +5787,30 @@ function setupUIEventListeners() {
     dayTodayBtn.addEventListener('click', () => {
       currentDate = new Date();
       renderCurrentView();
+    });
+  }
+
+  // Print Monthly Calendar Controls
+  const printCalendarBtn = document.getElementById('printCalendarBtn');
+  if (printCalendarBtn) {
+    printCalendarBtn.addEventListener('click', openPrintMonthModal);
+  }
+  const closePrintMonthModalBtn = document.getElementById('closePrintMonthModalBtn');
+  if (closePrintMonthModalBtn) {
+    closePrintMonthModalBtn.addEventListener('click', closePrintMonthModal);
+  }
+  const printGridBtn = document.getElementById('printGridBtn');
+  if (printGridBtn) {
+    printGridBtn.addEventListener('click', () => {
+      closePrintMonthModal();
+      printMonthCalendar('grid');
+    });
+  }
+  const printTableBtn = document.getElementById('printTableBtn');
+  if (printTableBtn) {
+    printTableBtn.addEventListener('click', () => {
+      closePrintMonthModal();
+      printMonthCalendar('table');
     });
   }
 
@@ -6488,6 +6551,8 @@ function generateActiveReport() {
     renderTicketCostReport(container, fromDate, toDate);
   } else if (activeReportType === 'ticket_claim') {
     renderTicketClaimReport(container, fromDate, toDate);
+  } else if (activeReportType === 'monthly_calendar') {
+    renderMonthlyCalendarReport(container, fromDate, toDate);
   }
 }
 
@@ -7446,4 +7511,584 @@ function printCurrentReport() {
   win.document.close();
   win.focus();
   setTimeout(() => win.print(), 400);
+}
+
+/* ==========================================================================
+   PRINT / PDF EXPORT ENGINE (WALL CALENDAR GRID & DIARY TABLE)
+   ========================================================================== */
+
+function openPrintMonthModal() {
+  const modal = document.getElementById('printMonthModal');
+  const title = document.getElementById('printMonthTitle');
+  if (title) {
+    title.textContent = currentDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  }
+  if (modal) modal.classList.remove('hidden');
+}
+
+function closePrintMonthModal() {
+  const modal = document.getElementById('printMonthModal');
+  if (modal) modal.classList.add('hidden');
+}
+
+function printMonthCalendar(layout = 'grid') {
+  if (!db) return;
+  const year = currentDate.getFullYear();
+  const month = currentDate.getMonth();
+  const monthName = currentDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+
+  const firstDayOfMonth = new Date(year, month, 1);
+  const lastDayOfMonth = new Date(year, month + 1, 0);
+  const startDateStr = formatDateYMD(firstDayOfMonth);
+  const endDateStr = formatDateYMD(lastDayOfMonth);
+  const totalDays = lastDayOfMonth.getDate();
+
+  const schedulesMap = getSchedulesMap(startDateStr, endDateStr);
+
+  const win = window.open('', '_blank', 'width=1150,height=800');
+  if (!win) {
+    alert('Please allow popups to open the printable calendar.');
+    return;
+  }
+
+  let htmlContent = '';
+
+  if (layout === 'grid') {
+    // 7-Column Wall Calendar Grid (Landscape)
+    const weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    let gridRowsHtml = '';
+
+    const firstDayWeekday = firstDayOfMonth.getDay(); // 0 is Sunday
+    let currentDayNum = 1;
+    let finished = false;
+
+    while (!finished) {
+      gridRowsHtml += '<tr>';
+      for (let w = 0; w < 7; w++) {
+        if (currentDayNum === 1 && w < firstDayWeekday) {
+          // Leading empty cell
+          gridRowsHtml += '<td class="empty-cell"></td>';
+        } else if (currentDayNum > totalDays) {
+          // Trailing empty cell
+          gridRowsHtml += '<td class="empty-cell"></td>';
+          finished = true;
+        } else {
+          const dStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(currentDayNum).padStart(2, '0')}`;
+          const evList = schedulesMap[dStr] || [];
+          
+          let evItemsHtml = '';
+          evList.forEach(ev => {
+            const isTravel = ev.title.toLowerCase().startsWith('travel:') || ev.title.toLowerCase().startsWith('return travel:');
+            const icon = isTravel ? '🚆 ' : '• ';
+            const timeStr = ev.from_time ? `<span class="ev-time">${escapeHtml(ev.from_time)}</span>` : '';
+            evItemsHtml += `
+              <div class="ev-item ${isTravel ? 'ev-travel' : ''}">
+                ${timeStr} <strong>${icon}${escapeHtml(ev.title)}</strong>
+                ${ev.location ? `<div class="ev-loc">${escapeHtml(ev.location)}</div>` : ''}
+              </div>
+            `;
+          });
+
+          gridRowsHtml += `
+            <td class="cal-day-cell">
+              <div class="day-number">${currentDayNum}</div>
+              <div class="day-events-wrap">${evItemsHtml}</div>
+            </td>
+          `;
+          currentDayNum++;
+          if (currentDayNum > totalDays && w === 6) {
+            finished = true;
+          }
+        }
+      }
+      gridRowsHtml += '</tr>';
+    }
+
+    htmlContent = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <title>${monthName} - Monthly Wall Calendar Grid</title>
+          <style>
+            @page { size: landscape; margin: 8mm; }
+            * { box-sizing: border-box; }
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; margin: 0; padding: 12px; color: #0f172a; background: #fff; }
+            .cal-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 10px; border-bottom: 2px solid #0284c7; padding-bottom: 6px; }
+            .cal-title { font-size: 24px; font-weight: 800; color: #0369a1; margin: 0; }
+            .cal-meta { font-size: 11px; color: #64748b; }
+            table.cal-grid { width: 100%; border-collapse: collapse; table-layout: fixed; }
+            th { background: #f8fafc; color: #334155; font-size: 12px; font-weight: 700; text-transform: uppercase; padding: 8px 4px; border: 1px solid #cbd5e1; text-align: center; }
+            th.weekend { background: #f1f5f9; color: #475569; }
+            td { border: 1px solid #cbd5e1; vertical-align: top; height: 110px; padding: 4px; }
+            td.empty-cell { background: #f8fafc; }
+            td.cal-day-cell { background: #ffffff; }
+            .day-number { font-size: 13px; font-weight: 700; color: #1e293b; margin-bottom: 4px; }
+            .day-events-wrap { display: flex; flex-direction: column; gap: 3px; max-height: 90px; overflow: hidden; }
+            .ev-item { font-size: 9.5px; line-height: 1.25; padding: 2px 4px; border-radius: 3px; background: #f1f5f9; border-left: 3px solid #2563eb; color: #0f172a; }
+            .ev-item.ev-travel { background: #fef3c7; border-left-color: #d97706; color: #78350f; }
+            .ev-time { font-weight: 600; color: #475569; margin-right: 2px; }
+            .ev-loc { font-size: 8.5px; color: #64748b; margin-top: 1px; }
+            @media print {
+              body { padding: 0; }
+              td { height: 105px !important; }
+              .day-events-wrap { max-height: none !important; }
+            }
+          </style>
+        </head>
+        <body>
+          <div class="cal-header">
+            <div>
+              <h1 class="cal-title">${monthName}</h1>
+              <div class="cal-meta">Calendar App &bull; Monthly Wall Calendar Sheet</div>
+            </div>
+            <div class="cal-meta" style="text-align: right;">
+              Printed on ${new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+            </div>
+          </div>
+          <table class="cal-grid">
+            <thead>
+              <tr>
+                ${weekdays.map((wd, i) => `<th class="${(i === 0 || i === 6) ? 'weekend' : ''}">${wd}</th>`).join('')}
+              </tr>
+            </thead>
+            <tbody>
+              ${gridRowsHtml}
+            </tbody>
+          </table>
+        </body>
+      </html>
+    `;
+  } else {
+    // 30-Day Detailed Diary Table (Portrait)
+    let rowsHtml = '';
+    for (let d = 1; d <= totalDays; d++) {
+      const dDate = new Date(year, month, d);
+      const dStr = formatDateYMD(dDate);
+      const weekdayStr = dDate.toLocaleDateString('en-US', { weekday: 'short' });
+      const evList = schedulesMap[dStr] || [];
+
+      if (evList.length === 0) {
+        rowsHtml += `
+          <tr class="empty-day-row">
+            <td class="date-col"><strong>${String(d).padStart(2, '0')} ${monthName.split(' ')[0].substr(0, 3)}</strong><br><small>${weekdayStr}</small></td>
+            <td colspan="5" class="no-events-text">— No scheduled programs —</td>
+          </tr>
+        `;
+      } else {
+        evList.forEach((ev, idx) => {
+          const isTravel = ev.title.toLowerCase().startsWith('travel:') || ev.title.toLowerCase().startsWith('return travel:');
+          let travelDetails = '—';
+          if (ev.travel_info) {
+            try {
+              const ti = JSON.parse(ev.travel_info);
+              if (ti.onward && ti.onward.enabled) {
+                travelDetails = `Onward: ${ti.onward.mode} (${ti.onward.fromPlace} -> ${ti.onward.toPlace}) ${ti.onward.pnr ? 'PNR: ' + ti.onward.pnr : ''}`;
+              } else if (ti.return && ti.return.enabled) {
+                travelDetails = `Return: ${ti.return.mode} (${ti.return.fromPlace} -> ${ti.return.toPlace}) ${ti.return.pnr ? 'PNR: ' + ti.return.pnr : ''}`;
+              }
+            } catch(e) {}
+          } else if (isTravel) {
+            travelDetails = ev.notes || 'Travel in transit';
+          }
+
+          rowsHtml += `
+            <tr class="${isTravel ? 'travel-row' : ''}">
+              ${idx === 0 ? `<td class="date-col" rowspan="${evList.length}"><strong>${String(d).padStart(2, '0')} ${monthName.split(' ')[0].substr(0, 3)}</strong><br><small>${weekdayStr}</small></td>` : ''}
+              <td class="title-col">
+                <strong>${escapeHtml(ev.title)}</strong>
+                ${ev.notes ? `<div class="sub-notes">${escapeHtml(ev.notes)}</div>` : ''}
+              </td>
+              <td class="time-col">${escapeHtml(formatTimeRange(ev.from_time, ev.to_time))}</td>
+              <td class="loc-col">${escapeHtml(ev.location || ev.delivery_mode || '—')}</td>
+              <td class="travel-col">${escapeHtml(travelDetails)}</td>
+              <td class="status-col"><span class="badge ${ev.status}">${escapeHtml(ev.status || 'Confirmed')}</span></td>
+            </tr>
+          `;
+        });
+      }
+    }
+
+    htmlContent = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <title>${monthName} - 30-Day Schedule Diary</title>
+          <style>
+            @page { size: portrait; margin: 10mm; }
+            * { box-sizing: border-box; }
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; margin: 0; padding: 14px; color: #0f172a; background: #fff; font-size: 11px; }
+            .diary-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 12px; border-bottom: 2px solid #0284c7; padding-bottom: 8px; }
+            .diary-title { font-size: 20px; font-weight: 800; color: #0369a1; margin: 0; }
+            .diary-meta { font-size: 11px; color: #64748b; }
+            table.diary-table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+            th { background: #f1f5f9; color: #1e293b; padding: 7px 6px; border: 1px solid #cbd5e1; font-weight: 700; text-align: left; font-size: 10.5px; }
+            td { border: 1px solid #cbd5e1; padding: 5px 6px; vertical-align: top; }
+            .date-col { width: 11%; text-align: center; background: #f8fafc; font-weight: 600; }
+            .title-col { width: 34%; }
+            .time-col { width: 14%; white-space: nowrap; }
+            .loc-col { width: 14%; }
+            .travel-col { width: 18%; font-size: 10px; color: #475569; }
+            .status-col { width: 9%; text-align: center; }
+            .sub-notes { font-size: 9.5px; color: #64748b; margin-top: 2px; }
+            .no-events-text { color: #94a3b8; font-style: italic; text-align: center; padding: 4px; }
+            .travel-row { background: #fffdf5; }
+            .badge { display: inline-block; padding: 2px 5px; border-radius: 3px; font-size: 9px; font-weight: 600; text-transform: uppercase; background: #e2e8f0; color: #334155; }
+            .badge.completed { background: #dcfce7; color: #166534; }
+            .badge.planned { background: #e0f2fe; color: #0369a1; }
+            .badge.cancelled { background: #fee2e2; color: #991b1b; }
+            @media print {
+              body { padding: 0; }
+              tr { page-break-inside: avoid; }
+            }
+          </style>
+        </head>
+        <body>
+          <div class="diary-header">
+            <div>
+              <h1 class="diary-title">${monthName} &bull; Detailed Schedule Diary</h1>
+              <div class="diary-meta">Calendar App &bull; Official Daily Program Register</div>
+            </div>
+            <div class="diary-meta" style="text-align: right;">
+              Generated on ${new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+            </div>
+          </div>
+          <table class="diary-table">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Program / Schedule</th>
+                <th>Timing</th>
+                <th>Location / Mode</th>
+                <th>Travel & Transit</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rowsHtml}
+            </tbody>
+          </table>
+        </body>
+      </html>
+    `;
+  }
+
+  win.document.open();
+  win.document.write(htmlContent);
+  win.document.close();
+  win.focus();
+  setTimeout(() => win.print(), 400);
+}
+
+function renderMonthlyCalendarReport(container, fromDate, toDate) {
+  const d1 = new Date(fromDate + 'T00:00:00');
+  const d2 = new Date(toDate + 'T00:00:00');
+  const schedulesMap = getSchedulesMap(fromDate, toDate);
+
+  let totalDays = 0;
+  let activeDays = 0;
+  let totalSchedules = 0;
+  let totalTravelLegs = 0;
+
+  const cur = new Date(d1);
+  while (cur <= d2) {
+    totalDays++;
+    const ds = formatDateYMD(cur);
+    const evs = schedulesMap[ds] || [];
+    if (evs.length > 0) {
+      activeDays++;
+      evs.forEach(ev => {
+        if (ev.title.toLowerCase().startsWith('travel:') || ev.title.toLowerCase().startsWith('return travel:')) {
+          totalTravelLegs++;
+        } else {
+          totalSchedules++;
+        }
+      });
+    }
+    cur.setDate(cur.getDate() + 1);
+  }
+
+  let html = `
+    <div style="background: var(--bg-card); padding: 18px; border-radius: var(--radius-md); border: 1px solid var(--border-color); margin-bottom: 20px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 14px;">
+        <div>
+          <h3 style="margin: 0 0 4px; font-size: 1.15rem; color: var(--text-main);">
+            <i class="fa-solid fa-calendar-days text-sky"></i> Monthly Calendar Sheet & Diary
+          </h3>
+          <div style="font-size: 0.82rem; color: var(--text-muted);">
+            Period: <strong>${formatDateIndian(fromDate)}</strong> to <strong>${formatDateIndian(toDate)}</strong>
+          </div>
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <button type="button" class="btn-primary" id="reportPrintGridBtn" style="font-size: 0.84rem; padding: 7px 12px;">
+            <i class="fa-solid fa-print"></i> Print Landscape Grid
+          </button>
+          <button type="button" class="btn-secondary" id="reportPrintTableBtn" style="font-size: 0.84rem; padding: 7px 12px;">
+            <i class="fa-solid fa-table-list"></i> Print Portrait Table
+          </button>
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px;">
+        <div style="background: var(--bg-primary); padding: 10px; border-radius: var(--radius-sm); border: 1px solid var(--border-color); text-align: center;">
+          <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Total Days</div>
+          <div style="font-size: 1.25rem; font-weight: 700; color: var(--text-main);">${totalDays}</div>
+        </div>
+        <div style="background: var(--bg-primary); padding: 10px; border-radius: var(--radius-sm); border: 1px solid var(--border-color); text-align: center;">
+          <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Program Days</div>
+          <div style="font-size: 1.25rem; font-weight: 700; color: #38bdf8;">${activeDays}</div>
+        </div>
+        <div style="background: var(--bg-primary); padding: 10px; border-radius: var(--radius-sm); border: 1px solid var(--border-color); text-align: center;">
+          <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Programs</div>
+          <div style="font-size: 1.25rem; font-weight: 700; color: #4ade80;">${totalSchedules}</div>
+        </div>
+        <div style="background: var(--bg-primary); padding: 10px; border-radius: var(--radius-sm); border: 1px solid var(--border-color); text-align: center;">
+          <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase;">Travel Legs</div>
+          <div style="font-size: 1.25rem; font-weight: 700; color: #f59e0b;">${totalTravelLegs}</div>
+        </div>
+      </div>
+    </div>
+
+    <table class="report-table" style="width: 100%; border-collapse: collapse; font-size: 0.85rem;">
+      <thead>
+        <tr style="background: var(--bg-card); border-bottom: 2px solid var(--border-color);">
+          <th style="padding: 9px 10px; text-align: left; width: 14%;">Date & Day</th>
+          <th style="padding: 9px 10px; text-align: left;">Program / Schedule</th>
+          <th style="padding: 9px 10px; text-align: left; width: 15%;">Timing</th>
+          <th style="padding: 9px 10px; text-align: left; width: 16%;">Location / Mode</th>
+          <th style="padding: 9px 10px; text-align: left; width: 12%;">Status</th>
+        </tr>
+      </thead>
+      <tbody>
+  `;
+
+  const renderCur = new Date(d1);
+  while (renderCur <= d2) {
+    const ds = formatDateYMD(renderCur);
+    const dayName = renderCur.toLocaleDateString('en-US', { weekday: 'short' });
+    const evs = schedulesMap[ds] || [];
+
+    if (evs.length === 0) {
+      html += `
+        <tr style="border-bottom: 1px solid var(--border-color); opacity: 0.65;">
+          <td style="padding: 7px 10px; font-weight: 600;">${formatDateIndian(ds)} <small style="color:var(--text-muted);">(${dayName})</small></td>
+          <td colspan="4" style="padding: 7px 10px; font-style: italic; color: var(--text-muted);">— No scheduled programs —</td>
+        </tr>
+      `;
+    } else {
+      evs.forEach((ev, idx) => {
+        const isTravel = ev.title.toLowerCase().startsWith('travel:') || ev.title.toLowerCase().startsWith('return travel:');
+        html += `
+          <tr style="border-bottom: 1px solid var(--border-color); ${isTravel ? 'background: rgba(245, 158, 11, 0.05);' : ''}">
+            ${idx === 0 ? `<td rowspan="${evs.length}" style="padding: 7px 10px; font-weight: 600; vertical-align: top; border-right: 1px solid var(--border-color);">${formatDateIndian(ds)}<br><small style="color:var(--text-muted);">(${dayName})</small></td>` : ''}
+            <td style="padding: 7px 10px; font-weight: 600; color: ${isTravel ? '#f59e0b' : 'var(--text-main)'};">
+              ${isTravel ? '<i class="fa-solid fa-train"></i> ' : ''}${escapeHtml(ev.title)}
+              ${ev.notes ? `<div style="font-size: 0.78rem; font-weight: 400; color: var(--text-muted); margin-top: 2px;">${escapeHtml(ev.notes)}</div>` : ''}
+            </td>
+            <td style="padding: 7px 10px; white-space: nowrap;">${escapeHtml(formatTimeRange(ev.from_time, ev.to_time))}</td>
+            <td style="padding: 7px 10px;">${escapeHtml(ev.location || ev.delivery_mode || '—')}</td>
+            <td style="padding: 7px 10px;">
+              <span class="report-status-badge ${ev.status}">${escapeHtml(ev.status || 'Confirmed')}</span>
+            </td>
+          </tr>
+        `;
+      });
+    }
+
+    renderCur.setDate(renderCur.getDate() + 1);
+  }
+
+  html += `
+      </tbody>
+    </table>
+  `;
+
+  container.innerHTML = html;
+
+  const btnGrid = document.getElementById('reportPrintGridBtn');
+  if (btnGrid) btnGrid.addEventListener('click', () => printMonthCalendar('grid'));
+  const btnTable = document.getElementById('reportPrintTableBtn');
+  if (btnTable) btnTable.addEventListener('click', () => printMonthCalendar('table'));
+}
+
+/* ==========================================================================
+   OFFLINE AUDIO CHIME & WEB NOTIFICATIONS ENGINE
+   ========================================================================== */
+
+function playNotificationChime() {
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return;
+    const ctx = new AudioContextClass();
+    if (ctx.state === 'suspended') {
+      ctx.resume();
+    }
+    const now = ctx.currentTime;
+    
+    // Tone 1: D5 (587.33 Hz)
+    const osc1 = ctx.createOscillator();
+    const gain1 = ctx.createGain();
+    osc1.type = 'sine';
+    osc1.frequency.setValueAtTime(587.33, now);
+    gain1.gain.setValueAtTime(0.15, now);
+    gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+    osc1.connect(gain1);
+    gain1.connect(ctx.destination);
+    osc1.start(now);
+    osc1.stop(now + 0.18);
+
+    // Tone 2: A5 (880.00 Hz)
+    const osc2 = ctx.createOscillator();
+    const gain2 = ctx.createGain();
+    osc2.type = 'sine';
+    osc2.frequency.setValueAtTime(880.00, now + 0.12);
+    gain2.gain.setValueAtTime(0.2, now + 0.12);
+    gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+    osc2.connect(gain2);
+    gain2.connect(ctx.destination);
+    osc2.start(now + 0.12);
+    osc2.stop(now + 0.45);
+  } catch (err) {
+    console.warn('Audio chime notice:', err);
+  }
+}
+
+function sendCalendarNotification(title, options = {}) {
+  playNotificationChime();
+  showToast(`🔔 ${title}${options.body ? ': ' + options.body : ''}`, 'info', 6000);
+
+  if (!('Notification' in window)) return;
+  if (Notification.permission !== 'granted') return;
+
+  const notifOptions = {
+    icon: 'icons/icon-192.png',
+    badge: 'icons/icon-192.png',
+    vibrate: [200, 100, 200],
+    ...options
+  };
+
+  try {
+    if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+      navigator.serviceWorker.ready.then(reg => {
+        reg.showNotification(title, notifOptions);
+      }).catch(() => {
+        new Notification(title, notifOptions);
+      });
+    } else {
+      new Notification(title, notifOptions);
+    }
+  } catch (e) {
+    console.warn('Notification dispatch error:', e);
+  }
+}
+
+async function toggleReminderNotifications() {
+  if (!('Notification' in window)) {
+    alert('Browser notifications are not supported on this browser.');
+    return;
+  }
+
+  if (Notification.permission === 'default') {
+    const res = await Notification.requestPermission();
+    if (res === 'granted') {
+      localStorage.setItem('srg_reminders_enabled', 'true');
+      updateReminderUI();
+      sendCalendarNotification('Notifications Enabled', {
+        body: 'You will receive reminders for scheduled events and travel departures.'
+      });
+    } else {
+      updateReminderUI();
+      alert('Notification permission was not granted. You can enable notifications anytime in your browser site settings.');
+    }
+  } else if (Notification.permission === 'granted') {
+    const current = localStorage.getItem('srg_reminders_enabled') !== 'false';
+    const next = !current;
+    localStorage.setItem('srg_reminders_enabled', next ? 'true' : 'false');
+    updateReminderUI();
+    showToast(next ? '🔔 Event Reminders enabled' : '🔕 Event Reminders muted', 'info');
+  } else if (Notification.permission === 'denied') {
+    alert('Notifications are blocked by your browser settings. To receive event alerts, please allow notifications for this site in your browser permissions.');
+  }
+}
+
+function updateReminderUI() {
+  const textEl = document.getElementById('drawerRemindersText');
+  if (!textEl) return;
+  if (!('Notification' in window)) {
+    textEl.textContent = 'Event Reminders: Not Supported';
+    return;
+  }
+  if (Notification.permission === 'denied') {
+    textEl.textContent = 'Event Reminders: Blocked 🔕';
+  } else if (Notification.permission === 'granted') {
+    const isEnabled = localStorage.getItem('srg_reminders_enabled') !== 'false';
+    textEl.textContent = isEnabled ? 'Event Reminders: Active 🔔' : 'Event Reminders: Paused 🔕';
+  } else {
+    textEl.textContent = 'Enable Event Reminders 🔔';
+  }
+}
+
+function checkUpcomingEventReminders() {
+  if (!db) return;
+  const isEnabled = localStorage.getItem('srg_reminders_enabled') !== 'false';
+  if (!isEnabled) return;
+
+  const now = new Date();
+  const todayStr = formatDateYMD(now);
+  const tomorrowDate = new Date(now);
+  tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+  const tomorrowStr = formatDateYMD(tomorrowDate);
+
+  const schedulesMap = getSchedulesMap(todayStr, tomorrowStr);
+  const notifiedKey = 'srg_notified_reminders';
+  let notifiedMap = {};
+  try {
+    notifiedMap = JSON.parse(sessionStorage.getItem(notifiedKey) || '{}');
+  } catch(e) {
+    notifiedMap = {};
+  }
+
+  const nowMs = now.getTime();
+
+  for (const dateStr of [todayStr, tomorrowStr]) {
+    const events = schedulesMap[dateStr] || [];
+    for (const ev of events) {
+      const remMin = (ev.reminder_min !== undefined && ev.reminder_min !== null) ? parseInt(ev.reminder_min, 10) : 15;
+      if (remMin === -1) continue; // User opted out of reminders
+
+      const timeStr = ev.from_time || '09:00';
+      const eventDate = new Date(`${dateStr}T${timeStr}:00`);
+      if (isNaN(eventDate.getTime())) continue;
+
+      const eventMs = eventDate.getTime();
+      const triggerMs = eventMs - (remMin * 60 * 1000);
+
+      // Trigger if now is between trigger time and event start + 5 minutes
+      if (nowMs >= triggerMs && nowMs <= eventMs + 5 * 60 * 1000) {
+        const notifId = `${ev.id}_${dateStr}_${remMin}`;
+        if (!notifiedMap[notifId]) {
+          notifiedMap[notifId] = true;
+          sessionStorage.setItem(notifiedKey, JSON.stringify(notifiedMap));
+
+          const isTravel = ev.title.toLowerCase().startsWith('travel:') || ev.title.toLowerCase().startsWith('return travel:');
+          let titleText = `Reminder: ${ev.title}`;
+          let bodyText = '';
+
+          if (isTravel) {
+            titleText = `🚗 ${ev.title}`;
+            bodyText = `Departure at ${ev.from_time}${ev.location ? ' (' + ev.location + ')' : ''}`;
+          } else {
+            const timeDesc = remMin === 0 ? 'starting now' : `starting in ${remMin} mins`;
+            bodyText = `${timeDesc} at ${ev.from_time}${ev.location ? ' • ' + ev.location : ''}`;
+          }
+
+          sendCalendarNotification(titleText, {
+            body: bodyText,
+            tag: notifId
+          });
+        }
+      }
+    }
+  }
 }

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'calendar-app-v1.0.7';
+const CACHE_NAME = 'calendar-app-v1.0.8';
 const CORE_ASSETS = [
   './',
   './index.html',
@@ -47,6 +47,23 @@ self.addEventListener('message', (event) => {
   if (event.data && event.data.type === 'SKIP_WAITING') {
     self.skipWaiting();
   }
+});
+
+// Focus or open app window when a reminder notification is clicked
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+      for (const client of clientList) {
+        if (client.url && 'focus' in client) {
+          return client.focus();
+        }
+      }
+      if (self.clients.openWindow) {
+        return self.clients.openWindow('./');
+      }
+    })
+  );
 });
 
 self.addEventListener('fetch', (e) => {

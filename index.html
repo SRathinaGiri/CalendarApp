@@ -41,7 +41,7 @@
               <div class="brand-logo">
                 <i class="fa-solid fa-calendar-days"></i>
               </div>
-              <span class="brand-name">Calendar App <small id="appVersionBadge" style="font-size:0.7rem; font-weight:600; color:#38bdf8; background:rgba(56,189,248,0.15); padding:1px 5px; border-radius:4px; margin-left:3px;">v1.0.7</small></span>
+              <span class="brand-name">Calendar App <small id="appVersionBadge" style="font-size:0.7rem; font-weight:600; color:#38bdf8; background:rgba(56,189,248,0.15); padding:1px 5px; border-radius:4px; margin-left:3px;">v1.0.8</small></span>
             </div>
           </div>
 
@@ -53,11 +53,14 @@
             <h2 id="currentPeriodTitle" class="current-period">October 2026</h2>
           </div>
 
-          <!-- Right utilities: Update Pill + Theme Toggle -->
+          <!-- Right utilities: Update Pill + Print + Theme Toggle -->
           <div class="header-nav-right">
             <button id="headerInstallUpdateBtn" class="btn-update-pill hidden" title="Update Available" aria-label="Update Available">
               <i class="fa-solid fa-arrows-rotate"></i>
               <span class="btn-label">Update</span>
+            </button>
+            <button id="printCalendarBtn" class="btn-icon" title="Print / Export Monthly Calendar as PDF" aria-label="Print Month">
+              <i class="fa-solid fa-print"></i>
             </button>
             <button id="themeToggleBtn" class="btn-icon" title="Toggle Light / Dark Theme" aria-label="Toggle Theme">
               <i class="fa-solid fa-sun" id="themeToggleIcon"></i>
@@ -128,7 +131,7 @@
           </div>
           <div class="brand-text">
             <span class="brand-name">Calendar App</span>
-            <span class="brand-badge" id="drawerVersionBadge">v1.0.7 &bull; Offline PWA</span>
+            <span class="brand-badge" id="drawerVersionBadge">v1.0.8 &bull; Offline PWA</span>
           </div>
         </div>
         <button id="closeSideMenuBtn" class="btn-icon" title="Close Menu"><i class="fa-solid fa-xmark"></i></button>
@@ -145,7 +148,7 @@
               <div class="drawer-card-title" id="drawerInstallUpdateTitle">Install / Update App</div>
               <div class="drawer-card-desc" id="drawerInstallUpdateDesc">Install or check for updates</div>
             </div>
-            <span id="drawerInstallUpdateBadge" class="drawer-badge">v1.0.7</span>
+            <span id="drawerInstallUpdateBadge" class="drawer-badge">v1.0.8</span>
           </button>
         </div>
 
@@ -190,6 +193,10 @@
             <i class="fa-solid fa-chart-column text-cyan"></i>
             <span>Statements & Reports</span>
           </button>
+          <button id="drawerPrintBtn" class="drawer-nav-item">
+            <i class="fa-solid fa-print text-sky"></i>
+            <span>Print Monthly Calendar / PDF</span>
+          </button>
           <button id="drawerBackupBtn" class="drawer-nav-item">
             <i class="fa-solid fa-database text-purple"></i>
             <span>Backup & Restore (ZIP / DB)</span>
@@ -203,6 +210,10 @@
         <!-- App Settings & Security -->
         <div class="drawer-section">
           <div class="drawer-section-title">Settings & Security</div>
+          <button id="drawerRemindersBtn" class="drawer-nav-item">
+            <i class="fa-solid fa-bell text-amber"></i>
+            <span id="drawerRemindersText">Event Reminders: Active</span>
+          </button>
           <button id="drawerThemeBtn" class="drawer-nav-item">
             <i class="fa-solid fa-circle-half-stroke text-amber"></i>
             <span id="drawerThemeText">Switch Theme</span>
@@ -392,6 +403,21 @@
               <label for="schedToTime">To Time *</label>
               <input type="time" id="schedToTime" required value="13:30">
             </div>
+          </div>
+
+          <!-- Reminder Alert Timing -->
+          <div class="form-group" style="margin-top: 6px;">
+            <label for="schedReminderMin" style="font-size: 0.82rem; font-weight: 600; display: flex; align-items: center; gap: 6px;">
+              <i class="fa-solid fa-bell" style="color: #f59e0b;"></i> Reminder Alert Notification
+            </label>
+            <select id="schedReminderMin" style="width: 100%; padding: 7px 10px; border-radius: var(--radius-md); background: var(--bg-primary); border: 1px solid var(--border-color); color: var(--text-main); font-size: 0.85rem;">
+              <option value="15">🔔 15 minutes before start (Default)</option>
+              <option value="0">🔔 At event start time</option>
+              <option value="30">🔔 30 minutes before</option>
+              <option value="60">🔔 1 hour before</option>
+              <option value="120">🔔 2 hours before</option>
+              <option value="-1">🔕 No reminder</option>
+            </select>
           </div>
 
           <!-- TRAVEL TRANSIT SCHEDULING (PREVIOUS DAY & NEXT DAY RETURN) -->
@@ -896,6 +922,31 @@
       </div>
     </div>
 
+    <!-- MODAL: PRINT / PDF MONTHLY CALENDAR -->
+    <div id="printMonthModal" class="modal-backdrop hidden">
+      <div class="modal-card" style="max-width: 460px; text-align: center; padding: 22px;">
+        <div class="modal-header" style="justify-content: flex-end; padding: 0 0 6px; border: none;">
+          <button class="modal-close-btn" id="closePrintMonthModalBtn"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div style="width: 54px; height: 54px; background: rgba(56, 189, 248, 0.15); border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 1.6rem; color: #38bdf8; margin-bottom: 10px;">
+          <i class="fa-solid fa-print"></i>
+        </div>
+        <h3 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 6px;">Print / Export Monthly Calendar</h3>
+        <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 18px;">
+          Print or save <strong id="printMonthTitle" style="color:var(--text-main);">October 2026</strong> as a formatted PDF.
+        </p>
+
+        <div style="display: flex; flex-direction: column; gap: 10px;">
+          <button type="button" id="printGridBtn" class="btn-primary" style="justify-content: center; padding: 12px; font-size: 0.92rem; font-weight: 600; background: linear-gradient(135deg, #0284c7, #2563eb);">
+            <i class="fa-solid fa-calendar-days"></i> Wall Calendar Grid Sheet (Landscape)
+          </button>
+          <button type="button" id="printTableBtn" class="btn-secondary" style="justify-content: center; padding: 12px; font-size: 0.92rem; font-weight: 600;">
+            <i class="fa-solid fa-table-list"></i> 30-Day Detailed Diary Table (Portrait)
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- MODAL: REPORTS & STATEMENTS -->
     <div id="reportsModal" class="modal-backdrop hidden">
       <div class="modal-card wide" style="max-width: 980px; max-height: 90vh; display: flex; flex-direction: column;">
@@ -914,6 +965,7 @@
             <button class="btn-secondary report-tab-btn" data-report="schedules"><i class="fa-solid fa-calendar-check"></i> 4. Schedules & Travel</button>
             <button class="btn-secondary report-tab-btn" data-report="ticket_cost"><i class="fa-solid fa-ticket"></i> 5. Ticket Cost</button>
             <button class="btn-secondary report-tab-btn" data-report="ticket_claim"><i class="fa-solid fa-file-invoice-dollar"></i> 6. Statement of Claim (Tickets)</button>
+            <button class="btn-secondary report-tab-btn" data-report="monthly_calendar"><i class="fa-solid fa-print"></i> 7. Monthly Calendar Sheet</button>
           </div>
 
           <!-- Dynamic Filter Controls -->
@@ -1000,7 +1052,7 @@
           </div>
           <h2 style="font-size: 1.45rem; font-weight: 700; margin-bottom: 4px; color: var(--text-main);">Calendar App</h2>
           <div style="display: inline-block; font-size: 0.8rem; font-weight: 600; color: #38bdf8; background: rgba(56,189,248,0.12); padding: 3px 10px; border-radius: 12px; margin-bottom: 16px; border: 1px solid rgba(56,189,248,0.3);">
-            Version <span id="aboutModalVersion">v1.0.7 (PWA)</span>
+            Version <span id="aboutModalVersion">v1.0.8 (PWA)</span>
           </div>
 
           <div style="background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 14px 16px; text-align: left; font-size: 0.88rem; line-height: 1.55; margin-bottom: 16px;">

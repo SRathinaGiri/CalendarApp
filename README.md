@@ -28,12 +28,22 @@ A fully standalone, 100% offline Personal Calendar & Daily Organizer Progressive
 - **Travel Management & IRCTC PDF Ticket Parser:**
   - Schedule travel with onward/return legs, PNR, train/flight details, departure/arrival times (with overnight auto-calculation).
   - Attach e-tickets (PDF/Images) and automatically parse IRCTC PDF tickets client-side.
+- **Print / PDF Monthly Calendar Export:**
+  - 1-click export of the active month to clean, formatted PDF or paper printer.
+  - Supports **Landscape 7-Column Wall Calendar Grid** sheet and **Portrait 30-Day Detailed Diary Table**.
+  - Accessible via the top toolbar printer icon, side menu drawer, or the Statements & Reports module.
+- **Event Reminders & Local Notifications:**
+  - Integrated Web Notification API alerts for mobile and desktop browsers.
+  - Synthetic offline Web Audio chime (no external audio files required).
+  - Customizable alert timing per schedule (15 min, 30 min, 1 hour, 2 hours, or exact start time; default 30 min for travel departures).
+  - One-tap toggle in Side Drawer to activate or mute reminder notifications.
 - **Statements & Accounting Reports:**
   - Free Days Report
   - Journal & Ledger Accounts
   - Schedules & Summary Reports
   - Travel Ticket Cost Statement
   - Ticket Reimbursement Claim Statement with embedded ticket copies and print-ready layout.
+  - Monthly Calendar Sheet and Agenda Diary Statement.
 
 ---
 
