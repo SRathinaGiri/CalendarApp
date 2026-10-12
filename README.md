@@ -1,9 +1,9 @@
-# Calendar App (Offline PWA) — Beta v1.0.9
+# Calendar App (Offline PWA) v1.0.9
 
 A standalone, local-first Personal Calendar & Daily Organizer Progressive Web App (PWA) powered by client-side **SQLite (WASM)** and **IndexedDB** local storage.
 
-> **Status: Public Beta (v1.0.9)**  
-> Calendar App is currently in public beta. While core offline workflows, transactional backups, and reporting features are fully functional, please maintain regular `.zip` backups as described below.
+> **Production PWA (v1.0.9)**  
+> Fully client-side, local-first calendar with ACID SQLite storage, verified SHA-256 backup archives, and offline capabilities.
 
 ---
 
