@@ -41,74 +41,75 @@
               <div class="brand-logo">
                 <i class="fa-solid fa-calendar-days"></i>
               </div>
-              <span class="brand-name">Calendar App <small id="appVersionBadge" style="font-size:0.7rem; font-weight:600; color:#38bdf8; background:rgba(56,189,248,0.15); padding:1px 5px; border-radius:4px; margin-left:3px;">v1.0.6</small></span>
+              <span class="brand-name">Calendar App <small id="appVersionBadge" style="font-size:0.7rem; font-weight:600; color:#38bdf8; background:rgba(56,189,248,0.15); padding:1px 5px; border-radius:4px; margin-left:3px;">v1.0.7</small></span>
             </div>
           </div>
 
           <!-- Quick Nav Controls (< Today > Month Year) -->
           <div class="calendar-nav-bar">
-            <button id="prevBtn" class="btn-icon" title="Previous Month"><i class="fa-solid fa-chevron-left"></i></button>
-            <button id="todayBtn" class="btn-secondary btn-sm">Today</button>
-            <button id="nextBtn" class="btn-icon" title="Next Month"><i class="fa-solid fa-chevron-right"></i></button>
+            <button id="prevBtn" class="btn-icon" title="Previous Month" aria-label="Previous Month"><i class="fa-solid fa-chevron-left"></i></button>
+            <button id="todayBtn" class="btn-secondary btn-sm" aria-label="Go to Today">Today</button>
+            <button id="nextBtn" class="btn-icon" title="Next Month" aria-label="Next Month"><i class="fa-solid fa-chevron-right"></i></button>
             <h2 id="currentPeriodTitle" class="current-period">October 2026</h2>
           </div>
 
           <!-- Right utilities: Update Pill + Theme Toggle -->
           <div class="header-nav-right">
-            <button id="headerInstallUpdateBtn" class="btn-update-pill hidden" title="Update Available">
+            <button id="headerInstallUpdateBtn" class="btn-update-pill hidden" title="Update Available" aria-label="Update Available">
               <i class="fa-solid fa-arrows-rotate"></i>
               <span class="btn-label">Update</span>
             </button>
-            <button id="themeToggleBtn" class="btn-icon" title="Toggle Light / Dark Theme">
+            <button id="themeToggleBtn" class="btn-icon" title="Toggle Light / Dark Theme" aria-label="Toggle Theme">
               <i class="fa-solid fa-sun" id="themeToggleIcon"></i>
             </button>
           </div>
         </div>
 
-        <!-- ROW 2: VIEW SWITCHERS + ONLY ICONS FOR NOTES, FINANCE, REPORTS, TAGS, BACKUP, INFO, LOCK -->
-        <div class="header-row-tools">
-          <!-- View selector tabs -->
+        <!-- ROW 2: VIEW SWITCHERS -->
+        <div class="header-row-views">
           <div class="view-switchers">
             <button class="view-btn active" data-view="calendar" title="Calendar Grid View"><i class="fa-solid fa-calendar-days"></i><span class="tab-label">Calendar</span></button>
             <button class="view-btn" data-view="month" title="Portrait 30-Day Table View"><i class="fa-solid fa-table-list"></i><span class="tab-label">Month</span></button>
             <button class="view-btn" data-view="day" title="Day Schedule View"><i class="fa-solid fa-clock"></i><span class="tab-label">Day</span></button>
             <button class="view-btn" data-view="agenda" title="Agenda & Filters"><i class="fa-solid fa-list-check"></i><span class="tab-label">Agenda</span></button>
           </div>
+        </div>
 
-          <!-- Tools: ONLY ICONS (Notes, Finance, Reports, Tags, Backup, Info, Lock) -->
+        <!-- ROW 3: BIG QUICK TOOL ICONS (Notes, Finance, Reports, Tags, Backup, Info, Lock) -->
+        <div class="header-row-icons">
           <div class="header-icon-tools">
             <!-- Notes -->
-            <button id="headerNoteBtn" class="tool-icon-btn" title="Daily Note">
+            <button id="headerNoteBtn" class="tool-icon-btn" title="Daily Note" aria-label="Daily Note">
               <i class="fa-solid fa-book-bookmark" style="color: #fbbf24;"></i>
             </button>
 
             <!-- Finance -->
-            <button id="headerFinanceBtn" class="tool-icon-btn" title="Daily Receipts & Payments">
+            <button id="headerFinanceBtn" class="tool-icon-btn" title="Daily Receipts & Payments" aria-label="Daily Receipts & Payments">
               <i class="fa-solid fa-coins" style="color: #34d399;"></i>
             </button>
 
             <!-- Reports -->
-            <button id="openReportsModalBtn" class="tool-icon-btn" title="Statements & Reports">
+            <button id="openReportsModalBtn" class="tool-icon-btn" title="Statements & Reports" aria-label="Statements & Reports">
               <i class="fa-solid fa-chart-column" style="color: #38bdf8;"></i>
             </button>
 
             <!-- Tags -->
-            <button id="openTagMasterBtn" class="tool-icon-btn" title="Manage Tags & Categories">
+            <button id="openTagMasterBtn" class="tool-icon-btn" title="Manage Tags & Categories" aria-label="Manage Tags & Categories">
               <i class="fa-solid fa-tags" style="color: #f43f5e;"></i>
             </button>
 
             <!-- Backup & Restore -->
-            <button id="syncDriveBtn" class="tool-icon-btn" title="Backup & Restore Database & Files">
+            <button id="syncDriveBtn" class="tool-icon-btn" title="Backup & Restore Database & Files" aria-label="Backup & Restore">
               <i class="fa-solid fa-database" id="syncDriveIcon" style="color: #a855f7;"></i>
             </button>
 
             <!-- Info / About -->
-            <button id="openAboutBtn" class="tool-icon-btn" title="About Calendar App">
+            <button id="openAboutBtn" class="tool-icon-btn" title="About Calendar App" aria-label="About Calendar App">
               <i class="fa-solid fa-circle-info" style="color: #06b6d4;"></i>
             </button>
 
             <!-- Lock -->
-            <button id="lockAppBtn" class="tool-icon-btn" title="Lock App Security">
+            <button id="lockAppBtn" class="tool-icon-btn" title="Lock App Security" aria-label="Lock App">
               <i class="fa-solid fa-lock" style="color: #fb7185;"></i>
             </button>
           </div>
@@ -127,7 +128,7 @@
           </div>
           <div class="brand-text">
             <span class="brand-name">Calendar App</span>
-            <span class="brand-badge" id="drawerVersionBadge">v1.0.6 &bull; Offline PWA</span>
+            <span class="brand-badge" id="drawerVersionBadge">v1.0.7 &bull; Offline PWA</span>
           </div>
         </div>
         <button id="closeSideMenuBtn" class="btn-icon" title="Close Menu"><i class="fa-solid fa-xmark"></i></button>
@@ -144,7 +145,7 @@
               <div class="drawer-card-title" id="drawerInstallUpdateTitle">Install / Update App</div>
               <div class="drawer-card-desc" id="drawerInstallUpdateDesc">Install or check for updates</div>
             </div>
-            <span id="drawerInstallUpdateBadge" class="drawer-badge">v1.0.6</span>
+            <span id="drawerInstallUpdateBadge" class="drawer-badge">v1.0.7</span>
           </button>
         </div>
 
@@ -999,7 +1000,7 @@
           </div>
           <h2 style="font-size: 1.45rem; font-weight: 700; margin-bottom: 4px; color: var(--text-main);">Calendar App</h2>
           <div style="display: inline-block; font-size: 0.8rem; font-weight: 600; color: #38bdf8; background: rgba(56,189,248,0.12); padding: 3px 10px; border-radius: 12px; margin-bottom: 16px; border: 1px solid rgba(56,189,248,0.3);">
-            Version <span id="aboutModalVersion">v1.0.6 (PWA)</span>
+            Version <span id="aboutModalVersion">v1.0.7 (PWA)</span>
           </div>
 
           <div style="background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 14px 16px; text-align: left; font-size: 0.88rem; line-height: 1.55; margin-bottom: 16px;">

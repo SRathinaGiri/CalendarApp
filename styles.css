@@ -151,12 +151,50 @@ body {
   box-sizing: border-box;
 }
 
-.header-row-tools {
+.header-row-views {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
   width: 100%;
-  gap: 10px;
+  box-sizing: border-box;
+}
+
+.header-row-views .view-switchers {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  background: var(--bg-card);
+  padding: 3px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  box-sizing: border-box;
+}
+
+.header-row-views .view-btn {
+  flex: 1;
+  text-align: center;
+  justify-content: center;
+  padding: 6px 12px;
+  font-size: 0.84rem;
+  border-radius: 6px;
+}
+
+.header-row-icons {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.header-row-icons .header-icon-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  width: 100%;
+  max-width: 650px;
+  gap: 12px;
   box-sizing: border-box;
 }
 
@@ -196,16 +234,11 @@ body {
 }
 
 /* Tool icon buttons (Notes, Finance, Reports, Tags, Backup, Info, Lock) */
-.header-icon-tools {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-}
-
 .tool-icon-btn {
-  width: 32px;
-  height: 32px;
+  width: 38px;
+  height: 38px;
+  min-width: 38px;
+  min-height: 38px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -213,7 +246,7 @@ body {
   background: var(--bg-primary);
   border: 1px solid var(--border-color);
   color: var(--text-main);
-  font-size: 0.92rem;
+  font-size: 1.05rem;
   cursor: pointer;
   transition: all 0.15s ease;
   padding: 0;
@@ -1976,8 +2009,12 @@ input:focus, select:focus, textarea:focus {
     gap: 6px;
   }
 
-  .header-row-tools {
-    gap: 6px;
+  .header-row-views {
+    width: 100%;
+  }
+
+  .header-row-icons {
+    width: 100%;
   }
 
   .header-menu-btn {
@@ -2026,30 +2063,31 @@ input:focus, select:focus, textarea:focus {
     font-size: 0.8rem;
   }
 
-  /* Row 2: View switchers + icon tools */
-  .view-switchers {
+  /* Row 2: View switchers */
+  .header-row-views .view-switchers {
     padding: 2px;
     flex-shrink: 0;
   }
 
-  .view-btn {
-    padding: 4px 6px;
-    font-size: 0.74rem;
-    gap: 3px;
+  .header-row-views .view-btn {
+    padding: 5px 6px;
+    font-size: 0.76rem;
+    gap: 4px;
   }
 
-  .view-btn i {
-    display: none; /* Hide icon inside view buttons on mobile so tab names fit */
-  }
-
-  .header-icon-tools {
-    gap: 3px;
+  /* Row 3: Big comfortable quick tool icon buttons */
+  .header-row-icons .header-icon-tools {
+    gap: 8px;
+    justify-content: space-around;
   }
 
   .tool-icon-btn {
-    width: 28px;
-    height: 28px;
-    font-size: 0.82rem;
+    width: 38px;
+    height: 38px;
+    min-width: 38px;
+    min-height: 38px;
+    font-size: 1.05rem;
+    border-radius: 8px;
   }
 
   .day-cell {
@@ -2092,24 +2130,116 @@ input:focus, select:focus, textarea:focus {
     font-size: 0.8rem;
   }
 
-  .view-btn {
-    padding: 3px 5px;
-    font-size: 0.7rem;
+  .header-row-views .view-btn {
+    padding: 4px 4px;
+    font-size: 0.72rem;
   }
 
-  .view-btn .tab-label {
-    font-size: 0.7rem;
+  .header-row-views .view-btn i {
+    display: none; /* Hide icon inside view buttons on narrow mobile so tab names fit */
   }
 
-  .header-icon-tools {
-    gap: 2px;
+  .header-row-icons .header-icon-tools {
+    gap: 6px;
+    justify-content: space-between;
   }
 
   .tool-icon-btn {
-    width: 26px;
-    height: 26px;
-    font-size: 0.78rem;
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+    min-height: 36px;
+    font-size: 1.02rem;
+    border-radius: 8px;
   }
+}
+
+/* ==========================================================================
+   CALENDAR VIEW PORTRAIT MODE (REMOVE TEXT FROM DAY CARDS, KEEP ICONS ONLY)
+   In landscape mode, text stays visible as normal.
+   ========================================================================== */
+@media (orientation: portrait), (max-width: 600px) {
+  .calendar-grid .day-cell {
+    min-height: 60px;
+    padding: 3px 2px;
+  }
+
+  .calendar-grid .day-header {
+    margin-bottom: 2px;
+  }
+
+  .calendar-grid .day-schedules-list {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 3px;
+    justify-content: center;
+    align-items: center;
+    margin-top: 2px;
+  }
+
+  /* Remove all text inside day cards in portrait mode (icons only) */
+  .calendar-grid .schedule-chip .chip-time,
+  .calendar-grid .schedule-chip .chip-title {
+    display: none !important;
+  }
+
+  .calendar-grid .schedule-chip {
+    padding: 2px 4px;
+    margin: 1px 0;
+    border-radius: 4px;
+    min-width: 22px;
+    height: 22px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.75rem;
+  }
+
+  .calendar-grid .chip-header {
+    justify-content: center;
+    width: 100%;
+  }
+
+  .calendar-grid .day-note-pill .pill-text,
+  .calendar-grid .day-finance-pill .pill-text {
+    display: none !important;
+  }
+
+  .calendar-grid .day-note-pill,
+  .calendar-grid .day-finance-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px 4px;
+    min-width: 22px;
+    height: 22px;
+    margin-top: 0;
+    font-size: 0.75rem;
+  }
+}
+
+/* ==========================================================================
+   AGENDA VIEW: PAGINATION BUTTONS & TODAY MARKER
+   ========================================================================== */
+.agenda-load-container {
+  text-align: center;
+  padding: 12px 0;
+  margin: 6px 0;
+}
+
+.agenda-load-btn {
+  padding: 8px 20px;
+  font-weight: 600;
+  font-size: 0.85rem;
+  border-radius: var(--radius-md);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.today-marker-card {
+  border: 2px dashed #10b981 !important;
+  background: rgba(16, 185, 129, 0.08) !important;
+  box-shadow: 0 0 14px rgba(16, 185, 129, 0.22) !important;
 }
 
 /* ==========================================================================

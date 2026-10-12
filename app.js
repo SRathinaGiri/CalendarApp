@@ -106,7 +106,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.0.6';
+const APP_VERSION = 'v1.0.7';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -2826,7 +2826,7 @@ function createDayCell(dateStr, dayNum, isOtherMonth, schedules, dayOfWeekIdx, i
     const notePill = document.createElement('div');
     notePill.className = 'day-note-pill';
     notePill.title = noteContent;
-    notePill.innerHTML = `<i class="fa-solid fa-note-sticky"></i> ${escapeHtml(noteContent)}`;
+    notePill.innerHTML = `<i class="fa-solid fa-note-sticky"></i> <span class="pill-text">${escapeHtml(noteContent)}</span>`;
     notePill.addEventListener('click', (e) => {
       e.stopPropagation();
       openDailyNoteModal(dateStr);
@@ -2838,7 +2838,7 @@ function createDayCell(dateStr, dayNum, isOtherMonth, schedules, dayOfWeekIdx, i
     const finPill = document.createElement('div');
     finPill.className = 'day-finance-pill';
     finPill.title = `Receipts: ₹${txnSummary.receipts.toFixed(2)} | Payments: ₹${txnSummary.payments.toFixed(2)}`;
-    finPill.innerHTML = `<i class="fa-solid fa-coins"></i> +₹${txnSummary.receipts} / -₹${txnSummary.payments}`;
+    finPill.innerHTML = `<i class="fa-solid fa-coins"></i> <span class="pill-text">+₹${txnSummary.receipts} / -₹${txnSummary.payments}</span>`;
     finPill.addEventListener('click', (e) => {
       e.stopPropagation();
       openDailyFinanceModal(dateStr);
@@ -3353,17 +3353,12 @@ function renderDayView() {
   }
 }
 
-let agendaPageSize = 60;
-let agendaRenderLimit = 60;
+let agendaWindowStart = 0;
+let agendaWindowEnd = 60;
 
-function renderAgendaView(resetPagination = true) {
+function renderAgendaView(resetPagination = true, scrollDirection = 'center') {
   const list = document.getElementById('agendaList');
   if (!list) return;
-
-  if (resetPagination) {
-    agendaRenderLimit = agendaPageSize;
-  }
-  list.innerHTML = '';
 
   const searchText = (document.getElementById('agendaSearchInput')?.value || '').toLowerCase().trim();
   const modeVal = document.getElementById('modeFilter')?.value || 'all';
@@ -3419,6 +3414,8 @@ function renderAgendaView(resetPagination = true) {
   }
   stmt.free();
 
+  list.innerHTML = '';
+
   if (results.length === 0) {
     list.innerHTML = '<div style="text-align:center; padding:40px; color:#64748b;">No schedules match your search filters.</div>';
     return;
@@ -3426,11 +3423,88 @@ function renderAgendaView(resetPagination = true) {
 
   const targetYmd = formatDateYMD(currentDate);
   const todayYmd = formatDateYMD(new Date());
+
+  // Default to centering around Today / target date on reset
+  if (resetPagination) {
+    let targetIdx = results.findIndex(s => s.schedule_date >= targetYmd);
+    if (targetIdx === -1) {
+      targetIdx = results.length;
+    }
+    // Show 15 recent past schedules before today, and 45 upcoming schedules
+    agendaWindowStart = Math.max(0, targetIdx - 15);
+    agendaWindowEnd = Math.min(results.length, targetIdx + 45);
+
+    // If window is small and more exist, expand appropriately
+    if (agendaWindowEnd - agendaWindowStart < 60) {
+      if (agendaWindowStart === 0) {
+        agendaWindowEnd = Math.min(results.length, 60);
+      } else if (agendaWindowEnd === results.length) {
+        agendaWindowStart = Math.max(0, results.length - 60);
+      }
+    }
+  }
+
+  // Bound checks
+  agendaWindowStart = Math.max(0, Math.min(agendaWindowStart, results.length - 1));
+  agendaWindowEnd = Math.max(agendaWindowStart + 1, Math.min(agendaWindowEnd, results.length));
+
+  // 1. "Load Earlier Schedules" button at the TOP if past items exist
+  if (agendaWindowStart > 0) {
+    const loadEarlierContainer = document.createElement('div');
+    loadEarlierContainer.className = 'agenda-load-container';
+    const loadEarlierBtn = document.createElement('button');
+    loadEarlierBtn.className = 'btn-secondary agenda-load-btn';
+    loadEarlierBtn.innerHTML = `<i class="fa-solid fa-angles-up"></i> Load Earlier Schedules (${agendaWindowStart} past)`;
+    loadEarlierBtn.addEventListener('click', () => {
+      agendaWindowStart = Math.max(0, agendaWindowStart - 40);
+      renderAgendaView(false, 'top');
+    });
+    loadEarlierContainer.appendChild(loadEarlierBtn);
+    list.appendChild(loadEarlierContainer);
+  }
+
+  // Check if today has an event
+  const hasTodayEvent = results.some(s => s.schedule_date === todayYmd);
+  let todayMarkerInserted = false;
   let targetCardEl = null;
 
-  const visibleResults = results.slice(0, agendaRenderLimit);
+  const visibleResults = results.slice(agendaWindowStart, agendaWindowEnd);
+
+  // Helper to create the Today marker card if no schedules for today
+  const createTodayMarker = () => {
+    const todayMarker = document.createElement('div');
+    todayMarker.className = 'agenda-card today-agenda-card today-marker-card';
+    todayMarker.dataset.date = todayYmd;
+    const tObj = new Date();
+    todayMarker.innerHTML = `
+      <div class="agenda-card-date">
+        <span class="agenda-day-str">${formatDateIndian(tObj)} <span class="today-badge">TODAY</span></span>
+        <span class="agenda-day-name">${TAMIL_DAYS[tObj.getDay()]} (${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][tObj.getDay()]})</span>
+      </div>
+      <div class="agenda-card-details" style="display:flex; align-items:center; gap:8px; color:var(--text-muted); font-size:0.86rem; padding:8px 0;">
+        <i class="fa-solid fa-calendar-check" style="color:#10b981; font-size:1.15rem;"></i>
+        <span>No scheduled events for Today. Tap '+' to schedule, or scroll for upcoming programmes.</span>
+      </div>
+    `;
+    todayMarker.addEventListener('click', () => {
+      selectedDates.clear();
+      selectedDates.add(todayYmd);
+      openScheduleModal();
+    });
+    return todayMarker;
+  };
 
   visibleResults.forEach(s => {
+    // Check if todayMarker should be inserted before this card
+    if (!hasTodayEvent && !todayMarkerInserted && s.schedule_date > todayYmd) {
+      const marker = createTodayMarker();
+      list.appendChild(marker);
+      todayMarkerInserted = true;
+      if (!targetCardEl && targetYmd === todayYmd) {
+        targetCardEl = marker;
+      }
+    }
+
     const card = document.createElement('div');
     card.className = 'agenda-card';
     card.dataset.date = s.schedule_date;
@@ -3444,7 +3518,7 @@ function renderAgendaView(resetPagination = true) {
       card.classList.add('today-agenda-card');
     }
 
-    // Determine target card to scroll into view (matches targetYmd or first date >= targetYmd)
+    // Determine target card to scroll into view
     if (s.schedule_date === targetYmd) {
       if (!targetCardEl || targetCardEl.dataset.date !== targetYmd) {
         targetCardEl = card;
@@ -3480,32 +3554,41 @@ function renderAgendaView(resetPagination = true) {
     list.appendChild(card);
   });
 
-  // Load more button if there are remaining results
-  if (results.length > agendaRenderLimit) {
-    const remaining = results.length - agendaRenderLimit;
+  // If todayMarker still hasn't been inserted and all visible events are in the past:
+  if (!hasTodayEvent && !todayMarkerInserted && agendaWindowEnd >= results.length) {
+    const marker = createTodayMarker();
+    list.appendChild(marker);
+    todayMarkerInserted = true;
+    if (!targetCardEl) targetCardEl = marker;
+  }
+
+  // 2. "Load More Upcoming Schedules" button at the BOTTOM if future items exist
+  if (agendaWindowEnd < results.length) {
+    const remaining = results.length - agendaWindowEnd;
     const loadMoreContainer = document.createElement('div');
-    loadMoreContainer.style.cssText = 'text-align: center; padding: 16px 0;';
+    loadMoreContainer.className = 'agenda-load-container';
     const loadMoreBtn = document.createElement('button');
-    loadMoreBtn.className = 'btn-secondary';
-    loadMoreBtn.style.cssText = 'padding: 10px 24px; font-weight: 600; font-size: 0.88rem;';
-    loadMoreBtn.innerHTML = `<i class="fa-solid fa-angles-down"></i> Load More Schedules (${remaining} remaining)`;
+    loadMoreBtn.className = 'btn-secondary agenda-load-btn';
+    loadMoreBtn.innerHTML = `<i class="fa-solid fa-angles-down"></i> Load More Upcoming Schedules (${remaining} more)`;
     loadMoreBtn.addEventListener('click', () => {
-      agendaRenderLimit += agendaPageSize;
-      renderAgendaView(false);
+      agendaWindowEnd = Math.min(results.length, agendaWindowEnd + 40);
+      renderAgendaView(false, 'bottom');
     });
     loadMoreContainer.appendChild(loadMoreBtn);
     list.appendChild(loadMoreContainer);
   }
 
-  // Auto-scroll to target card (today / target date)
-  if (!targetCardEl && list.firstElementChild && list.firstElementChild.classList.contains('agenda-card')) {
-    targetCardEl = list.firstElementChild;
-  }
-
-  if (targetCardEl && resetPagination) {
-    setTimeout(() => {
-      targetCardEl.scrollIntoView({ block: 'start', behavior: 'smooth' });
-    }, 100);
+  // Auto-scroll logic:
+  // Center on Today (or target date) when resetPagination is true
+  if (resetPagination) {
+    if (!targetCardEl) {
+      targetCardEl = list.querySelector('.today-agenda-card') || list.querySelector('.agenda-card');
+    }
+    if (targetCardEl) {
+      setTimeout(() => {
+        targetCardEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      }, 100);
+    }
   }
 }
 
