@@ -329,17 +329,41 @@
             <input type="text" id="agendaSearchInput" placeholder="Search programmes, places, courses, tags, PNR...">
           </div>
           <div class="filter-group">
-            <select id="modeFilter">
+            <select id="modeFilter" class="agenda-select-filter">
               <option value="all">All Modes (Online + Offline)</option>
-              <option value="online">Online Only</option>
-              <option value="offline">Offline Only</option>
+              <option value="online">🌐 Online Only</option>
+              <option value="offline">🏢 Offline Only</option>
+              <option value="hybrid">🔄 Hybrid Only</option>
             </select>
-            <select id="categoryFilter">
-              <option value="all">All Tag Categories</option>
-            </select>
-            <button id="agendaTodayBtn" class="btn-secondary btn-sm" title="Jump to Today in Agenda" style="white-space: nowrap;"><i class="fa-solid fa-calendar-day"></i> Today</button>
+
+            <!-- Multi-Select Tag Dropdown Filter -->
+            <div class="tag-filter-dropdown-wrapper" id="tagFilterDropdownWrapper">
+              <button type="button" id="agendaTagFilterBtn" class="agenda-tag-btn" title="Filter by multiple tags">
+                <i class="fa-solid fa-tags"></i>
+                <span id="agendaTagFilterLabel">Tags (All)</span>
+                <i class="fa-solid fa-chevron-down tag-chevron"></i>
+              </button>
+
+              <div id="agendaTagFilterDropdown" class="agenda-tag-dropdown hidden">
+                <div class="tag-dropdown-header">
+                  <span class="tag-dropdown-title"><i class="fa-solid fa-filter"></i> Filter by Tags</span>
+                  <div class="tag-dropdown-actions">
+                    <button type="button" id="agendaTagClearBtn" class="btn-xs btn-ghost">Clear</button>
+                    <button type="button" id="agendaTagDoneBtn" class="btn-xs btn-primary">Done</button>
+                  </div>
+                </div>
+                <div id="agendaTagDropdownList" class="tag-dropdown-list">
+                  <!-- Populated dynamically with category groups & checkboxes -->
+                </div>
+              </div>
+            </div>
+
+            <button id="agendaTodayBtn" class="btn-secondary btn-sm agenda-today-btn" title="Jump to Today in Agenda"><i class="fa-solid fa-calendar-day"></i> Today</button>
           </div>
         </div>
+
+        <!-- Active Multi-Selected Tags Bar -->
+        <div id="agendaActiveTagsBar" class="agenda-active-tags-bar hidden"></div>
         <div id="agendaList" class="agenda-list"></div>
       </section>
 
@@ -380,16 +404,8 @@
             </label>
           </div>
 
-          <!-- Tightened Fields: Status, From Time, To Time (Venue and Mode are now handled via Tags) -->
-          <div class="form-row-3">
-            <div class="form-group">
-              <label for="schedStatus">Status *</label>
-              <select id="schedStatus">
-                <option value="planned">📅 Planned</option>
-                <option value="completed">✅ Completed</option>
-                <option value="cancelled">❌ Cancelled</option>
-              </select>
-            </div>
+          <!-- Timing: From Time & To Time (Status is automatically derived based on scheduled date/time) -->
+          <div class="form-row-2">
             <div class="form-group">
               <label for="schedFromTime">From Time *</label>
               <input type="time" id="schedFromTime" required value="09:30">

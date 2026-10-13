@@ -1155,8 +1155,10 @@ button {
 .filter-group {
   display: flex;
   gap: 10px;
+  align-items: center;
 }
-.filter-group select {
+.filter-group select,
+.filter-group .agenda-select-filter {
   background: var(--bg-primary);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
@@ -1164,6 +1166,218 @@ button {
   color: #fff;
   font-family: inherit;
   font-size: 0.88rem;
+  outline: none;
+  cursor: pointer;
+}
+
+/* MULTI-SELECT TAG FILTER IN AGENDA */
+.tag-filter-dropdown-wrapper {
+  position: relative;
+  display: inline-block;
+}
+
+.agenda-tag-btn {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  color: var(--text-main);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.88rem;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+  outline: none;
+}
+.agenda-tag-btn:hover {
+  border-color: var(--accent-blue);
+}
+.agenda-tag-btn .tag-chevron {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  transition: transform 0.2s ease;
+}
+.tag-filter-dropdown-wrapper.open .tag-chevron {
+  transform: rotate(180deg);
+}
+
+.agenda-tag-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 70;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: 0 10px 25px rgba(0,0,0,0.45);
+  padding: 12px;
+  width: 320px;
+  max-width: 90vw;
+  max-height: 400px;
+  display: flex;
+  flex-direction: column;
+  animation: slideDown 0.15s ease-out;
+}
+.agenda-tag-dropdown.hidden {
+  display: none !important;
+}
+
+.tag-dropdown-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: 8px;
+}
+.tag-dropdown-title {
+  font-weight: 700;
+  font-size: 0.84rem;
+  color: var(--text-main);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.tag-dropdown-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tag-dropdown-list {
+  overflow-y: auto;
+  max-height: 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-right: 4px;
+}
+
+.tag-filter-category-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.tag-filter-cat-header {
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 2px 0;
+}
+.tag-filter-cat-header .cat-select-all-btn {
+  font-size: 0.72rem;
+  color: #38bdf8;
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 0;
+}
+.tag-filter-cat-header .cat-select-all-btn:hover {
+  text-decoration: underline;
+}
+
+.tag-filter-items-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tag-filter-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  font-size: 0.78rem;
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.15s ease;
+  color: var(--text-main);
+}
+.tag-filter-item:hover {
+  border-color: var(--accent-blue);
+}
+.tag-filter-item input[type="checkbox"] {
+  cursor: pointer;
+  margin: 0;
+  accent-color: #3b82f6;
+}
+.tag-filter-item.active {
+  background: rgba(59, 130, 246, 0.2);
+  border-color: #3b82f6;
+  color: #93c5fd;
+}
+
+/* Active Multi-Selected Tags Bar below Agenda Toolbar */
+.agenda-active-tags-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 14px;
+  padding: 8px 12px;
+  background: rgba(15, 23, 42, 0.6);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+}
+.agenda-active-tags-bar.hidden {
+  display: none !important;
+}
+
+.active-tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.76rem;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  background: rgba(59, 130, 246, 0.2);
+  border: 1px solid #3b82f6;
+  color: #93c5fd;
+  font-weight: 600;
+}
+.active-tag-chip .remove-chip-btn {
+  cursor: pointer;
+  font-size: 0.8rem;
+  opacity: 0.8;
+  display: inline-flex;
+  align-items: center;
+}
+.active-tag-chip .remove-chip-btn:hover {
+  opacity: 1;
+  color: #fb7185;
+}
+
+.agenda-active-tags-clear-btn {
+  font-size: 0.74rem;
+  color: #f87171;
+  cursor: pointer;
+  background: none;
+  border: none;
+  margin-left: 6px;
+  text-decoration: underline;
+}
+
+.badge-batch-group {
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: rgba(99, 102, 241, 0.25);
+  color: #a5b4fc;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
 }
 
 .agenda-list {
@@ -2126,7 +2340,7 @@ input:focus, select:focus, textarea:focus {
     display: none;
   }
 
-  .form-row-2, .dynamic-fields-grid {
+  .form-row-2, .form-row-3, .dynamic-fields-grid {
     grid-template-columns: 1fr;
   }
 
@@ -2137,6 +2351,97 @@ input:focus, select:focus, textarea:focus {
   .tag-master-sidebar {
     border-right: none;
     border-bottom: 1px solid var(--border-color);
+  }
+
+  /* Agenda View Mobile Layout (Vertical Stacking and Full-Width Controls) */
+  .agenda-toolbar {
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+    margin-bottom: 12px;
+  }
+
+  .agenda-toolbar .search-box {
+    width: 100%;
+    min-width: 100%;
+    box-sizing: border-box;
+  }
+
+  .filter-group {
+    width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    box-sizing: border-box;
+  }
+
+  .filter-group .agenda-select-filter,
+  .filter-group .tag-filter-dropdown-wrapper {
+    flex: 1 1 calc(50% - 4px);
+    min-width: 125px;
+    box-sizing: border-box;
+  }
+
+  .agenda-tag-btn {
+    width: 100%;
+    justify-content: space-between;
+    box-sizing: border-box;
+  }
+
+  .agenda-today-btn {
+    flex: 1 1 100%;
+    justify-content: center;
+    box-sizing: border-box;
+  }
+
+  .agenda-view-container {
+    padding: 12px 10px;
+  }
+
+  .agenda-card {
+    padding: 12px 14px;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+    box-sizing: border-box;
+  }
+
+  .agenda-card-date {
+    width: 100%;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 6px;
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+
+  .agenda-card-details {
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  .agenda-card-meta {
+    flex-wrap: wrap;
+    gap: 6px 12px;
+  }
+
+  /* Day View Mobile Layout */
+  .day-view-header {
+    padding: 12px 10px;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .day-view-controls {
+    width: 100%;
+    justify-content: flex-start;
+    gap: 6px;
+  }
+
+  .day-picker-input {
+    width: 100%;
+    box-sizing: border-box;
   }
 }
 
@@ -2178,6 +2483,35 @@ input:focus, select:focus, textarea:focus {
     min-height: 36px;
     font-size: 1.02rem;
     border-radius: 8px;
+  }
+
+  .filter-group .agenda-select-filter,
+  .filter-group .tag-filter-dropdown-wrapper {
+    flex: 1 1 100%;
+    width: 100%;
+  }
+
+  .agenda-tag-dropdown {
+    width: 100%;
+    min-width: 250px;
+    max-width: calc(100vw - 20px);
+    left: 0;
+    right: 0;
+    box-sizing: border-box;
+  }
+
+  .hour-time-col {
+    width: 72px;
+    min-width: 72px;
+    padding: 6px 4px;
+  }
+
+  .hour-primary-time {
+    font-size: 0.8rem;
+  }
+
+  .hour-sub-time {
+    font-size: 0.65rem;
   }
 }
 
@@ -3066,7 +3400,172 @@ input:focus, select:focus, textarea:focus {
   color: #92400e !important;
 }
 
+/* Batch Group & Travel Transit in Light Theme */
+[data-theme="light"] .group-badge-container {
+  background: #eef2ff !important;
+  border: 1px solid #c7d2fe !important;
+}
+[data-theme="light"] .group-info-pill {
+  color: #4338ca !important;
+}
+[data-theme="light"] .group-checkbox-label {
+  color: #1e1b4b !important;
+}
+[data-theme="light"] .badge-batch-group {
+  background: #eef2ff !important;
+  color: #4338ca !important;
+  border: 1px solid #c7d2fe !important;
+}
 
+[data-theme="light"] .travel-transit-section {
+  background: #f0fdf4 !important;
+  border: 1px solid #bbf7d0 !important;
+}
+[data-theme="light"] .travel-transit-toggle .section-label {
+  color: #065f46 !important;
+}
+[data-theme="light"] .travel-transit-body {
+  border-top: 1px solid #bbf7d0 !important;
+}
+[data-theme="light"] .travel-box {
+  background: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.05) !important;
+}
+[data-theme="light"] .travel-box-header {
+  color: #0f172a !important;
+}
+[data-theme="light"] .travel-box-header label {
+  color: #0f172a !important;
+  font-weight: 600 !important;
+}
+[data-theme="light"] .date-format-hint {
+  color: #0284c7 !important;
+}
+[data-theme="light"] .travel-finance-row {
+  border-top: 1px dashed #cbd5e1 !important;
+}
+[data-theme="light"] .travel-finance-row label {
+  color: #334155 !important;
+}
+[data-theme="light"] .travel-ticket-pill {
+  background: #eff6ff !important;
+  color: #1d4ed8 !important;
+  border: 1px solid #93c5fd !important;
+}
+
+/* Day Event Travel Cards in Light Theme */
+[data-theme="light"] .day-event-card.event-travel-dep {
+  background: #fffbeb !important;
+  color: #78350f !important;
+  border: 1px solid #fcd34d !important;
+  border-left: 4px solid #d97706 !important;
+}
+[data-theme="light"] .day-event-card.event-travel-dep:hover {
+  background: #fef3c7 !important;
+}
+[data-theme="light"] .day-event-card.event-travel-arr {
+  background: #ecfdf5 !important;
+  color: #064e3b !important;
+  border: 1px solid #a7f3d0 !important;
+  border-left: 4px solid #059669 !important;
+}
+[data-theme="light"] .day-event-card.event-travel-arr:hover {
+  background: #d1fae5 !important;
+}
+[data-theme="light"] .type-badge-travel-dep {
+  background: #fef3c7 !important;
+  color: #b45309 !important;
+  border: 1px solid #fcd34d !important;
+}
+[data-theme="light"] .type-badge-travel-arr {
+  background: #d1fae5 !important;
+  color: #047857 !important;
+  border: 1px solid #6ee7b7 !important;
+}
+[data-theme="light"] .day-event-continuation {
+  background: #f1f5f9 !important;
+  color: #475569 !important;
+}
+
+/* Agenda Multi-Select Tag Dropdown in Light Theme */
+[data-theme="light"] .agenda-tag-btn {
+  background: #ffffff !important;
+  color: #0f172a !important;
+  border: 1px solid #cbd5e1 !important;
+}
+[data-theme="light"] .agenda-tag-dropdown {
+  background: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.12) !important;
+}
+[data-theme="light"] .tag-dropdown-title {
+  color: #0f172a !important;
+}
+[data-theme="light"] .tag-dropdown-header {
+  border-bottom: 1px solid #e2e8f0 !important;
+}
+[data-theme="light"] .tag-filter-cat-header {
+  color: #475569 !important;
+}
+[data-theme="light"] .tag-filter-item {
+  background: #f8fafc !important;
+  border: 1px solid #cbd5e1 !important;
+  color: #0f172a !important;
+}
+[data-theme="light"] .tag-filter-item.active {
+  background: #eff6ff !important;
+  border-color: #3b82f6 !important;
+  color: #1d4ed8 !important;
+}
+[data-theme="light"] .agenda-active-tags-bar {
+  background: #f8fafc !important;
+  border: 1px solid #cbd5e1 !important;
+}
+[data-theme="light"] .active-tag-chip {
+  background: #eff6ff !important;
+  border: 1px solid #93c5fd !important;
+  color: #1d4ed8 !important;
+}
+
+
+
+/* Report Status Badges */
+.report-status-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: capitalize;
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+}
+.report-status-badge.completed {
+  background: rgba(34, 197, 94, 0.15);
+  color: #16a34a;
+  border: 1px solid rgba(34, 197, 94, 0.25);
+}
+.report-status-badge.planned {
+  background: rgba(59, 130, 246, 0.15);
+  color: #2563eb;
+  border: 1px solid rgba(59, 130, 246, 0.25);
+}
+.report-status-badge.cancelled {
+  background: rgba(239, 68, 68, 0.15);
+  color: #dc2626;
+  border: 1px solid rgba(239, 68, 68, 0.25);
+}
+
+[data-theme="light"] .day-event-inspect-btn {
+  color: #475569 !important;
+  background: rgba(0, 0, 0, 0.05) !important;
+  border: 1px solid rgba(0, 0, 0, 0.08) !important;
+}
+[data-theme="light"] .day-event-card:hover .day-event-inspect-btn {
+  color: #0f172a !important;
+  background: rgba(0, 0, 0, 0.1) !important;
+}
 
 /* Universal High-Contrast Mode Badges in Light Theme */
 [data-theme="light"] .chip-mode-badge.offline,

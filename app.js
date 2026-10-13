@@ -442,6 +442,15 @@ function ensureSchemaUpToDate() {
     try { db.run("ALTER TABLE tag_field_definitions ADD COLUMN field_label TEXT;"); } catch(e) {}
     try { db.run("ALTER TABLE tag_field_definitions ADD COLUMN field_type TEXT;"); } catch(e) {}
 
+    // Auto-transition past planned/confirmed schedules to completed
+    try {
+      const todayYmd = new Date().toISOString().split('T')[0];
+      db.run("UPDATE schedules SET status = 'completed' WHERE (status = 'planned' OR status = 'confirmed') AND schedule_date < ?", [todayYmd]);
+      if (db.getRowsModified && db.getRowsModified() > 0) {
+        saveDatabaseToIndexedDB();
+      }
+    } catch (e) {}
+
   } catch (e) {
     console.warn('Schema upgrade note:', e);
   }
@@ -1779,14 +1788,150 @@ function loadMasterDataFromDb() {
   const fldRows = db.exec('SELECT * FROM tag_field_definitions');
   tagMasterFields = fldRows.length > 0 ? rowsToObjects(fldRows[0]) : [];
 
-  const catSelect = document.getElementById('categoryFilter');
-  catSelect.innerHTML = '<option value="all">All Tag Categories</option>';
-  tagMasterCategories.forEach(c => {
-    const opt = document.createElement('option');
-    opt.value = c.id;
-    opt.textContent = c.name;
-    catSelect.appendChild(opt);
+  renderAgendaTagFilterDropdown();
+}
+
+let selectedAgendaTagIds = new Set();
+
+function renderAgendaTagFilterDropdown() {
+  const listEl = document.getElementById('agendaTagDropdownList');
+  if (!listEl) return;
+  listEl.innerHTML = '';
+
+  if (!tagMasterCategories || tagMasterCategories.length === 0) {
+    listEl.innerHTML = '<div style="color:var(--text-muted); font-size:0.8rem; padding:8px;">No tags found.</div>';
+    return;
+  }
+
+  tagMasterCategories.forEach(cat => {
+    const catTags = tagMasterTags.filter(t => t.category_id === cat.id);
+    if (catTags.length === 0) return;
+
+    const groupDiv = document.createElement('div');
+    groupDiv.className = 'tag-filter-category-group';
+
+    const headerDiv = document.createElement('div');
+    headerDiv.className = 'tag-filter-cat-header';
+
+    const catNameSpan = document.createElement('span');
+    catNameSpan.textContent = cat.name;
+
+    const toggleAllBtn = document.createElement('button');
+    toggleAllBtn.type = 'button';
+    toggleAllBtn.className = 'cat-select-all-btn';
+    const allSelected = catTags.every(t => selectedAgendaTagIds.has(t.id));
+    toggleAllBtn.textContent = allSelected ? 'Deselect All' : 'Select All';
+    toggleAllBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const shouldSelect = !catTags.every(t => selectedAgendaTagIds.has(t.id));
+      catTags.forEach(t => {
+        if (shouldSelect) selectedAgendaTagIds.add(t.id);
+        else selectedAgendaTagIds.delete(t.id);
+      });
+      renderAgendaTagFilterDropdown();
+      renderAgendaActiveTagsBar();
+      renderAgendaView();
+    });
+
+    headerDiv.appendChild(catNameSpan);
+    headerDiv.appendChild(toggleAllBtn);
+    groupDiv.appendChild(headerDiv);
+
+    const itemsGrid = document.createElement('div');
+    itemsGrid.className = 'tag-filter-items-grid';
+
+    catTags.forEach(t => {
+      const isSelected = selectedAgendaTagIds.has(t.id);
+      const label = document.createElement('label');
+      label.className = `tag-filter-item ${isSelected ? 'active' : ''}`;
+      label.innerHTML = `
+        <input type="checkbox" ${isSelected ? 'checked' : ''} data-tag-id="${t.id}">
+        <span style="color:${t.color || 'inherit'}">${escapeHtml(t.name)}</span>
+      `;
+      const chk = label.querySelector('input');
+      chk.addEventListener('change', (e) => {
+        e.stopPropagation();
+        if (chk.checked) {
+          selectedAgendaTagIds.add(t.id);
+          label.classList.add('active');
+        } else {
+          selectedAgendaTagIds.delete(t.id);
+          label.classList.remove('active');
+        }
+        updateAgendaTagFilterLabel();
+        renderAgendaActiveTagsBar();
+        renderAgendaView();
+      });
+      itemsGrid.appendChild(label);
+    });
+
+    groupDiv.appendChild(itemsGrid);
+    listEl.appendChild(groupDiv);
   });
+
+  updateAgendaTagFilterLabel();
+  renderAgendaActiveTagsBar();
+}
+
+function updateAgendaTagFilterLabel() {
+  const labelEl = document.getElementById('agendaTagFilterLabel');
+  if (!labelEl) return;
+  if (selectedAgendaTagIds.size === 0) {
+    labelEl.textContent = 'Tags (All)';
+  } else {
+    labelEl.textContent = `Tags (${selectedAgendaTagIds.size})`;
+  }
+}
+
+function renderAgendaActiveTagsBar() {
+  const bar = document.getElementById('agendaActiveTagsBar');
+  if (!bar) return;
+  if (selectedAgendaTagIds.size === 0) {
+    bar.classList.add('hidden');
+    bar.innerHTML = '';
+    return;
+  }
+
+  bar.classList.remove('hidden');
+  bar.innerHTML = '';
+
+  const labelSpan = document.createElement('span');
+  labelSpan.style.cssText = 'font-size:0.75rem; color:var(--text-muted); font-weight:600; margin-right:4px;';
+  labelSpan.textContent = 'Active Filters:';
+  bar.appendChild(labelSpan);
+
+  selectedAgendaTagIds.forEach(tid => {
+    const tObj = tagMasterTags.find(t => t.id === tid);
+    if (!tObj) return;
+
+    const chip = document.createElement('span');
+    chip.className = 'active-tag-chip';
+    if (tObj.color) {
+      chip.style.borderColor = tObj.color;
+      chip.style.color = tObj.color;
+      chip.style.background = `${tObj.color}25`;
+    }
+    chip.innerHTML = `<span>${escapeHtml(tObj.name)}</span><span class="remove-chip-btn">&times;</span>`;
+    chip.querySelector('.remove-chip-btn').addEventListener('click', () => {
+      selectedAgendaTagIds.delete(tid);
+      renderAgendaTagFilterDropdown();
+      renderAgendaActiveTagsBar();
+      renderAgendaView();
+    });
+    bar.appendChild(chip);
+  });
+
+  const clearBtn = document.createElement('button');
+  clearBtn.type = 'button';
+  clearBtn.className = 'agenda-active-tags-clear-btn';
+  clearBtn.textContent = 'Clear All';
+  clearBtn.addEventListener('click', () => {
+    selectedAgendaTagIds.clear();
+    renderAgendaTagFilterDropdown();
+    renderAgendaActiveTagsBar();
+    renderAgendaView();
+  });
+  bar.appendChild(clearBtn);
 }
 
 function populateTitlesDatalist() {
@@ -3097,6 +3242,18 @@ function formatDateYMD(d) {
   return `${yr}-${m}-${day}`;
 }
 
+function deriveScheduleStatus(schDate, schToTime) {
+  if (!schDate) return 'planned';
+  const todayStr = formatDateYMD(new Date());
+  if (schDate < todayStr) return 'completed';
+  if (schDate === todayStr) {
+    const nowTime = new Date().toTimeString().slice(0, 5);
+    if (schToTime && schToTime <= nowTime) return 'completed';
+  }
+  return 'planned';
+}
+
+
 // Indian standard date format: DD-MM-YYYY (e.g. 05-10-2026)
 function formatDateIndian(dateInput) {
   if (!dateInput) return '';
@@ -3473,7 +3630,6 @@ function renderAgendaView(resetPagination = true, scrollDirection = 'center') {
 
   const searchText = (document.getElementById('agendaSearchInput')?.value || '').toLowerCase().trim();
   const modeVal = document.getElementById('modeFilter')?.value || 'all';
-  const catVal = document.getElementById('categoryFilter')?.value || 'all';
 
   let query = `
     SELECT 
@@ -3508,9 +3664,9 @@ function renderAgendaView(resetPagination = true, scrollDirection = 'center') {
     }
     row.tags = tags;
 
-    if (catVal !== 'all') {
-      const hasCat = tags.some(t => t.catId === catVal);
-      if (!hasCat) continue;
+    if (selectedAgendaTagIds.size > 0) {
+      const hasMatchingTag = tags.some(t => selectedAgendaTagIds.has(t.id));
+      if (!hasMatchingTag) continue;
     }
 
     if (searchText) {
@@ -3644,7 +3800,7 @@ function renderAgendaView(resetPagination = true, scrollDirection = 'center') {
         <span class="agenda-day-name">${dayTamil} (${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dObj.getDay()]})</span>
       </div>
       <div class="agenda-card-details">
-        <div class="agenda-card-title">${escapeHtml(s.title)} ${s.group_id ? '<span style="color:#818cf8; font-size:0.8rem;"><i class="fa-solid fa-layer-group"></i> Batch Group</span>' : ''}</div>
+        <div class="agenda-card-title">${escapeHtml(s.title)} ${s.group_id ? '<span class="badge-batch-group"><i class="fa-solid fa-layer-group"></i> Batch Group</span>' : ''}</div>
         <div class="agenda-card-meta">
           <span><i class="fa-regular fa-clock"></i> ${formatTimeRange(s.from_time, s.to_time)}</span>
           <span class="chip-mode-badge ${s.delivery_mode}">${s.delivery_mode.toUpperCase()}</span>
@@ -3754,7 +3910,6 @@ function openScheduleModal(existingSchedule = null) {
   if (existingSchedule) {
     document.getElementById('editScheduleId').value = existingSchedule.id;
     document.getElementById('schedTitle').value = existingSchedule.title || '';
-    document.getElementById('schedStatus').value = existingSchedule.status || 'completed';
     document.getElementById('schedFromTime').value = existingSchedule.from_time || '09:30';
     document.getElementById('schedToTime').value = existingSchedule.to_time || '13:30';
     document.getElementById('schedNotes').value = existingSchedule.notes || '';
@@ -3805,7 +3960,6 @@ function openScheduleModal(existingSchedule = null) {
     // New Schedule
     document.getElementById('editScheduleId').value = '';
     document.getElementById('schedTitle').value = '';
-    document.getElementById('schedStatus').value = 'planned';
     document.getElementById('schedFromTime').value = '09:30';
     document.getElementById('schedToTime').value = '13:30';
     document.getElementById('schedNotes').value = '';
@@ -4700,9 +4854,16 @@ async function handleScheduleFormSubmit(e) {
 
   const editId = document.getElementById('editScheduleId').value;
   const title = document.getElementById('schedTitle').value.trim();
-  const status = document.getElementById('schedStatus').value;
   const fromTime = document.getElementById('schedFromTime').value;
   const toTime = document.getElementById('schedToTime').value;
+
+  const todayStr = formatDateYMD(new Date());
+  const nowTime = new Date().toTimeString().slice(0, 5);
+  const deriveScheduleStatus = (schDate, schToTime) => {
+    if (schDate < todayStr) return 'completed';
+    if (schDate === todayStr && schToTime && schToTime <= nowTime) return 'completed';
+    return 'planned';
+  };
   const notes = document.getElementById('schedNotes').value.trim();
   const applyAsGroup = document.getElementById('applyAsGroupCheckbox').checked;
   const remSelectEl = document.getElementById('schedReminderMin');
@@ -4942,7 +5103,7 @@ async function handleScheduleFormSubmit(e) {
       attachments: attachmentsJson,
       travel_info: travelInfoJson,
       reminder_min: isNaN(reminderMin) ? 15 : reminderMin,
-      status: status,
+      status: deriveScheduleStatus(scheduleDate, toTime),
       created_at: existingCreatedAt,
       updated_at: nowIso,
       tags: tagList.map(t => ({ id: `st_${editId}_${t.tag_id}`, schedule_id: editId, tag_id: t.tag_id, field_values: t.field_values, notes: t.notes }))
@@ -4969,7 +5130,7 @@ async function handleScheduleFormSubmit(e) {
           attachments: attachmentsJson,
           travel_info: travelInfoJson,
           reminder_min: isNaN(reminderMin) ? 15 : reminderMin,
-          status: status,
+          status: deriveScheduleStatus(schDate, toTime),
           created_at: schCreated,
           updated_at: nowIso,
           tags: tagList.map(t => ({ id: `st_${schId}_${t.tag_id}`, schedule_id: schId, tag_id: t.tag_id, field_values: t.field_values, notes: t.notes }))
@@ -4994,7 +5155,7 @@ async function handleScheduleFormSubmit(e) {
         attachments: attachmentsJson,
         travel_info: travelInfoJson,
         reminder_min: isNaN(reminderMin) ? 15 : reminderMin,
-        status: status,
+        status: deriveScheduleStatus(dStr, toTime),
         created_at: nowIso,
         updated_at: nowIso,
         tags: tagList.map(t => ({ id: `st_${newId}_${t.tag_id}`, schedule_id: newId, tag_id: t.tag_id, field_values: t.field_values, notes: t.notes }))
@@ -5034,7 +5195,7 @@ async function handleScheduleFormSubmit(e) {
       attachments: oAttachments,
       travel_info: travelInfoJson,
       reminder_min: (reminderMin === -1) ? -1 : 30,
-      status: status,
+      status: deriveScheduleStatus(oDate, oDepTime),
       created_at: nowIso,
       updated_at: nowIso,
       tags: []
@@ -5060,7 +5221,7 @@ async function handleScheduleFormSubmit(e) {
         attachments: oAttachments,
         travel_info: travelInfoJson,
         reminder_min: -1,
-        status: status,
+        status: deriveScheduleStatus(oArrDate, oArrTime),
         created_at: nowIso,
         updated_at: nowIso,
         tags: []
@@ -5100,7 +5261,7 @@ async function handleScheduleFormSubmit(e) {
       attachments: rAttachments,
       travel_info: travelInfoJson,
       reminder_min: (reminderMin === -1) ? -1 : 30,
-      status: status,
+      status: deriveScheduleStatus(rDate, rDepToTime),
       created_at: nowIso,
       updated_at: nowIso,
       tags: []
@@ -5126,7 +5287,7 @@ async function handleScheduleFormSubmit(e) {
         attachments: rAttachments,
         travel_info: travelInfoJson,
         reminder_min: -1,
-        status: status,
+        status: deriveScheduleStatus(rArrDate, rArrTime),
         created_at: nowIso,
         updated_at: nowIso,
         tags: []
@@ -6150,7 +6311,42 @@ function setupUIEventListeners() {
 
   document.getElementById('agendaSearchInput').addEventListener('input', renderAgendaView);
   document.getElementById('modeFilter').addEventListener('change', renderAgendaView);
-  document.getElementById('categoryFilter').addEventListener('change', renderAgendaView);
+  const tagFilterBtn = document.getElementById('agendaTagFilterBtn');
+  const tagFilterDropdown = document.getElementById('agendaTagFilterDropdown');
+  const tagClearBtn = document.getElementById('agendaTagClearBtn');
+  const tagDoneBtn = document.getElementById('agendaTagDoneBtn');
+
+  if (tagFilterBtn && tagFilterDropdown) {
+    tagFilterBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      tagFilterDropdown.classList.toggle('hidden');
+    });
+
+    if (tagClearBtn) {
+      tagClearBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        selectedAgendaTagIds.clear();
+        updateAgendaTagFilterLabel();
+        renderAgendaTagFilterDropdown();
+        renderAgendaActiveTagsBar();
+        renderAgendaView();
+      });
+    }
+
+    if (tagDoneBtn) {
+      tagDoneBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        tagFilterDropdown.classList.add('hidden');
+      });
+    }
+
+    document.addEventListener('click', (e) => {
+      const wrapper = document.getElementById('tagFilterDropdownWrapper');
+      if (wrapper && !wrapper.contains(e.target)) {
+        tagFilterDropdown.classList.add('hidden');
+      }
+    });
+  }
   const agendaTodayBtn = document.getElementById('agendaTodayBtn');
   if (agendaTodayBtn) {
     agendaTodayBtn.addEventListener('click', () => {
@@ -6474,10 +6670,10 @@ function openScheduleDetailsModal(s) {
       <span class="chip-mode-badge ${s.delivery_mode}" style="font-size:0.75rem; padding: 2px 8px;">
         ${s.delivery_mode === 'online' ? '🌐 Online' : (s.delivery_mode === 'hybrid' ? '🔄 Hybrid' : '🏢 Offline')}
       </span>
-      <span style="font-size: 0.75rem; padding: 2px 8px; border-radius: 3px; background: var(--bg-tertiary); color: var(--text-main); border: 1px solid var(--border-color); font-weight: 600;">
-        Status: ${s.status ? escapeHtml(s.status.toUpperCase()) : 'CONFIRMED'}
+      <span class="report-status-badge ${deriveScheduleStatus(s.schedule_date, s.to_time)}">
+        ${deriveScheduleStatus(s.schedule_date, s.to_time) === 'completed' ? '✓ Completed' : '📅 Scheduled'}
       </span>
-      ${s.group_id ? '<span style="font-size: 0.75rem; padding: 2px 8px; border-radius: 3px; background: rgba(99,102,241,0.25); color: #818cf8; font-weight: 600;"><i class="fa-solid fa-layer-group"></i> Batch Group</span>' : ''}
+      ${s.group_id ? '<span class="badge-batch-group" style="font-size: 0.75rem; padding: 2px 8px; border-radius: 3px; font-weight: 600;"><i class="fa-solid fa-layer-group"></i> Batch Group</span>' : ''}
     </div>
   `;
   body.appendChild(statusItem);
