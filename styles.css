@@ -2503,68 +2503,311 @@ input:focus, select:focus, textarea:focus {
   }
 }
 
+/* Portrait-specific elements hidden in landscape / desktop mode */
+.day-portrait-indicators {
+  display: none !important;
+}
+
+.portrait-calendar-day-agenda {
+  display: none !important;
+}
+
+.portrait-sch-square {
+  width: 7px;
+  height: 7px;
+  border-radius: 1.5px;
+  background-color: #3b82f6;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.portrait-note-square {
+  width: 6px;
+  height: 6px;
+  border-radius: 1.5px;
+  background-color: #fbbf24;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.portrait-fin-square {
+  width: 6px;
+  height: 6px;
+  border-radius: 1.5px;
+  background-color: #34d399;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
 /* ==========================================================================
-   CALENDAR VIEW PORTRAIT MODE (REMOVE TEXT FROM DAY CARDS, KEEP ICONS ONLY)
-   In landscape mode, text stays visible as normal.
+   CALENDAR VIEW PORTRAIT MODE (UNIFORM SQUARE CELLS & BOTTOM DAY AGENDA)
+   Landscape mode retains the full schedule chips view as normal.
    ========================================================================== */
 @media (orientation: portrait), (max-width: 600px) {
+  /* Day cells have the exact same square size */
   .calendar-grid .day-cell {
-    min-height: 60px;
-    padding: 3px 2px;
+    min-height: unset !important;
+    height: auto !important;
+    aspect-ratio: 1 / 1 !important;
+    padding: 3px 2px !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    box-sizing: border-box !important;
+    cursor: pointer !important;
+    position: relative !important;
+    overflow: hidden !important;
   }
 
   .calendar-grid .day-header {
-    margin-bottom: 2px;
+    width: 100% !important;
+    display: flex !important;
+    justify-content: center !important;
+    align-items: center !important;
+    margin-bottom: 0 !important;
+    min-width: 0 !important;
   }
 
+  .calendar-grid .day-number {
+    font-size: 0.85rem !important;
+    font-weight: 700 !important;
+    line-height: 1 !important;
+    margin-top: 1px !important;
+  }
+
+  .calendar-grid .day-cell.today .day-number {
+    width: 22px !important;
+    height: 22px !important;
+    font-size: 0.78rem !important;
+    border-radius: 50% !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+  }
+
+  /* Hide individual action buttons in cell header to keep cell clean */
+  .calendar-grid .day-header .day-actions-wrap {
+    display: none !important;
+  }
+
+  /* Remove bulky schedule chips inside the day cells in portrait mode */
   .calendar-grid .day-schedules-list {
+    display: none !important;
+  }
+
+  /* Show small colored square(s) in center of day cell */
+  .calendar-grid .day-portrait-indicators {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 3px !important;
+    margin: auto 0 !important;
+  }
+
+  /* Selected / Active Day in Portrait Grid */
+  .calendar-grid .day-cell.portrait-selected {
+    border: 2px solid #3b82f6 !important;
+    background: rgba(59, 130, 246, 0.22) !important;
+    box-shadow: inset 0 0 0 1px #60a5fa, 0 0 8px rgba(59, 130, 246, 0.3) !important;
+  }
+
+  /* PORTRAIT BOTTOM DAY SCHEDULE AGENDA */
+  .portrait-calendar-day-agenda {
+    display: flex !important;
+    flex-direction: column !important;
+    background: var(--bg-secondary) !important;
+    border-top: 1px solid var(--border-color) !important;
+    padding: 12px 10px !important;
+    gap: 10px !important;
+  }
+
+  .portrait-agenda-header {
     display: flex;
-    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border-color);
+  }
+
+  .portrait-agenda-title-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .portrait-agenda-date {
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: var(--text-main);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .portrait-agenda-count {
+    font-size: 0.76rem;
+    color: var(--text-muted);
+  }
+
+  .portrait-agenda-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .portrait-agenda-items {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .portrait-agenda-card {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-left: 4px solid var(--accent-blue);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .portrait-agenda-card:hover {
+    border-color: #60a5fa;
+    background: var(--bg-tertiary);
+  }
+
+  .portrait-agenda-card-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .portrait-agenda-card-title {
+    font-size: 0.92rem;
+    font-weight: 600;
+    color: var(--text-main);
+    line-height: 1.3;
+    display: flex;
     flex-wrap: wrap;
-    gap: 3px;
-    justify-content: center;
     align-items: center;
-    margin-top: 2px;
+    gap: 6px;
   }
 
-  /* Remove all text inside day cards in portrait mode (icons only) */
-  .calendar-grid .schedule-chip .chip-time,
-  .calendar-grid .schedule-chip .chip-title {
-    display: none !important;
+  .portrait-agenda-card-time {
+    font-size: 0.8rem;
+    color: var(--accent-blue);
+    font-weight: 600;
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 4px;
   }
 
-  .calendar-grid .schedule-chip {
-    padding: 2px 4px;
-    margin: 1px 0;
+  .portrait-agenda-card-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+  }
+
+  .portrait-agenda-card-notes {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    background: rgba(0, 0, 0, 0.2);
+    padding: 5px 8px;
     border-radius: 4px;
-    min-width: 22px;
-    height: 22px;
-    display: inline-flex;
+    line-height: 1.35;
+  }
+
+  .portrait-agenda-note-card {
+    background: rgba(245, 158, 11, 0.1);
+    border: 1px solid rgba(245, 158, 11, 0.3);
+    border-left: 4px solid #f59e0b;
+    border-radius: var(--radius-sm);
+    padding: 8px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .portrait-agenda-finance-card {
+    background: rgba(16, 185, 129, 0.1);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+    border-left: 4px solid #10b981;
+    border-radius: var(--radius-sm);
+    padding: 8px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .portrait-agenda-sub-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.86rem;
+  }
+
+  .portrait-agenda-note-text {
+    font-size: 0.84rem;
+    color: var(--text-main);
+    line-height: 1.4;
+  }
+
+  .portrait-agenda-empty {
+    text-align: center;
+    padding: 24px 16px;
+    background: var(--bg-primary);
+    border-radius: var(--radius-sm);
+    border: 1px dashed var(--border-color);
+    display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
-    font-size: 0.75rem;
+    gap: 6px;
   }
 
-  .calendar-grid .chip-header {
-    justify-content: center;
-    width: 100%;
+  /* Light Theme overrides in Portrait Mode */
+  [data-theme="light"] .calendar-grid .day-cell.portrait-selected {
+    border: 2px solid #2563eb !important;
+    background: #dbeafe !important;
+    box-shadow: inset 0 0 0 1px #3b82f6 !important;
   }
 
-  .calendar-grid .day-note-pill .pill-text,
-  .calendar-grid .day-finance-pill .pill-text {
-    display: none !important;
+  [data-theme="light"] .portrait-calendar-day-agenda {
+    background: #ffffff !important;
+    border-top-color: #cbd5e1 !important;
   }
 
-  .calendar-grid .day-note-pill,
-  .calendar-grid .day-finance-pill {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 2px 4px;
-    min-width: 22px;
-    height: 22px;
-    margin-top: 0;
-    font-size: 0.75rem;
+  [data-theme="light"] .portrait-agenda-card {
+    background: #f8fafc !important;
+    border-color: #e2e8f0 !important;
+    color: #0f172a !important;
+  }
+
+  [data-theme="light"] .portrait-agenda-card:hover {
+    background: #f1f5f9 !important;
+  }
+
+  [data-theme="light"] .portrait-agenda-card-title {
+    color: #0f172a !important;
+  }
+
+  [data-theme="light"] .portrait-agenda-card-notes {
+    background: #f1f5f9 !important;
+    color: #334155 !important;
+  }
+
+  [data-theme="light"] .portrait-agenda-empty {
+    background: #f8fafc !important;
+    border-color: #cbd5e1 !important;
   }
 }
 

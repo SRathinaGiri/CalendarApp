@@ -12,6 +12,7 @@ let tagMasterCategories = [];
 let tagMasterTags = [];
 let tagMasterFields = [];
 let selectedDates = new Set(); // Multi-date selection set
+let portraitSelectedDate = null; // Currently highlighted day in portrait calendar mode
 
 // App Theme, Security Lock, and Read-Only State
 let currentTheme = localStorage.getItem('srg_theme') || 'dark';
@@ -281,6 +282,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   checkUpcomingEventReminders();
   setInterval(checkUpcomingEventReminders, 45000);
   window.addEventListener('focus', checkUpcomingEventReminders);
+
+  // Re-render calendar view on orientation / window resize change between portrait & landscape
+  const mql = window.matchMedia('(orientation: portrait), (max-width: 600px)');
+  if (mql && mql.addEventListener) {
+    mql.addEventListener('change', () => {
+      if (currentView === 'calendar') {
+        renderMonthView();
+      }
+    });
+  }
 });
 
 /* ==========================================================================
@@ -2807,6 +2818,10 @@ function closeDailyNoteModal() {
   if (modal) modal.classList.add('hidden');
 }
 
+function isPortraitMode() {
+  return window.matchMedia('(orientation: portrait), (max-width: 600px)').matches;
+}
+
 function renderMonthView() {
   const grid = document.getElementById('calendarGrid');
   grid.innerHTML = '';
@@ -2826,6 +2841,17 @@ function renderMonthView() {
   const dailyNotesMap = getDailyNotesMap();
   const dailyTxnsMap = getDailyTransactionsMap();
   const todayStr = formatDateYMD(new Date());
+
+  // Determine initial portrait selected date for current month
+  const [pYear, pMonth] = portraitSelectedDate ? portraitSelectedDate.split('-').map(Number) : [null, null];
+  if (!portraitSelectedDate || pYear !== year || (pMonth - 1) !== month) {
+    const today = new Date();
+    if (today.getFullYear() === year && today.getMonth() === month) {
+      portraitSelectedDate = todayStr;
+    } else {
+      portraitSelectedDate = formatDateYMD(firstDayOfMonth);
+    }
+  }
 
   for (let i = startingDay - 1; i >= 0; i--) {
     const dNum = prevMonthDays - i;
@@ -2852,6 +2878,9 @@ function renderMonthView() {
     const cell = createDayCell(dStr, d, true, schedulesByDate[dStr] || [], dObj.getDay(), false, dailyNotesMap, dailyTxnsMap);
     grid.appendChild(cell);
   }
+
+  // Render bottom schedule agenda for selected date in portrait mode
+  renderPortraitCalendarDayAgenda(portraitSelectedDate);
 }
 
 function renderPortraitMonthView() {
@@ -3065,6 +3094,7 @@ function createDayCell(dateStr, dayNum, isOtherMonth, schedules, dayOfWeekIdx, i
   });
 
   const actionsWrap = document.createElement('div');
+  actionsWrap.className = 'day-actions-wrap';
   actionsWrap.style.cssText = 'display:inline-flex; align-items:center; gap:2px; margin-left:auto;';
   actionsWrap.appendChild(noteBtn);
   actionsWrap.appendChild(financeBtn);
@@ -3072,6 +3102,52 @@ function createDayCell(dateStr, dayNum, isOtherMonth, schedules, dayOfWeekIdx, i
   header.appendChild(numSpan);
   header.appendChild(actionsWrap);
   cell.appendChild(header);
+
+  // Portrait mode indicator (small colored square in center)
+  const portraitIndicatorWrap = document.createElement('div');
+  portraitIndicatorWrap.className = 'day-portrait-indicators';
+
+  if (schedules && schedules.length > 0) {
+    const hasTravelDep = schedules.some(s => s.title && (s.title.toLowerCase().startsWith('travel:') || s.title.toLowerCase().startsWith('return travel:') || s.title.toLowerCase() === 'travel'));
+    const hasTravelArr = schedules.some(s => s.title && (s.title.toLowerCase().startsWith('travel arrival:') || s.title.toLowerCase().startsWith('return travel arrival:')));
+
+    const schSquare = document.createElement('span');
+    schSquare.className = 'portrait-sch-square';
+    if (hasTravelDep) {
+      schSquare.style.backgroundColor = '#f59e0b';
+      schSquare.title = 'Travel Departure';
+    } else if (hasTravelArr) {
+      schSquare.style.backgroundColor = '#10b981';
+      schSquare.title = 'Travel Arrival';
+    } else {
+      schSquare.style.backgroundColor = '#3b82f6';
+      schSquare.title = `${schedules.length} Event${schedules.length > 1 ? 's' : ''}`;
+    }
+    portraitIndicatorWrap.appendChild(schSquare);
+
+    if (schedules.length > 1) {
+      const schSquare2 = document.createElement('span');
+      schSquare2.className = 'portrait-sch-square';
+      schSquare2.style.backgroundColor = (hasTravelDep || hasTravelArr) ? '#3b82f6' : '#8b5cf6';
+      portraitIndicatorWrap.appendChild(schSquare2);
+    }
+  }
+
+  if (hasNote) {
+    const noteSquare = document.createElement('span');
+    noteSquare.className = 'portrait-note-square';
+    noteSquare.title = 'Daily Note';
+    portraitIndicatorWrap.appendChild(noteSquare);
+  }
+
+  if (hasFinance) {
+    const finSquare = document.createElement('span');
+    finSquare.className = 'portrait-fin-square';
+    finSquare.title = 'Daily Finance';
+    portraitIndicatorWrap.appendChild(finSquare);
+  }
+
+  cell.appendChild(portraitIndicatorWrap);
 
   const list = document.createElement('div');
   list.className = 'day-schedules-list';
@@ -3172,9 +3248,6 @@ function createDayCell(dateStr, dayNum, isOtherMonth, schedules, dayOfWeekIdx, i
     }
     chip.appendChild(titleDiv);
 
-    // Note: Tags are hidden from calendar day chips to avoid clutter.
-    // They are fully viewable on hover tooltip and in the Schedule Details modal.
-
     // Clicking chip opens full details window (with option to edit)
     chip.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -3186,11 +3259,211 @@ function createDayCell(dateStr, dayNum, isOtherMonth, schedules, dayOfWeekIdx, i
 
   cell.appendChild(list);
 
+  if (dateStr === portraitSelectedDate) {
+    cell.classList.add('portrait-selected');
+  }
+
   cell.addEventListener('click', () => {
-    toggleDateSelection(dateStr);
+    portraitSelectedDate = dateStr;
+    document.querySelectorAll('.calendar-grid .day-cell.portrait-selected').forEach(c => c.classList.remove('portrait-selected'));
+    cell.classList.add('portrait-selected');
+    renderPortraitCalendarDayAgenda(dateStr);
+
+    if (!isPortraitMode() || selectedDates.size > 0) {
+      toggleDateSelection(dateStr);
+    }
   });
 
   return cell;
+}
+
+function renderPortraitCalendarDayAgenda(dateStr) {
+  const container = document.getElementById('portraitCalendarDayAgenda');
+  if (!container) return;
+  if (!dateStr) {
+    container.innerHTML = '';
+    return;
+  }
+
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dObj = new Date(y, m - 1, d);
+  const dayOfWeek = DAY_NAMES[dObj.getDay()];
+  const indianDate = formatDateIndian(dObj);
+  const todayStr = formatDateYMD(new Date());
+  const isToday = (dateStr === todayStr);
+
+  const schedulesMap = getSchedulesMap(dateStr, dateStr);
+  const daySchedules = schedulesMap[dateStr] || [];
+  const noteContent = (typeof getDailyNoteForDate === 'function') ? getDailyNoteForDate(dateStr) : null;
+  const dailyTxnsMap = (typeof getDailyTransactionsMap === 'function') ? getDailyTransactionsMap() : {};
+  const txnSummary = dailyTxnsMap ? dailyTxnsMap[dateStr] : null;
+  const hasFinance = Boolean(txnSummary && txnSummary.count > 0);
+
+  let html = `
+    <div class="portrait-agenda-header">
+      <div class="portrait-agenda-title-wrap">
+        <div class="portrait-agenda-date">
+          <span>${dayOfWeek}, ${indianDate}</span>
+          ${isToday ? '<span class="today-badge">TODAY</span>' : ''}
+        </div>
+        <div class="portrait-agenda-count">${daySchedules.length} Event${daySchedules.length === 1 ? '' : 's'}</div>
+      </div>
+      <div class="portrait-agenda-actions">
+        <button type="button" class="btn-primary btn-xs" id="portraitAgendaAddBtn" title="Add Schedule for this Date">
+          <i class="fa-solid fa-plus"></i> Add Event
+        </button>
+        <button type="button" class="btn-secondary btn-xs" id="portraitAgendaDayViewBtn" title="Open Day View">
+          <i class="fa-solid fa-clock"></i> Day View
+        </button>
+      </div>
+    </div>
+  `;
+
+  if (noteContent) {
+    html += `
+      <div class="portrait-agenda-note-card">
+        <div class="portrait-agenda-sub-header">
+          <span style="font-weight:600; color:#fbbf24;"><i class="fa-solid fa-note-sticky"></i> Daily Diary Note</span>
+          <button type="button" class="btn-xs btn-ghost edit-note-btn" style="color:#fbbf24; cursor:pointer;"><i class="fa-solid fa-pen"></i> Edit</button>
+        </div>
+        <div class="portrait-agenda-note-text">${escapeHtml(noteContent)}</div>
+      </div>
+    `;
+  }
+
+  if (hasFinance) {
+    html += `
+      <div class="portrait-agenda-finance-card">
+        <div class="portrait-agenda-sub-header">
+          <span style="font-weight:600; color:#34d399;"><i class="fa-solid fa-coins"></i> Daily Finance</span>
+          <button type="button" class="btn-xs btn-ghost view-fin-btn" style="color:#34d399; cursor:pointer;"><i class="fa-solid fa-pen"></i> View/Edit</button>
+        </div>
+        <div class="portrait-agenda-fin-values" style="display:flex; gap:16px; font-size:0.86rem; margin-top:3px;">
+          <span style="color:var(--receipt-color); font-weight:600;">Receipts: +₹${txnSummary.receipts.toFixed(2)}</span>
+          <span style="color:var(--payment-color); font-weight:600;">Payments: -₹${txnSummary.payments.toFixed(2)}</span>
+        </div>
+      </div>
+    `;
+  }
+
+  if (daySchedules.length > 0) {
+    html += `<div class="portrait-agenda-items">`;
+    daySchedules.forEach((s, idx) => {
+      const isTravelArr = s.title && (s.title.toLowerCase().startsWith('travel arrival:') || s.title.toLowerCase().startsWith('return travel arrival:'));
+      const isTravelDep = s.title && (s.title.toLowerCase().startsWith('travel:') || s.title.toLowerCase().startsWith('return travel:') || s.title.toLowerCase() === 'travel');
+
+      let borderLeftColor = '#3b82f6';
+      if (isTravelArr) borderLeftColor = '#10b981';
+      else if (isTravelDep) borderLeftColor = '#f59e0b';
+      else if (s.delivery_mode === 'online') borderLeftColor = '#0ea5e9';
+      else if (s.delivery_mode === 'hybrid') borderLeftColor = '#a855f7';
+      else if (s.delivery_mode === 'in-person') borderLeftColor = '#10b981';
+
+      let travelBadgeHtml = '';
+      if (isTravelArr) {
+        travelBadgeHtml = '<span class="chip-mode-badge" style="background:var(--badge-green-bg); color:var(--badge-green-text); border:1px solid var(--badge-green-border);"><i class="fa-solid fa-flag-checkered"></i> Arrival</span>';
+      } else if (isTravelDep) {
+        travelBadgeHtml = '<span class="chip-mode-badge" style="background:var(--badge-amber-bg); color:var(--badge-amber-text); border:1px solid var(--badge-amber-border);"><i class="fa-solid fa-train"></i> Travel</span>';
+      }
+
+      html += `
+        <div class="portrait-agenda-card" data-sch-idx="${idx}" style="border-left-color:${borderLeftColor};">
+          <div class="portrait-agenda-card-top">
+            <div class="portrait-agenda-card-title">
+              ${escapeHtml(s.title)}
+              ${s.group_id ? '<span class="badge-batch-group"><i class="fa-solid fa-layer-group"></i> Batch</span>' : ''}
+              ${s.attachments && s.attachments !== '[]' ? '<span style="color:var(--accent-blue); font-size:0.75rem;"><i class="fa-solid fa-paperclip"></i></span>' : ''}
+            </div>
+            <div class="portrait-agenda-card-time">
+              <i class="fa-regular fa-clock"></i> ${formatTimeRange(s.from_time, s.to_time)}
+            </div>
+          </div>
+
+          <div class="portrait-agenda-card-meta">
+            ${travelBadgeHtml}
+            <span class="chip-mode-badge ${s.delivery_mode}">${s.delivery_mode.toUpperCase()}</span>
+            ${s.location ? `<span><i class="fa-solid fa-location-dot"></i> ${escapeHtml(s.location)}</span>` : ''}
+            ${s.travel_info ? `<span><i class="fa-solid fa-route"></i> ${escapeHtml(s.travel_info)}</span>` : ''}
+          </div>
+
+          ${s.tags && s.tags.length > 0 ? `
+            <div class="chip-tags-row" style="margin-top:2px;">
+              ${s.tags.map(t => `<span class="chip-tag-pill">${escapeHtml(t.name)}</span>`).join('')}
+            </div>
+          ` : ''}
+
+          ${s.notes ? `
+            <div class="portrait-agenda-card-notes">
+              <i class="fa-regular fa-note-sticky"></i> ${escapeHtml(s.notes)}
+            </div>
+          ` : ''}
+        </div>
+      `;
+    });
+    html += `</div>`;
+  } else if (!noteContent && !hasFinance) {
+    html += `
+      <div class="portrait-agenda-empty">
+        <i class="fa-regular fa-calendar-check" style="font-size:2rem; color:var(--text-muted); opacity:0.6;"></i>
+        <div style="font-weight:600; color:var(--text-main); font-size:0.95rem;">No schedules for this day</div>
+        <div style="font-size:0.8rem; color:var(--text-muted);">Tap the button below or '+' to schedule an event.</div>
+        <button type="button" class="btn-primary btn-sm" id="portraitAgendaEmptyAddBtn" style="margin-top:8px;">
+          <i class="fa-solid fa-plus"></i> Add Event
+        </button>
+      </div>
+    `;
+  }
+
+  container.innerHTML = html;
+
+  const addBtn = container.querySelector('#portraitAgendaAddBtn');
+  if (addBtn) {
+    addBtn.addEventListener('click', () => {
+      selectedDates.clear();
+      selectedDates.add(dateStr);
+      openScheduleModal();
+    });
+  }
+
+  const emptyAddBtn = container.querySelector('#portraitAgendaEmptyAddBtn');
+  if (emptyAddBtn) {
+    emptyAddBtn.addEventListener('click', () => {
+      selectedDates.clear();
+      selectedDates.add(dateStr);
+      openScheduleModal();
+    });
+  }
+
+  const dayViewBtn = container.querySelector('#portraitAgendaDayViewBtn');
+  if (dayViewBtn) {
+    dayViewBtn.addEventListener('click', () => {
+      switchToView('day', dObj);
+    });
+  }
+
+  const editNoteBtn = container.querySelector('.edit-note-btn');
+  if (editNoteBtn) {
+    editNoteBtn.addEventListener('click', () => {
+      openDailyNoteModal(dateStr);
+    });
+  }
+
+  const viewFinBtn = container.querySelector('.view-fin-btn');
+  if (viewFinBtn) {
+    viewFinBtn.addEventListener('click', () => {
+      openDailyFinanceModal(dateStr);
+    });
+  }
+
+  container.querySelectorAll('.portrait-agenda-card').forEach(card => {
+    const idx = parseInt(card.dataset.schIdx, 10);
+    const sch = daySchedules[idx];
+    if (sch) {
+      card.addEventListener('click', () => {
+        openScheduleDetailsModal(sch);
+      });
+    }
+  });
 }
 
 function getSchedulesMap(startDate, endDate) {
