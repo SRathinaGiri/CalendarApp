@@ -1,8 +1,8 @@
-# Calendar App (Offline PWA) v1.0.9
+# Calendar App (Offline PWA) v1.1.0
 
 A standalone, local-first Personal Calendar & Daily Organizer Progressive Web App (PWA) powered by client-side **SQLite (WASM)** and **IndexedDB** local storage.
 
-> **Production PWA (v1.0.9)**  
+> **Production PWA (v1.1.0)**  
 > Fully client-side, local-first calendar with ACID SQLite storage, verified SHA-256 backup archives, and offline capabilities.
 
 ---
@@ -22,10 +22,10 @@ A standalone, local-first Personal Calendar & Daily Organizer Progressive Web Ap
   - *Note:* The screen lock is a UI access gate designed for casual privacy; data at rest is not encrypted. We recommend enabling device-level encryption (BitLocker, FileVault, or mobile device passcode/biometrics).
 - **PWA (Progressive Web App):**
   - Installable directly to home screen or desktop from Chrome, Edge, Safari, or Brave.
-  - Version-scoped Service Worker cache cleanup (`v1.0.9`).
+  - Version-scoped Service Worker cache cleanup (`v1.1.0`).
   - In-app install and check for updates buttons.
 - **Comprehensive Calendar Views:**
-  - **Calendar View:** 7-column month grid. In portrait mode, compact icon badges (schedules, travel, notes, finance) maximize space. In landscape mode, full titles, times, and notes are shown.
+  - **Calendar View:** 7-column month grid. In portrait mode, uniform square day cells with center indicator badges and a bottom day schedule agenda panel maximize usability. In landscape mode, full titles, times, and notes are shown.
   - **Portrait Month View:** 30-day tabular view with day notes, income/expense totals, and travel leg badges.
   - **Day View:** Hourly timeline, daily notes editor, and double-entry transaction manager.
   - **Agenda View:** Bi-directional timeline centered on Today, with one-tap jump to Today and load earlier/later navigation.
