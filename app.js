@@ -112,7 +112,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.1.1';
+const APP_VERSION = 'v1.1.2';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -3370,7 +3370,6 @@ function renderPortraitCalendarDayAgenda(dateStr) {
             ${travelBadgeHtml}
             <span class="chip-mode-badge ${s.delivery_mode}">${s.delivery_mode.toUpperCase()}</span>
             ${s.location ? `<span><i class="fa-solid fa-location-dot"></i> ${escapeHtml(s.location)}</span>` : ''}
-            ${s.travel_info ? `<span><i class="fa-solid fa-route"></i> ${escapeHtml(s.travel_info)}</span>` : ''}
           </div>
 
           ${s.tags && s.tags.length > 0 ? `
