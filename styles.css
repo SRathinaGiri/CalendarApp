@@ -2650,10 +2650,43 @@ input:focus, select:focus, textarea:focus {
     color: var(--text-muted);
   }
 
-  .portrait-agenda-actions {
-    display: flex;
-    align-items: center;
-    gap: 6px;
+  .portrait-agenda-add-btn {
+    background: var(--accent-blue) !important;
+    color: #ffffff !important;
+    border: none !important;
+    padding: 6px 14px !important;
+    font-size: 0.82rem !important;
+    font-weight: 600 !important;
+    border-radius: var(--radius-sm) !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+    cursor: pointer !important;
+    white-space: nowrap !important;
+    width: auto !important;
+    height: auto !important;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2) !important;
+    transition: all 0.15s ease !important;
+  }
+
+  .portrait-agenda-add-btn:hover {
+    background: #2563eb !important;
+    transform: translateY(-1px);
+  }
+
+  .portrait-sub-action-btn {
+    padding: 2px 8px !important;
+    font-size: 0.76rem !important;
+    font-weight: 600 !important;
+    border-radius: 4px !important;
+    cursor: pointer !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 4px !important;
+    width: auto !important;
+    height: auto !important;
+    background: transparent !important;
+    border: 1px solid currentColor !important;
   }
 
   .portrait-agenda-items {
@@ -2808,6 +2841,15 @@ input:focus, select:focus, textarea:focus {
   [data-theme="light"] .portrait-agenda-empty {
     background: #f8fafc !important;
     border-color: #cbd5e1 !important;
+  }
+
+  [data-theme="light"] .portrait-agenda-add-btn {
+    background: #2563eb !important;
+    color: #ffffff !important;
+  }
+
+  [data-theme="light"] .portrait-agenda-add-btn:hover {
+    background: #1d4ed8 !important;
   }
 }
 

@@ -112,7 +112,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.1.0';
+const APP_VERSION = 'v1.1.1';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -3056,14 +3056,6 @@ function createDayCell(dateStr, dayNum, isOtherMonth, schedules, dayOfWeekIdx, i
   const numSpan = document.createElement('span');
   numSpan.className = 'day-number';
   numSpan.textContent = dayNum;
-  numSpan.title = 'Click to open Day View';
-  numSpan.style.cursor = 'pointer';
-  numSpan.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const [y, m, d] = dateStr.split('-').map(Number);
-    const targetDate = new Date(y, m - 1, d);
-    switchToView('day', targetDate);
-  });
 
   const noteContent = dailyNotesMap ? dailyNotesMap[dateStr] : null;
   const hasNote = Boolean(noteContent);
@@ -3308,14 +3300,9 @@ function renderPortraitCalendarDayAgenda(dateStr) {
         </div>
         <div class="portrait-agenda-count">${daySchedules.length} Event${daySchedules.length === 1 ? '' : 's'}</div>
       </div>
-      <div class="portrait-agenda-actions">
-        <button type="button" class="btn-primary btn-xs" id="portraitAgendaAddBtn" title="Add Schedule for this Date">
-          <i class="fa-solid fa-plus"></i> Add Event
-        </button>
-        <button type="button" class="btn-secondary btn-xs" id="portraitAgendaDayViewBtn" title="Open Day View">
-          <i class="fa-solid fa-clock"></i> Day View
-        </button>
-      </div>
+      <button type="button" class="portrait-agenda-add-btn" id="portraitAgendaAddBtn" title="Add Schedule for this Date">
+        <i class="fa-solid fa-plus"></i> Add Schedule
+      </button>
     </div>
   `;
 
@@ -3324,7 +3311,7 @@ function renderPortraitCalendarDayAgenda(dateStr) {
       <div class="portrait-agenda-note-card">
         <div class="portrait-agenda-sub-header">
           <span style="font-weight:600; color:#fbbf24;"><i class="fa-solid fa-note-sticky"></i> Daily Diary Note</span>
-          <button type="button" class="btn-xs btn-ghost edit-note-btn" style="color:#fbbf24; cursor:pointer;"><i class="fa-solid fa-pen"></i> Edit</button>
+          <button type="button" class="portrait-sub-action-btn edit-note-btn" style="color:#fbbf24; cursor:pointer;"><i class="fa-solid fa-pen"></i> Edit</button>
         </div>
         <div class="portrait-agenda-note-text">${escapeHtml(noteContent)}</div>
       </div>
@@ -3336,7 +3323,7 @@ function renderPortraitCalendarDayAgenda(dateStr) {
       <div class="portrait-agenda-finance-card">
         <div class="portrait-agenda-sub-header">
           <span style="font-weight:600; color:#34d399;"><i class="fa-solid fa-coins"></i> Daily Finance</span>
-          <button type="button" class="btn-xs btn-ghost view-fin-btn" style="color:#34d399; cursor:pointer;"><i class="fa-solid fa-pen"></i> View/Edit</button>
+          <button type="button" class="portrait-sub-action-btn view-fin-btn" style="color:#34d399; cursor:pointer;"><i class="fa-solid fa-pen"></i> View</button>
         </div>
         <div class="portrait-agenda-fin-values" style="display:flex; gap:16px; font-size:0.86rem; margin-top:3px;">
           <span style="color:var(--receipt-color); font-weight:600;">Receipts: +₹${txnSummary.receipts.toFixed(2)}</span>
@@ -3404,11 +3391,10 @@ function renderPortraitCalendarDayAgenda(dateStr) {
   } else if (!noteContent && !hasFinance) {
     html += `
       <div class="portrait-agenda-empty">
-        <i class="fa-regular fa-calendar-check" style="font-size:2rem; color:var(--text-muted); opacity:0.6;"></i>
-        <div style="font-weight:600; color:var(--text-main); font-size:0.95rem;">No schedules for this day</div>
-        <div style="font-size:0.8rem; color:var(--text-muted);">Tap the button below or '+' to schedule an event.</div>
-        <button type="button" class="btn-primary btn-sm" id="portraitAgendaEmptyAddBtn" style="margin-top:8px;">
-          <i class="fa-solid fa-plus"></i> Add Event
+        <i class="fa-regular fa-calendar-check" style="font-size:1.8rem; color:var(--text-muted); opacity:0.6;"></i>
+        <div style="font-weight:600; color:var(--text-main); font-size:0.92rem;">No schedules for this day</div>
+        <button type="button" class="portrait-agenda-add-btn" id="portraitAgendaEmptyAddBtn" style="margin-top:6px;">
+          <i class="fa-solid fa-plus"></i> Add Schedule
         </button>
       </div>
     `;
@@ -3431,13 +3417,6 @@ function renderPortraitCalendarDayAgenda(dateStr) {
       selectedDates.clear();
       selectedDates.add(dateStr);
       openScheduleModal();
-    });
-  }
-
-  const dayViewBtn = container.querySelector('#portraitAgendaDayViewBtn');
-  if (dayViewBtn) {
-    dayViewBtn.addEventListener('click', () => {
-      switchToView('day', dObj);
     });
   }
 
