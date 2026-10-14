@@ -27,8 +27,9 @@ localStorage.setItem('srg_sync_provider', 'local');
 let serverApiUrl = '';
 let serverApiKey = '';
 
-// Tamil day of week mapping
-const TAMIL_DAYS = ['ஞாயிறு', 'திங்கள்', 'செவ்வாய்', 'புதன்', 'வியாழன்', 'வெள்ளி', 'சனி'];
+// English day of week mappings
+const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const DAY_NAMES_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 /* ==========================================================================
    0. TOAST NOTIFICATION SYSTEM & UTILITIES
@@ -2022,8 +2023,7 @@ function updateNavHeader() {
   if (currentView === 'day') {
     const dayOfWeek = dayNames[currentDate.getDay()];
     const indianDate = formatDateIndian(currentDate);
-    const tamilDay = TAMIL_DAYS[currentDate.getDay()];
-    document.getElementById('currentPeriodTitle').textContent = `${dayOfWeek}, ${indianDate} (${tamilDay})`;
+    document.getElementById('currentPeriodTitle').textContent = `${dayOfWeek}, ${indianDate}`;
   } else {
     document.getElementById('currentPeriodTitle').textContent = `${mName} ${yr}`;
   }
@@ -2878,8 +2878,7 @@ function renderPortraitMonthView() {
     const dateYmd = formatDateYMD(dObj);
     const isToday = (dateYmd === todayYmd);
     const indianDateStr = formatDateIndian(dObj);
-    const dayOfWeekStr = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][dObj.getDay()];
-    const tamilDayStr = TAMIL_DAYS[dObj.getDay()];
+    const dayOfWeekStr = DAY_NAMES_SHORT[dObj.getDay()];
 
     const tr = document.createElement('tr');
     tr.className = 'portrait-day-row';
@@ -2896,7 +2895,7 @@ function renderPortraitMonthView() {
     tdDate.title = 'Click to open Day View';
     tdDate.innerHTML = `
       <div class="portrait-day-cell-date">${indianDateStr} ${isToday ? '<span class="today-badge">TODAY</span>' : ''}</div>
-      <div class="portrait-day-cell-sub">${dayOfWeekStr} (${tamilDayStr})</div>
+      <div class="portrait-day-cell-sub">${dayOfWeekStr}</div>
     `;
     tdDate.addEventListener('click', () => {
       switchToView('day', dObj);
@@ -3065,14 +3064,13 @@ function createDayCell(dateStr, dayNum, isOtherMonth, schedules, dayOfWeekIdx, i
     openDailyFinanceModal(dateStr);
   });
 
-  const tamilSpan = document.createElement('span');
-  tamilSpan.className = 'day-tamil';
-  tamilSpan.textContent = TAMIL_DAYS[dayOfWeekIdx];
+  const actionsWrap = document.createElement('div');
+  actionsWrap.style.cssText = 'display:inline-flex; align-items:center; gap:2px; margin-left:auto;';
+  actionsWrap.appendChild(noteBtn);
+  actionsWrap.appendChild(financeBtn);
 
   header.appendChild(numSpan);
-  header.appendChild(noteBtn);
-  header.appendChild(financeBtn);
-  header.appendChild(tamilSpan);
+  header.appendChild(actionsWrap);
   cell.appendChild(header);
 
   const list = document.createElement('div');
@@ -3352,22 +3350,18 @@ function renderDayView() {
   if (!timeline) return;
   timeline.innerHTML = '';
 
-  const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  const dayName = dayNames[currentDate.getDay()];
+  const dayName = DAY_NAMES[currentDate.getDay()];
   const dateYmd = formatDateYMD(currentDate);
   const indianDate = formatDateIndian(currentDate);
-  const tamilDay = TAMIL_DAYS[currentDate.getDay()];
 
   // Update Day View Header UI
   const dayNameEl = document.getElementById('dayViewDayName');
   const fullDateEl = document.getElementById('dayViewFullDate');
-  const tamilEl = document.getElementById('dayViewTamil');
   const pickerInput = document.getElementById('dayViewDatePicker');
   const dayNoteBtn = document.getElementById('dayViewNoteBtn');
 
   if (dayNameEl) dayNameEl.textContent = dayName;
   if (fullDateEl) fullDateEl.textContent = indianDate;
-  if (tamilEl) tamilEl.textContent = tamilDay;
   if (pickerInput) pickerInput.value = dateYmd;
 
   const noteContent = getDailyNoteForDate(dateYmd);
@@ -3746,7 +3740,7 @@ function renderAgendaView(resetPagination = true, scrollDirection = 'center') {
     todayMarker.innerHTML = `
       <div class="agenda-card-date">
         <span class="agenda-day-str">${formatDateIndian(tObj)} <span class="today-badge">TODAY</span></span>
-        <span class="agenda-day-name">${TAMIL_DAYS[tObj.getDay()]} (${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][tObj.getDay()]})</span>
+        <span class="agenda-day-name">${DAY_NAMES[tObj.getDay()]}</span>
       </div>
       <div class="agenda-card-details" style="display:flex; align-items:center; gap:8px; color:var(--text-muted); font-size:0.86rem; padding:8px 0;">
         <i class="fa-solid fa-calendar-check" style="color:#10b981; font-size:1.15rem;"></i>
@@ -3778,7 +3772,7 @@ function renderAgendaView(resetPagination = true, scrollDirection = 'center') {
 
     const dObj = new Date(s.schedule_date + 'T00:00:00');
     const dStrIndian = formatDateIndian(s.schedule_date);
-    const dayTamil = TAMIL_DAYS[dObj.getDay()];
+    const dayOfWeek = DAY_NAMES[dObj.getDay()];
     const isToday = (s.schedule_date === todayYmd);
 
     if (isToday) {
@@ -3797,7 +3791,7 @@ function renderAgendaView(resetPagination = true, scrollDirection = 'center') {
     card.innerHTML = `
       <div class="agenda-card-date">
         <span class="agenda-day-str">${dStrIndian} ${isToday ? '<span class="today-badge">TODAY</span>' : ''}</span>
-        <span class="agenda-day-name">${dayTamil} (${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][dObj.getDay()]})</span>
+        <span class="agenda-day-name">${dayOfWeek}</span>
       </div>
       <div class="agenda-card-details">
         <div class="agenda-card-title">${escapeHtml(s.title)} ${s.group_id ? '<span class="badge-batch-group"><i class="fa-solid fa-layer-group"></i> Batch Group</span>' : ''}</div>
@@ -6926,7 +6920,6 @@ function renderFreeDaysReport(container, fromDate, toDate) {
       <thead>
         <tr style="background:var(--bg-tertiary); border-bottom:2px solid var(--border-color);">
           <th style="padding:10px;">Date & Day</th>
-          <th style="padding:10px;">Tamil Day</th>
           <th style="padding:10px;">Status / Remarks</th>
           <th style="padding:10px;">Location / In-Transit Place</th>
         </tr>
@@ -6936,8 +6929,7 @@ function renderFreeDaysReport(container, fromDate, toDate) {
 
   freeDays.forEach(f => {
     const dStrInd = formatDateIndian(f.dateYmd);
-    const dayOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][f.dateObj.getDay()];
-    const tamilDay = TAMIL_DAYS[f.dateObj.getDay()];
+    const dayOfWeek = DAY_NAMES_SHORT[f.dateObj.getDay()];
 
     let statusBadge = `<span style="color:var(--receipt-color); background:var(--badge-green-bg); border:1px solid var(--badge-green-border); padding:3px 8px; border-radius:4px; font-weight:600;">🟢 100% Free Day</span>`;
     if (f.hasTravelOnly) {
@@ -6947,7 +6939,6 @@ function renderFreeDaysReport(container, fromDate, toDate) {
     html += `
       <tr style="border-bottom:1px solid var(--border-color);">
         <td style="padding:10px; font-weight:600;">${dStrInd} (${dayOfWeek})</td>
-        <td style="padding:10px; color:var(--text-muted);">${tamilDay}</td>
         <td style="padding:10px;">${statusBadge}</td>
         <td style="padding:10px;">${f.travelPlace ? `📍 ${escapeHtml(f.travelPlace)}` : '-'}</td>
       </tr>

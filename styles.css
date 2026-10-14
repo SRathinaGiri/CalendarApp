@@ -669,13 +669,6 @@ button {
   justify-content: center;
 }
 
-.day-tamil {
-  font-size: 0.68rem;
-  color: var(--text-dim);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 
 /* SCHEDULE CHIPS INSIDE DAY CELL */
 .day-schedules-list {
@@ -862,11 +855,6 @@ button {
   border: 1px solid rgba(59, 130, 246, 0.3);
 }
 
-.day-view-tamil {
-  font-size: 0.95rem;
-  color: #94a3b8;
-  font-weight: 500;
-}
 
 .day-view-controls {
   display: flex;
@@ -3077,9 +3065,6 @@ input:focus, select:focus, textarea:focus {
   color: #0f172a;
 }
 
-[data-theme="light"] .day-tamil {
-  color: #475569;
-}
 
 /* Schedule Chips & Pills in Light Theme */
 [data-theme="light"] .day-note-btn {
@@ -3194,9 +3179,6 @@ input:focus, select:focus, textarea:focus {
   border: 1px solid #93c5fd !important;
 }
 
-[data-theme="light"] .day-view-tamil {
-  color: #475569 !important;
-}
 
 [data-theme="light"] .day-picker-label {
   color: #334155 !important;
