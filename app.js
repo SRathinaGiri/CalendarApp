@@ -112,7 +112,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.2.7';
+const APP_VERSION = 'v1.2.8';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -269,7 +269,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   const vBadge = document.getElementById('appVersionBadge');
   if (vBadge) vBadge.textContent = APP_VERSION;
   initAppTheme();
+  purgeLegacySessionAndDiskTokens();
   await purgeLegacyBiometricDiskTokens();
+  initAutoLockListeners();
   setupUIEventListeners();
   updateInstallButtonState();
   updateReminderUI();
@@ -621,6 +623,11 @@ function saveDbToIndexedDB(updateTimestamp = true) {
   return new Promise(async (resolve, reject) => {
     if (!db) return resolve();
     try {
+      if (!currentEncryptionKey) {
+        if (isPinConfigured()) {
+          throw new Error('Security Error: Refusing to save unencrypted database while PIN lock is configured.');
+        }
+      }
       const rawBytes = db.export();
       let bytesToStore = rawBytes;
       if (currentEncryptionKey) {
@@ -657,6 +664,10 @@ function loadDbFromIndexedDB() {
 async function saveLocalDbSnapshot(customLabel = null) {
   if (!db) return;
   try {
+    if (!currentEncryptionKey && isPinConfigured()) {
+      console.warn('Security Warning: Refusing to save snapshot without active encryption key.');
+      return;
+    }
     const idb = await openSRGDatabase();
     let binary = db.export();
     if (currentEncryptionKey) {
@@ -807,6 +818,9 @@ function extractCanonicalAttachmentId(filename) {
 async function saveAttachmentToIndexedDB(attId, dataBase64) {
   if (!attId || !dataBase64) return false;
   try {
+    if (!currentEncryptionKey && isPinConfigured()) {
+      throw new Error('Security Error: Refusing to save unencrypted attachment while PIN lock is configured.');
+    }
     let payload = dataBase64;
     if (currentEncryptionKey && typeof dataBase64 === 'string') {
       payload = await encryptAttachmentData(dataBase64, currentEncryptionKey);
@@ -2108,7 +2122,7 @@ function renderAgendaTagFilterDropdown() {
       label.className = `tag-filter-item ${isSelected ? 'active' : ''}`;
       label.innerHTML = `
         <input type="checkbox" ${isSelected ? 'checked' : ''} data-tag-id="${t.id}">
-        <span style="color:${t.color || 'inherit'}">${escapeHtml(t.name)}</span>
+        <span style="color:${sanitizeColor(t.color, 'inherit')}">${escapeHtml(t.name)}</span>
       `;
       const chk = label.querySelector('input');
       chk.addEventListener('change', (e) => {
@@ -2341,17 +2355,65 @@ function toggleAppTheme() {
    WEB CRYPTO (AES-256-GCM + PBKDF2) DATABASE & ATTACHMENT ENCRYPTION AT REST
    ========================================================================== */
 
-const CRYPTO_MAGIC = new Uint8Array([0x53, 0x52, 0x47, 0x45, 0x31]); // "SRGE1"
+const CRYPTO_MAGIC_V1 = new Uint8Array([0x53, 0x52, 0x47, 0x45, 0x31]); // "SRGE1" (Legacy v1, 100k iterations)
+const CRYPTO_MAGIC_V2 = new Uint8Array([0x53, 0x52, 0x47, 0x45, 0x32]); // "SRGE2" (Modern v2, 600k iterations + iteration count in header)
+const CRYPTO_MAGIC = CRYPTO_MAGIC_V2; // Active magic for all new encryptions
 const ATTACHMENT_CRYPTO_MAGIC = new Uint8Array([0x53, 0x52, 0x47, 0x41, 0x54, 0x54, 0x31]); // "SRGATT1"
-const PBKDF2_ITERATIONS = 100000;
+const PBKDF2_ITERATIONS = 600000; // OWASP recommendation for PBKDF2-HMAC-SHA256
+const PBKDF2_LEGACY_ITERATIONS = 100000;
 let currentEncryptionKey = null;
 
 function isEncryptedDbBytes(bytes) {
   if (!bytes || bytes.length < 33) return false;
-  for (let i = 0; i < CRYPTO_MAGIC.length; i++) {
-    if (bytes[i] !== CRYPTO_MAGIC[i]) return false;
+  // Check SRGE2 (Header: MAGIC (5) + ITERATIONS (4) + SALT (16) + IV (12) = 37 bytes)
+  let isV2 = true;
+  for (let i = 0; i < CRYPTO_MAGIC_V2.length; i++) {
+    if (bytes[i] !== CRYPTO_MAGIC_V2[i]) { isV2 = false; break; }
   }
-  return true;
+  if (isV2 && bytes.length >= 37) return true;
+
+  // Check SRGE1 (Header: MAGIC (5) + SALT (16) + IV (12) = 33 bytes)
+  let isV1 = true;
+  for (let i = 0; i < CRYPTO_MAGIC_V1.length; i++) {
+    if (bytes[i] !== CRYPTO_MAGIC_V1[i]) { isV1 = false; break; }
+  }
+  return isV1;
+}
+
+function parseEncryptedDbHeader(bytes) {
+  if (!bytes || !isEncryptedDbBytes(bytes)) return null;
+
+  let isV2 = true;
+  for (let i = 0; i < CRYPTO_MAGIC_V2.length; i++) {
+    if (bytes[i] !== CRYPTO_MAGIC_V2[i]) { isV2 = false; break; }
+  }
+
+  if (isV2) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const iterations = view.getUint32(CRYPTO_MAGIC_V2.length, false) || PBKDF2_ITERATIONS;
+    const saltStart = CRYPTO_MAGIC_V2.length + 4; // 9
+    const ivStart = saltStart + 16; // 25
+    const cipherStart = ivStart + 12; // 37
+    return {
+      version: 2,
+      iterations: iterations,
+      salt: bytes.slice(saltStart, ivStart),
+      iv: bytes.slice(ivStart, cipherStart),
+      ciphertext: bytes.slice(cipherStart)
+    };
+  }
+
+  // Legacy V1 (SRGE1)
+  const saltStart = CRYPTO_MAGIC_V1.length; // 5
+  const ivStart = saltStart + 16; // 21
+  const cipherStart = ivStart + 12; // 33
+  return {
+    version: 1,
+    iterations: PBKDF2_LEGACY_ITERATIONS,
+    salt: bytes.slice(saltStart, ivStart),
+    iv: bytes.slice(ivStart, cipherStart),
+    ciphertext: bytes.slice(cipherStart)
+  };
 }
 
 function isEncryptedAttachmentBytes(data) {
@@ -2387,12 +2449,10 @@ function base64ToBuffer(b64) {
   return bytes;
 }
 
-// Extract salt directly from database bytes header (MAGIC (5) + SALT (16) + ...)
+// Extract salt directly from database bytes header
 function extractSaltFromEncryptedDbBytes(bytes) {
-  if (!bytes || !isEncryptedDbBytes(bytes)) return null;
-  const saltStart = CRYPTO_MAGIC.length;
-  const ivStart = saltStart + 16;
-  return bytes.slice(saltStart, ivStart);
+  const parsed = parseEncryptedDbHeader(bytes);
+  return parsed ? parsed.salt : null;
 }
 
 // Get stored crypto salt with multi-tier fallback:
@@ -2453,25 +2513,57 @@ function storeCryptoSalt(saltBytes) {
   }
 }
 
-async function deriveKeyFromPin(pin, salt) {
+async function deriveKeyFromPin(pin, salt, iterations = PBKDF2_ITERATIONS, extractable = false) {
   const enc = new TextEncoder();
   const keyMaterial = await crypto.subtle.importKey(
     'raw',
     enc.encode(pin),
     'PBKDF2',
     false,
-    ['deriveKey']
+    ['deriveKey', 'deriveBits']
   );
   return await crypto.subtle.deriveKey(
     {
       name: 'PBKDF2',
       salt: salt,
-      iterations: PBKDF2_ITERATIONS,
+      iterations: iterations,
       hash: 'SHA-256'
     },
     keyMaterial,
     { name: 'AES-GCM', length: 256 },
-    true,
+    extractable,
+    ['encrypt', 'decrypt']
+  );
+}
+
+async function deriveRawKeyBitsFromPin(pin, salt, iterations = PBKDF2_ITERATIONS) {
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(pin),
+    'PBKDF2',
+    false,
+    ['deriveBits']
+  );
+  const bits = await crypto.subtle.deriveBits(
+    {
+      name: 'PBKDF2',
+      salt: salt,
+      iterations: iterations,
+      hash: 'SHA-256'
+    },
+    keyMaterial,
+    256
+  );
+  return new Uint8Array(bits);
+}
+
+async function importRuntimeAesGcmKey(rawKeyBytes) {
+  return await crypto.subtle.importKey(
+    'raw',
+    rawKeyBytes,
+    { name: 'AES-GCM' },
+    false, // strictly non-extractable runtime key!
     ['encrypt', 'decrypt']
   );
 }
@@ -2542,14 +2634,14 @@ async function getStoredAuthVerificationTokenBytes() {
 async function verifyPinWithAuthToken(pin) {
   if (!pin) return false;
   const dbBytes = cachedEncryptedDbBytes || await loadDbFromIndexedDB();
-  const salt = (dbBytes && isEncryptedDbBytes(dbBytes))
-    ? extractSaltFromEncryptedDbBytes(dbBytes)
-    : await getEffectiveCryptoSalt(dbBytes);
+  const parsed = dbBytes && isEncryptedDbBytes(dbBytes) ? parseEncryptedDbHeader(dbBytes) : null;
+  const salt = parsed ? parsed.salt : await getEffectiveCryptoSalt(dbBytes);
+  const iterations = parsed ? parsed.iterations : PBKDF2_ITERATIONS;
 
   if (!salt) return false;
 
   try {
-    const key = await deriveKeyFromPin(pin, salt);
+    const key = await deriveKeyFromPin(pin, salt, iterations, false);
 
     // Primary check: try auth verification token
     const tokenBytes = await getStoredAuthVerificationTokenBytes();
@@ -2582,7 +2674,7 @@ async function verifyPinWithAuthToken(pin) {
   return false;
 }
 
-async function encryptWithKeyAndSalt(rawBytes, key, salt) {
+async function encryptWithKeyAndSalt(rawBytes, key, salt, iterations = PBKDF2_ITERATIONS) {
   if (!key) throw new Error('No encryption key provided');
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ciphertextBuffer = await crypto.subtle.encrypt(
@@ -2592,12 +2684,14 @@ async function encryptWithKeyAndSalt(rawBytes, key, salt) {
   );
   const ciphertext = new Uint8Array(ciphertextBuffer);
 
-  // Packed layout: MAGIC (5) + SALT (16) + IV (12) + CIPHERTEXT
-  const packed = new Uint8Array(CRYPTO_MAGIC.length + salt.length + iv.length + ciphertext.length);
-  packed.set(CRYPTO_MAGIC, 0);
-  packed.set(salt, CRYPTO_MAGIC.length);
-  packed.set(iv, CRYPTO_MAGIC.length + salt.length);
-  packed.set(ciphertext, CRYPTO_MAGIC.length + salt.length + iv.length);
+  // Packed V2 layout: MAGIC (5) + ITERATIONS (4 bytes BE) + SALT (16) + IV (12) + CIPHERTEXT
+  const packed = new Uint8Array(CRYPTO_MAGIC_V2.length + 4 + salt.length + iv.length + ciphertext.length);
+  packed.set(CRYPTO_MAGIC_V2, 0);
+  const view = new DataView(packed.buffer, packed.byteOffset, packed.byteLength);
+  view.setUint32(CRYPTO_MAGIC_V2.length, iterations, false);
+  packed.set(salt, CRYPTO_MAGIC_V2.length + 4);
+  packed.set(iv, CRYPTO_MAGIC_V2.length + 4 + salt.length);
+  packed.set(ciphertext, CRYPTO_MAGIC_V2.length + 4 + salt.length + iv.length);
   return packed;
 }
 
@@ -2610,7 +2704,7 @@ async function encryptDatabaseBytes(rawBytes) {
     salt = crypto.getRandomValues(new Uint8Array(16));
     storeCryptoSalt(salt);
   }
-  return await encryptWithKeyAndSalt(rawBytes, currentEncryptionKey, salt);
+  return await encryptWithKeyAndSalt(rawBytes, currentEncryptionKey, salt, PBKDF2_ITERATIONS);
 }
 
 async function decryptDatabaseBytes(encryptedBytes, pinOrKey, setActiveKey = false) {
@@ -2618,17 +2712,15 @@ async function decryptDatabaseBytes(encryptedBytes, pinOrKey, setActiveKey = fal
     return encryptedBytes;
   }
 
-  const saltStart = CRYPTO_MAGIC.length;
-  const ivStart = saltStart + 16;
-  const cipherStart = ivStart + 12;
-
-  const salt = encryptedBytes.slice(saltStart, ivStart);
-  const iv = encryptedBytes.slice(ivStart, cipherStart);
-  const ciphertext = encryptedBytes.slice(cipherStart);
+  const parsed = parseEncryptedDbHeader(encryptedBytes);
+  if (!parsed) {
+    throw new Error('Invalid or corrupted database encryption header');
+  }
+  const { salt, iv, ciphertext, iterations, version } = parsed;
 
   let key = null;
   if (typeof pinOrKey === 'string') {
-    key = await deriveKeyFromPin(pinOrKey, salt);
+    key = await deriveKeyFromPin(pinOrKey, salt, iterations, false);
   } else if (pinOrKey instanceof CryptoKey) {
     key = pinOrKey;
   } else {
@@ -2644,6 +2736,25 @@ async function decryptDatabaseBytes(encryptedBytes, pinOrKey, setActiveKey = fal
   if (setActiveKey) {
     currentEncryptionKey = key;
     storeCryptoSalt(salt);
+  }
+
+  // If this database was encrypted under legacy V1 (SRGE1, 100k iterations),
+  // seamlessly upgrade it to V2 (SRGE2, 600k iterations)
+  if (version === 1 && typeof pinOrKey === 'string') {
+    setTimeout(async () => {
+      try {
+        console.info('Upgrading database encryption from SRGE1 (100k) to SRGE2 (600k iterations)...');
+        const newSalt = crypto.getRandomValues(new Uint8Array(16));
+        const newKey = await deriveKeyFromPin(pinOrKey, newSalt, PBKDF2_ITERATIONS, false);
+        currentEncryptionKey = newKey;
+        storeCryptoSalt(newSalt);
+        await saveDbToIndexedDB(false);
+        await createAuthVerificationToken(newKey, newSalt);
+        console.info('✓ Successfully upgraded database encryption to SRGE2 (600k iterations)!');
+      } catch(upErr) {
+        console.warn('Background encryption upgrade notice:', upErr);
+      }
+    }, 1000);
   }
 
   return new Uint8Array(decryptedBuffer);
@@ -2704,40 +2815,96 @@ async function decryptAttachmentData(storedVal, key = currentEncryptionKey) {
   return new TextDecoder().decode(decryptedBuffer);
 }
 
-async function persistKeyToSession(key) {
-  try {
-    const raw = await crypto.subtle.exportKey('raw', key);
-    sessionStorage.setItem('srg_session_key', bufferToBase64(raw));
-    sessionStorage.setItem('srg_app_unlocked', 'true');
-  } catch(e) {}
+/* ==========================================================================
+   AUTO-LOCK AND PIN ATTEMPT THROTTLING SECURITY
+   ========================================================================== */
+const AUTO_LOCK_IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes inactivity
+let autoLockTimer = null;
+let lastUserActivityTime = Date.now();
+let failedPinAttempts = 0;
+let pinThrottleUntil = 0;
+
+function checkPinThrottle() {
+  const now = Date.now();
+  if (now < pinThrottleUntil) {
+    const remainingSec = Math.ceil((pinThrottleUntil - now) / 1000);
+    return `Too many failed attempts. Please wait ${remainingSec} second${remainingSec > 1 ? 's' : ''}.`;
+  }
+  return null;
 }
 
-async function restoreKeyFromSession() {
-  const b64 = sessionStorage.getItem('srg_session_key');
-  if (!b64) return null;
-  try {
-    const raw = base64ToBuffer(b64);
-    return await crypto.subtle.importKey(
-      'raw',
-      raw,
-      { name: 'AES-GCM' },
-      true,
-      ['encrypt', 'decrypt']
-    );
-  } catch(e) {
-    return null;
+function recordFailedPinAttempt() {
+  failedPinAttempts++;
+  if (failedPinAttempts >= 3) {
+    let delaySec = 3;
+    if (failedPinAttempts === 4) delaySec = 10;
+    else if (failedPinAttempts >= 5) delaySec = 30;
+    pinThrottleUntil = Date.now() + (delaySec * 1000);
   }
 }
 
-// Purge legacy biometric disk tokens and plaintext recovery key from disk
-async function purgeLegacyBiometricDiskTokens() {
+function recordSuccessfulPinAttempt() {
+  failedPinAttempts = 0;
+  pinThrottleUntil = 0;
+}
+
+function resetAutoLockTimer() {
+  lastUserActivityTime = Date.now();
+  if (autoLockTimer) {
+    clearTimeout(autoLockTimer);
+    autoLockTimer = null;
+  }
+  if (isAppUnlocked) {
+    autoLockTimer = setTimeout(() => {
+      if (isAppUnlocked) {
+        lockAppSecurity();
+        showToast('App automatically locked due to inactivity (5 min)', 'info', 4000);
+      }
+    }, AUTO_LOCK_IDLE_TIMEOUT_MS);
+  }
+}
+
+function initAutoLockListeners() {
+  const activityEvents = ['pointerdown', 'keydown', 'touchstart', 'mousemove', 'scroll'];
+  let throttled = false;
+  activityEvents.forEach(evt => {
+    window.addEventListener(evt, () => {
+      if (!throttled) {
+        throttled = true;
+        resetAutoLockTimer();
+        setTimeout(() => { throttled = false; }, 2000);
+      }
+    }, { passive: true });
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      if (isAppUnlocked) {
+        const elapsed = Date.now() - lastUserActivityTime;
+        if (elapsed >= AUTO_LOCK_IDLE_TIMEOUT_MS) {
+          lockAppSecurity();
+        }
+      }
+    } else if (document.visibilityState === 'visible') {
+      if (isAppUnlocked) {
+        const elapsed = Date.now() - lastUserActivityTime;
+        if (elapsed >= AUTO_LOCK_IDLE_TIMEOUT_MS) {
+          lockAppSecurity();
+          showToast('App locked while tab was in background', 'info', 3000);
+        } else {
+          resetAutoLockTimer();
+        }
+      }
+    }
+  });
+}
+
+// Purge legacy session key and plaintext tokens from browser storage
+function purgeLegacySessionAndDiskTokens() {
+  sessionStorage.removeItem('srg_session_key');
   localStorage.removeItem('srg_bio_salt');
   localStorage.removeItem('srg_recovery_key_display');
-  try {
-    const idb = await openSRGDatabase();
-    const tx = idb.transaction('files', 'readwrite');
-    tx.objectStore('files').delete('srg_bio_key_token');
-  } catch(e) {}
+  localStorage.removeItem('srg_user_recovery_email');
 }
 
 async function removeBiometricEncryptionKey() {
@@ -2758,8 +2925,9 @@ function isPinConfigured() {
 }
 
 /* ==========================================================================
-   BIOMETRIC AUTHENTICATION (WEBAUTHN PLATFORM SENSOR - SESSION RE-AUTH)
+   BIOMETRIC AUTHENTICATION (WEBAUTHN PRF HARDWARE-BOUND KEY WRAPPING)
    ========================================================================== */
+const BIO_TOKEN_MAGIC = new Uint8Array([0x53, 0x52, 0x47, 0x42, 0x49, 0x4F, 0x31]); // "SRGBIO1" (7 bytes)
 
 async function isBiometricAvailable() {
   if (window.PublicKeyCredential && 
@@ -2778,17 +2946,16 @@ function updateBiometricUI() {
   const bioPrompt = document.getElementById('enableBiometricPrompt');
   const drawerBioText = document.getElementById('drawerBioText') || document.getElementById('drawerBiometricText');
   const isEnabled = localStorage.getItem('srg_biometric_enabled') === 'true';
-  const hasSessionKey = !!sessionStorage.getItem('srg_session_key');
 
   isBiometricAvailable().then(available => {
     if (bioContainer) {
-      bioContainer.classList.toggle('hidden', !(available && isEnabled && hasSessionKey));
+      bioContainer.classList.toggle('hidden', !(available && isEnabled));
     }
     if (bioPrompt) {
       bioPrompt.classList.toggle('hidden', !(available && !isEnabled));
     }
     if (drawerBioText) {
-      drawerBioText.textContent = isEnabled ? 'Biometrics: Enabled' : 'Enable Biometrics';
+      drawerBioText.textContent = isEnabled ? 'Biometrics: Enabled (Hardware PRF)' : 'Enable Biometrics';
     }
   });
 }
@@ -2803,12 +2970,26 @@ async function registerBiometricCredential() {
     return false;
   }
 
-  const loadingToast = showToast('Scan fingerprint or face to register...', 'info', 0);
+  const enteredPin = prompt('Enter your Security PIN to link hardware-bound biometric unlock:');
+  if (!enteredPin) return false;
+
+  const dbBytes = cachedEncryptedDbBytes || await loadDbFromIndexedDB();
+  const parsed = dbBytes && isEncryptedDbBytes(dbBytes) ? parseEncryptedDbHeader(dbBytes) : null;
+  const salt = parsed ? parsed.salt : await getEffectiveCryptoSalt(dbBytes);
+  const iterations = parsed ? parsed.iterations : PBKDF2_ITERATIONS;
+
+  const isValidPin = await verifyPinWithAuthToken(enteredPin);
+  if (!isValidPin) {
+    showToast('Incorrect Security PIN. Biometric setup cancelled.', 'error', 4000);
+    return false;
+  }
+
+  const rawMasterBytes = await deriveRawKeyBitsFromPin(enteredPin, salt, iterations);
+
+  const loadingToast = showToast('Scan fingerprint or face to register hardware authenticator...', 'info', 0);
   try {
-    const challenge = new Uint8Array(16);
-    crypto.getRandomValues(challenge);
-    const userId = new Uint8Array(8);
-    crypto.getRandomValues(userId);
+    const challenge = crypto.getRandomValues(new Uint8Array(16));
+    const userId = crypto.getRandomValues(new Uint8Array(8));
 
     const cred = await navigator.credentials.create({
       publicKey: {
@@ -2827,22 +3008,92 @@ async function registerBiometricCredential() {
           authenticatorAttachment: 'platform',
           userVerification: 'required'
         },
-        timeout: 60000
+        timeout: 60000,
+        extensions: {
+          prf: {}
+        }
       }
     });
 
     if (loadingToast) dismissToast(loadingToast);
 
-    if (cred && cred.rawId) {
-      const credIdBase64 = btoa(String.fromCharCode(...new Uint8Array(cred.rawId)));
-      localStorage.setItem('srg_biometric_cred_id', credIdBase64);
-      localStorage.setItem('srg_biometric_enabled', 'true');
-      showToast('✓ Biometric unlock enabled for active sessions!', 'success', 4000);
-      updateBiometricUI();
-      return true;
+    const extResults = cred.getClientExtensionResults ? cred.getClientExtensionResults() : {};
+    const prfSupported = !!(extResults.prf && extResults.prf.enabled);
+
+    if (!prfSupported) {
+      rawMasterBytes.fill(0);
+      showToast('Notice: This authenticator does not support WebAuthn PRF (hardware-bound key wrapping). For your security, unlock using your PIN.', 'warning', 7000);
+      return false;
     }
+
+    // Authenticator supports PRF: evaluate PRF to derive wrapping key
+    const prfSalt = crypto.getRandomValues(new Uint8Array(32));
+    const assertion = await navigator.credentials.get({
+      publicKey: {
+        challenge: crypto.getRandomValues(new Uint8Array(16)),
+        allowCredentials: [{
+          id: cred.rawId,
+          type: 'public-key'
+        }],
+        userVerification: 'required',
+        timeout: 60000,
+        extensions: {
+          prf: {
+            eval: {
+              first: prfSalt
+            }
+          }
+        }
+      }
+    });
+
+    const prfOutput = assertion.getClientExtensionResults()?.prf?.results?.first;
+    if (!prfOutput || prfOutput.byteLength !== 32) {
+      rawMasterBytes.fill(0);
+      throw new Error('Failed to retrieve PRF hardware key from authenticator.');
+    }
+
+    const prfWrapKey = await crypto.subtle.importKey(
+      'raw',
+      prfOutput,
+      { name: 'AES-GCM' },
+      false,
+      ['encrypt', 'decrypt']
+    );
+
+    const bioIv = crypto.getRandomValues(new Uint8Array(12));
+    const cipherBuf = await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv: bioIv },
+      prfWrapKey,
+      rawMasterBytes
+    );
+    rawMasterBytes.fill(0); // Zero memory immediately
+
+    const cipher = new Uint8Array(cipherBuf);
+    const bioToken = new Uint8Array(BIO_TOKEN_MAGIC.length + prfSalt.length + bioIv.length + cipher.length);
+    bioToken.set(BIO_TOKEN_MAGIC, 0);
+    bioToken.set(prfSalt, BIO_TOKEN_MAGIC.length);
+    bioToken.set(bioIv, BIO_TOKEN_MAGIC.length + prfSalt.length);
+    bioToken.set(cipher, BIO_TOKEN_MAGIC.length + prfSalt.length + bioIv.length);
+
+    // Save hardware-wrapped token in IndexedDB 'files' store
+    const idb = await openSRGDatabase();
+    await new Promise((resolve, reject) => {
+      const tx = idb.transaction('files', 'readwrite');
+      tx.objectStore('files').put(bioToken, 'srg_bio_key_token');
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+
+    const credIdBase64 = bufferToBase64(new Uint8Array(cred.rawId));
+    localStorage.setItem('srg_biometric_cred_id', credIdBase64);
+    localStorage.setItem('srg_biometric_enabled', 'true');
+    showToast('✓ Hardware-bound biometric unlock enabled via WebAuthn PRF!', 'success', 4000);
+    updateBiometricUI();
+    return true;
   } catch(err) {
     if (loadingToast) dismissToast(loadingToast);
+    rawMasterBytes.fill(0);
     console.warn('Biometric registration error:', err);
     if (err.name !== 'NotAllowedError') {
       showToast('Could not register biometrics: ' + err.message, 'error', 4000);
@@ -2860,20 +3111,45 @@ async function unlockAppWithBiometric(autoPrompt = false) {
     return;
   }
 
-  const sessionKey = await restoreKeyFromSession();
-  if (!sessionKey) {
+  // Load hardware-wrapped bioToken from IndexedDB
+  let bioToken = null;
+  try {
+    const idb = await openSRGDatabase();
+    const tx = idb.transaction('files', 'readonly');
+    const store = tx.objectStore('files');
+    const req = store.get('srg_bio_key_token');
+    const res = await new Promise((resolve) => {
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    });
+    if (res instanceof Uint8Array) bioToken = res;
+    else if (res instanceof ArrayBuffer) bioToken = new Uint8Array(res);
+  } catch(e) {}
+
+  if (!bioToken || bioToken.length < BIO_TOKEN_MAGIC.length + 32 + 12 + 16) {
     if (!autoPrompt) {
-      showToast('Session expired: Please enter your Security PIN to unlock.', 'info', 4000);
+      showToast('Biometric hardware token not found. Please enter Security PIN.', 'info', 4000);
       const keyInp = document.getElementById('appLockKeyInput');
       if (keyInp) keyInp.focus();
     }
     return;
   }
 
+  // Verify magic
+  for (let i = 0; i < BIO_TOKEN_MAGIC.length; i++) {
+    if (bioToken[i] !== BIO_TOKEN_MAGIC[i]) {
+      if (!autoPrompt) showToast('Incompatible biometric token. Please enter Security PIN.', 'warning', 4000);
+      return;
+    }
+  }
+
+  const prfSalt = bioToken.slice(BIO_TOKEN_MAGIC.length, BIO_TOKEN_MAGIC.length + 32);
+  const bioIv = bioToken.slice(BIO_TOKEN_MAGIC.length + 32, BIO_TOKEN_MAGIC.length + 32 + 12);
+  const cipher = bioToken.slice(BIO_TOKEN_MAGIC.length + 32 + 12);
+
   try {
-    const rawId = Uint8Array.from(atob(credIdBase64), c => c.charCodeAt(0));
-    const challenge = new Uint8Array(16);
-    crypto.getRandomValues(challenge);
+    const rawId = base64ToBuffer(credIdBase64);
+    const challenge = crypto.getRandomValues(new Uint8Array(16));
 
     const assertion = await navigator.credentials.get({
       publicKey: {
@@ -2883,37 +3159,65 @@ async function unlockAppWithBiometric(autoPrompt = false) {
           type: 'public-key'
         }],
         userVerification: 'required',
-        timeout: 60000
+        timeout: 60000,
+        extensions: {
+          prf: {
+            eval: {
+              first: prfSalt
+            }
+          }
+        }
       }
     });
 
-    if (assertion) {
-      const bytesToDecrypt = cachedEncryptedDbBytes || await loadDbFromIndexedDB();
-      if (bytesToDecrypt) {
-        const decryptedBytes = await decryptDatabaseBytes(bytesToDecrypt, sessionKey, true);
-        db = new SQL.Database(decryptedBytes);
-        ensureSchemaUpToDate();
-      }
-
-      currentEncryptionKey = sessionKey;
-      sessionStorage.setItem('srg_app_unlocked', 'true');
-
-      isAppUnlocked = true;
-      const overlay = document.getElementById('appLockOverlay');
-      if (overlay) overlay.classList.add('hidden');
-      const errEl = document.getElementById('appLockErrorMsg');
-      if (errEl) errEl.classList.add('hidden');
-
-      loadMasterDataFromDb();
-      populateTitlesDatalist();
-      switchToView(currentView, currentDate);
-
-      updateBadge('Local SQLite Active');
-      showToast('✓ Unlocked with Biometrics!', 'success', 3000);
-
-      // Post-unlock migration of legacy attachments if any
-      migratePlaintextAttachmentsToEncrypted(sessionKey);
+    const prfOutput = assertion.getClientExtensionResults()?.prf?.results?.first;
+    if (!prfOutput || prfOutput.byteLength !== 32) {
+      throw new Error('Authenticator did not return PRF key.');
     }
+
+    const prfWrapKey = await crypto.subtle.importKey(
+      'raw',
+      prfOutput,
+      { name: 'AES-GCM' },
+      false,
+      ['decrypt']
+    );
+
+    const decryptedMasterBuf = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: bioIv },
+      prfWrapKey,
+      cipher
+    );
+    const rawMasterBytes = new Uint8Array(decryptedMasterBuf);
+
+    // Import strictly non-extractable runtime master key
+    const masterKey = await importRuntimeAesGcmKey(rawMasterBytes);
+    rawMasterBytes.fill(0); // Zero memory
+
+    const bytesToDecrypt = cachedEncryptedDbBytes || await loadDbFromIndexedDB();
+    if (bytesToDecrypt) {
+      const decryptedBytes = await decryptDatabaseBytes(bytesToDecrypt, masterKey, true);
+      db = new SQL.Database(decryptedBytes);
+      ensureSchemaUpToDate();
+    }
+
+    currentEncryptionKey = masterKey;
+    isAppUnlocked = true;
+    resetAutoLockTimer();
+    recordSuccessfulPinAttempt();
+
+    const overlay = document.getElementById('appLockOverlay');
+    if (overlay) overlay.classList.add('hidden');
+    const errEl = document.getElementById('appLockErrorMsg');
+    if (errEl) errEl.classList.add('hidden');
+
+    loadMasterDataFromDb();
+    populateTitlesDatalist();
+    switchToView(currentView, currentDate);
+
+    updateBadge('Local SQLite Active');
+    showToast('✓ Unlocked via Hardware Biometrics (PRF)!', 'success', 3000);
+    migratePlaintextAttachmentsToEncrypted(masterKey);
   } catch(err) {
     console.warn('Biometric verification error:', err);
     if (!autoPrompt && err.name !== 'NotAllowedError') {
@@ -2953,29 +3257,9 @@ async function checkAppSecurityLock() {
     return;
   }
 
-  // Case 2: Returning user with an active session in this tab
-  const sessionKey = await restoreKeyFromSession();
-  if (sessionKey) {
-    try {
-      const bytesToDecrypt = cachedEncryptedDbBytes || await loadDbFromIndexedDB();
-      if (bytesToDecrypt) {
-        const decryptedBytes = await decryptDatabaseBytes(bytesToDecrypt, sessionKey, true);
-        db = new SQL.Database(decryptedBytes);
-        ensureSchemaUpToDate();
-      }
-      currentEncryptionKey = sessionKey;
-      isAppUnlocked = true;
-      overlay.classList.add('hidden');
-      updateBadge('Local SQLite Active');
-      migratePlaintextAttachmentsToEncrypted(sessionKey);
-      return;
-    } catch(e) {
-      console.warn('Session decryption failed, showing lock screen:', e);
-    }
-  }
-
-  // Case 3: Returning user locked (new session or explicit lock)
+  // Case 2: Returning user (show lock screen with PIN input and optional biometric hardware unlock)
   isAppUnlocked = false;
+  purgeLegacySessionAndDiskTokens();
   overlay.classList.remove('hidden');
   if (setupWrap) setupWrap.classList.add('hidden');
   if (unlockWrap) unlockWrap.classList.remove('hidden');
@@ -2987,7 +3271,7 @@ async function checkAppSecurityLock() {
     keyInp.focus();
   }
 
-  // Auto-prompt biometrics if registered
+  // Auto-prompt biometrics if registered with hardware PRF
   if (localStorage.getItem('srg_biometric_enabled') === 'true') {
     setTimeout(() => unlockAppWithBiometric(true), 400);
   }
@@ -3024,22 +3308,21 @@ async function handleSetupPinSubmit(e) {
   try {
     const salt = crypto.getRandomValues(new Uint8Array(16));
     storeCryptoSalt(salt);
-    const key = await deriveKeyFromPin(pin1, salt);
-    currentEncryptionKey = key;
 
-    await createAuthVerificationToken(key, salt);
-    await persistKeyToSession(key);
-
-    // Save optional recovery email if provided
-    const emailInput = document.getElementById('setupEmailInput');
-    const userEmail = emailInput ? emailInput.value.trim() : '';
-    if (userEmail) {
-      localStorage.setItem('srg_user_recovery_email', userEmail);
-    }
+    // Derive raw master bytes for recovery vault creation
+    const rawMasterBytes = await deriveRawKeyBitsFromPin(pin1, salt, PBKDF2_ITERATIONS);
 
     // Generate and securely vault Emergency Recovery Key
     const recoveryKey = generateRecoveryKey();
-    await saveRecoveryVault(key, recoveryKey);
+    await saveRecoveryVault(rawMasterBytes, recoveryKey);
+
+    // Import strictly non-extractable runtime key and wipe raw bytes
+    currentEncryptionKey = await importRuntimeAesGcmKey(rawMasterBytes);
+    rawMasterBytes.fill(0); // Zero memory
+
+    await createAuthVerificationToken(currentEncryptionKey, salt);
+    resetAutoLockTimer();
+    purgeLegacySessionAndDiskTokens();
 
     localStorage.setItem('srg_app_pin_configured', 'true');
     localStorage.removeItem('srg_app_pin'); // Purge legacy plaintext PIN
@@ -3102,6 +3385,15 @@ async function unlockAppWithKey(enteredKey) {
   const trimmedKey = (enteredKey || '').trim();
   const errEl = document.getElementById('appLockErrorMsg');
 
+  const throttleMsg = checkPinThrottle();
+  if (throttleMsg) {
+    if (errEl) {
+      errEl.textContent = throttleMsg;
+      errEl.classList.remove('hidden');
+    }
+    return;
+  }
+
   if (!trimmedKey) {
     if (errEl) {
       errEl.textContent = 'Please enter your Security PIN';
@@ -3123,20 +3415,16 @@ async function unlockAppWithKey(enteredKey) {
       throw new Error('Database not found');
     }
 
-    // Authoritative salt derived directly from encrypted database header
-    let salt = null;
-    if (isEncryptedDbBytes(bytesToDecrypt)) {
-      salt = extractSaltFromEncryptedDbBytes(bytesToDecrypt);
-    }
-    if (!salt) {
-      salt = await getEffectiveCryptoSalt(bytesToDecrypt);
-    }
+    const parsed = isEncryptedDbBytes(bytesToDecrypt) ? parseEncryptedDbHeader(bytesToDecrypt) : null;
+    let salt = parsed ? parsed.salt : await getEffectiveCryptoSalt(bytesToDecrypt);
+    const iterations = parsed ? parsed.iterations : PBKDF2_ITERATIONS;
 
     if (!salt && isEncryptedDbBytes(bytesToDecrypt)) {
       throw new Error('Security configuration missing or database header corrupted.');
     }
 
-    const key = salt ? await deriveKeyFromPin(trimmedKey, salt) : null;
+    // Derive strictly non-extractable runtime key
+    const key = salt ? await deriveKeyFromPin(trimmedKey, salt, iterations, false) : null;
     const decryptedBytes = await decryptDatabaseBytes(bytesToDecrypt, key || trimmedKey, true);
     db = new SQL.Database(decryptedBytes);
     ensureSchemaUpToDate();
@@ -3145,9 +3433,12 @@ async function unlockAppWithKey(enteredKey) {
     if (salt) {
       try { storeCryptoSalt(salt); } catch(e) {}
     }
-    await persistKeyToSession(key);
 
     isAppUnlocked = true;
+    recordSuccessfulPinAttempt();
+    resetAutoLockTimer();
+    purgeLegacySessionAndDiskTokens();
+
     const overlay = document.getElementById('appLockOverlay');
     if (overlay) overlay.classList.add('hidden');
     if (errEl) errEl.classList.add('hidden');
@@ -3165,7 +3456,7 @@ async function unlockAppWithKey(enteredKey) {
       isBiometricAvailable().then(available => {
         if (available) {
           setTimeout(() => {
-            if (confirm('Enable fingerprint / biometric unlock on this device for instant access?')) {
+            if (confirm('Enable fingerprint / biometric unlock on this device with hardware key wrapping (WebAuthn PRF)?')) {
               registerBiometricCredential();
             }
           }, 600);
@@ -3173,12 +3464,14 @@ async function unlockAppWithKey(enteredKey) {
       });
     }
   } catch(err) {
+    recordFailedPinAttempt();
     console.warn('Decryption / PIN authentication failed:', err);
+    const currentThrottle = checkPinThrottle();
     if (errEl) {
-      errEl.textContent = 'Incorrect Security PIN. Decryption failed.';
+      errEl.textContent = currentThrottle || 'Incorrect Security PIN. Decryption failed.';
       errEl.classList.remove('hidden');
     }
-    showToast('❌ Authentication Failed: Invalid PIN', 'error', 3000);
+    showToast(currentThrottle || '❌ Authentication Failed: Invalid PIN', 'error', 3000);
     const keyInp = document.getElementById('appLockKeyInput');
     if (keyInp) {
       keyInp.value = '';
@@ -3195,10 +3488,13 @@ async function unlockAppWithKey(enteredKey) {
 async function lockAppSecurity() {
   isAppUnlocked = false;
   sessionStorage.removeItem('srg_app_unlocked');
-  if (localStorage.getItem('srg_biometric_enabled') !== 'true') {
-    sessionStorage.removeItem('srg_session_key');
-  }
+  sessionStorage.removeItem('srg_session_key'); // Unconditionally wipe!
   currentEncryptionKey = null;
+
+  if (autoLockTimer) {
+    clearTimeout(autoLockTimer);
+    autoLockTimer = null;
+  }
 
   // Close plaintext database in memory
   if (db) {
@@ -3234,7 +3530,9 @@ async function lockAppSecurity() {
    EMERGENCY RECOVERY KIT & FORGOT PIN / PASSPHRASE RECOVERY VAULT
    ========================================================================== */
 
-const RECOVERY_MAGIC = new Uint8Array([0x53, 0x52, 0x47, 0x52, 0x45, 0x43, 0x31]); // "SRGREC1" (7 bytes)
+const RECOVERY_MAGIC_V1 = new Uint8Array([0x53, 0x52, 0x47, 0x52, 0x45, 0x43, 0x31]); // "SRGREC1" (Legacy v1, 100k)
+const RECOVERY_MAGIC_V2 = new Uint8Array([0x53, 0x52, 0x47, 0x52, 0x45, 0x43, 0x32]); // "SRGREC2" (Modern v2, 600k)
+const RECOVERY_MAGIC = RECOVERY_MAGIC_V2;
 
 // Generate a high-entropy 20-character formatted Recovery Key: SRG-XXXX-XXXX-XXXX-XXXX
 function generateRecoveryKey() {
@@ -3258,7 +3556,7 @@ function normalizeRecoveryKey(rawKey) {
 }
 
 // Derive a 256-bit AES-GCM wrapping key from normalized recovery key using PBKDF2
-async function deriveRecoveryWrappingKey(normalizedKey, salt) {
+async function deriveRecoveryWrappingKey(normalizedKey, salt, iterations = PBKDF2_ITERATIONS) {
   const enc = new TextEncoder();
   const keyMaterial = await crypto.subtle.importKey(
     'raw',
@@ -3271,7 +3569,7 @@ async function deriveRecoveryWrappingKey(normalizedKey, salt) {
     {
       name: 'PBKDF2',
       salt: salt,
-      iterations: PBKDF2_ITERATIONS,
+      iterations: iterations,
       hash: 'SHA-256'
     },
     keyMaterial,
@@ -3282,14 +3580,24 @@ async function deriveRecoveryWrappingKey(normalizedKey, salt) {
 }
 
 // Build encrypted recovery vault packed bytes in memory protecting raw master key
-async function buildRecoveryVaultPackedBytes(masterKey, recoveryKey) {
-  if (!masterKey || !recoveryKey) {
+async function buildRecoveryVaultPackedBytes(masterKeyOrRawBytes, recoveryKey) {
+  if (!masterKeyOrRawBytes || !recoveryKey) {
     throw new Error('Master key and recovery key are required to construct recovery vault.');
   }
-  const rawMasterBytes = await crypto.subtle.exportKey('raw', masterKey);
+  let rawMasterBytes = null;
+  if (masterKeyOrRawBytes instanceof CryptoKey) {
+    rawMasterBytes = new Uint8Array(await crypto.subtle.exportKey('raw', masterKeyOrRawBytes));
+  } else if (masterKeyOrRawBytes instanceof Uint8Array) {
+    rawMasterBytes = masterKeyOrRawBytes;
+  } else if (masterKeyOrRawBytes instanceof ArrayBuffer) {
+    rawMasterBytes = new Uint8Array(masterKeyOrRawBytes);
+  } else {
+    throw new Error('Invalid master key format for recovery vault');
+  }
+
   const normalized = normalizeRecoveryKey(recoveryKey);
   const salt = crypto.getRandomValues(new Uint8Array(16));
-  const wrapKey = await deriveRecoveryWrappingKey(normalized, salt);
+  const wrapKey = await deriveRecoveryWrappingKey(normalized, salt, PBKDF2_ITERATIONS);
   const iv = crypto.getRandomValues(new Uint8Array(12));
 
   const cipherBuf = await crypto.subtle.encrypt(
@@ -3300,17 +3608,17 @@ async function buildRecoveryVaultPackedBytes(masterKey, recoveryKey) {
   const ciphertext = new Uint8Array(cipherBuf);
 
   // Layout: MAGIC (7) + SALT (16) + IV (12) + CIPHERTEXT (48)
-  const packed = new Uint8Array(RECOVERY_MAGIC.length + salt.length + iv.length + ciphertext.length);
-  packed.set(RECOVERY_MAGIC, 0);
-  packed.set(salt, RECOVERY_MAGIC.length);
-  packed.set(iv, RECOVERY_MAGIC.length + salt.length);
-  packed.set(ciphertext, RECOVERY_MAGIC.length + salt.length + iv.length);
+  const packed = new Uint8Array(RECOVERY_MAGIC_V2.length + salt.length + iv.length + ciphertext.length);
+  packed.set(RECOVERY_MAGIC_V2, 0);
+  packed.set(salt, RECOVERY_MAGIC_V2.length);
+  packed.set(iv, RECOVERY_MAGIC_V2.length + salt.length);
+  packed.set(ciphertext, RECOVERY_MAGIC_V2.length + salt.length + iv.length);
   return packed;
 }
 
 // Save encrypted recovery vault protecting raw master key
-async function saveRecoveryVault(masterKey, recoveryKey) {
-  const packed = await buildRecoveryVaultPackedBytes(masterKey, recoveryKey);
+async function saveRecoveryVault(masterKeyOrRawBytes, recoveryKey) {
+  const packed = await buildRecoveryVaultPackedBytes(masterKeyOrRawBytes, recoveryKey);
 
   // Persist directly to primary storage in IndexedDB 'files' store first
   const idb = await openSRGDatabase();
@@ -3356,7 +3664,7 @@ async function getStoredRecoveryVaultBytes() {
   return null;
 }
 
-// Unwrap master database CryptoKey using Recovery Key
+// Unwrap raw master database bytes using Recovery Key
 async function unwrapMasterKeyWithRecoveryKey(inputRecoveryKey) {
   const normalized = normalizeRecoveryKey(inputRecoveryKey);
   if (!normalized || normalized.length < 16) {
@@ -3364,18 +3672,30 @@ async function unwrapMasterKeyWithRecoveryKey(inputRecoveryKey) {
   }
 
   const packed = await getStoredRecoveryVaultBytes();
-  if (!packed || packed.length < RECOVERY_MAGIC.length + 16 + 12 + 16) {
+  if (!packed || packed.length < 7 + 16 + 12 + 16) {
     throw new Error('No valid recovery vault found on this device');
   }
 
-  // Verify RECOVERY_MAGIC
-  for (let i = 0; i < RECOVERY_MAGIC.length; i++) {
-    if (packed[i] !== RECOVERY_MAGIC[i]) {
-      throw new Error('Corrupt or incompatible recovery vault format');
+  let isV2 = true;
+  for (let i = 0; i < RECOVERY_MAGIC_V2.length; i++) {
+    if (packed[i] !== RECOVERY_MAGIC_V2[i]) { isV2 = false; break; }
+  }
+  let isV1 = false;
+  if (!isV2) {
+    isV1 = true;
+    for (let i = 0; i < RECOVERY_MAGIC_V1.length; i++) {
+      if (packed[i] !== RECOVERY_MAGIC_V1[i]) { isV1 = false; break; }
     }
   }
 
-  const saltStart = RECOVERY_MAGIC.length;
+  if (!isV1 && !isV2) {
+    throw new Error('Corrupt or incompatible recovery vault format');
+  }
+
+  const magicLength = isV2 ? RECOVERY_MAGIC_V2.length : RECOVERY_MAGIC_V1.length;
+  const iterations = isV2 ? PBKDF2_ITERATIONS : PBKDF2_LEGACY_ITERATIONS;
+
+  const saltStart = magicLength;
   const ivStart = saltStart + 16;
   const cipherStart = ivStart + 12;
 
@@ -3383,20 +3703,14 @@ async function unwrapMasterKeyWithRecoveryKey(inputRecoveryKey) {
   const iv = packed.slice(ivStart, cipherStart);
   const ciphertext = packed.slice(cipherStart);
 
-  const wrapKey = await deriveRecoveryWrappingKey(normalized, salt);
+  const wrapKey = await deriveRecoveryWrappingKey(normalized, salt, iterations);
   const rawMasterBytes = await crypto.subtle.decrypt(
     { name: 'AES-GCM', iv: iv },
     wrapKey,
     ciphertext
   );
 
-  return await crypto.subtle.importKey(
-    'raw',
-    rawMasterBytes,
-    { name: 'AES-GCM' },
-    true,
-    ['encrypt', 'decrypt']
-  );
+  return new Uint8Array(rawMasterBytes);
 }
 
 // UI: Open Emergency Recovery Kit Modal
@@ -3430,7 +3744,7 @@ async function copyRecoveryKeyToClipboard() {
   }
 }
 
-// UI: Download Recovery Key as a text file
+// UI: Download Recovery Key as a text file (Safe generic filename without key leak)
 function downloadRecoveryKeyFile() {
   const display = document.getElementById('recoveryKeyDisplay');
   const key = display ? display.textContent.trim() : '';
@@ -3452,7 +3766,7 @@ function downloadRecoveryKeyFile() {
     '',
     `Generated On:   ${timestamp} (UTC)`,
     `App Version:    ${APP_VERSION}`,
-    `Encryption:     Zero-Knowledge AES-256-GCM + PBKDF2 (100,000 iterations)`,
+    `Encryption:     Private Client-Side AES-256-GCM + PBKDF2 (600,000 iterations)`,
     '',
     'HOW TO RESTORE YOUR ACCESS:',
     '1. Open Calendar App on this device.',
@@ -3471,7 +3785,7 @@ function downloadRecoveryKeyFile() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `CalendarApp-Recovery-Key-${key.replace(/[^A-Z0-9]/g, '')}.txt`;
+  a.download = 'CalendarApp-Recovery-Kit.txt'; // Generic safe filename (no key in filename)
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -3479,19 +3793,23 @@ function downloadRecoveryKeyFile() {
   showToast('✓ Recovery Kit file downloaded successfully!', 'success', 3000);
 }
 
-// UI: Email Recovery Key to user via mailto
+// UI: Email Recovery Key to user via mailto with security advisory
 function emailRecoveryKey() {
   const display = document.getElementById('recoveryKeyDisplay');
   const key = display ? display.textContent.trim() : '';
   if (!key) return;
 
-  const savedEmail = localStorage.getItem('srg_user_recovery_email') || '';
-  const recipient = prompt('Enter the email address to receive your Emergency Recovery Kit:', savedEmail);
+  const proceed = confirm(
+    'SECURITY WARNING:\n\n' +
+    'Sending your Emergency Recovery Key via unencrypted email may expose it to email providers, mail servers, and intermediaries.\n\n' +
+    'For maximum security, we recommend downloading or printing the Recovery Kit file instead.\n\n' +
+    'Do you still want to proceed with opening your email client?'
+  );
+  if (!proceed) return;
+
+  const recipient = prompt('Enter the email address to receive your Emergency Recovery Kit:');
   if (recipient === null) return; // user cancelled
   const trimmedRecipient = recipient.trim();
-  if (trimmedRecipient) {
-    localStorage.setItem('srg_user_recovery_email', trimmedRecipient);
-  }
 
   const subject = encodeURIComponent('Calendar App - My Emergency Recovery Key');
   const bodyText = [
@@ -3574,15 +3892,17 @@ async function handleForgotPinResetSubmit(e) {
   }
 
   try {
-    // 1. Unwrap the master key from the vault using the recovery key
-    const recoveredMasterKey = await unwrapMasterKeyWithRecoveryKey(inputRecoveryKey);
-    if (!recoveredMasterKey) {
+    // 1. Unwrap the raw master key from the vault using the recovery key
+    const recoveredRawMasterBytes = await unwrapMasterKeyWithRecoveryKey(inputRecoveryKey);
+    if (!recoveredRawMasterBytes) {
       throw new Error('Could not unwrap encryption key with the provided Recovery Key.');
     }
+    const recoveredMasterKey = await importRuntimeAesGcmKey(recoveredRawMasterBytes);
 
     // 2. Load the encrypted database from IndexedDB if not currently in memory
     const encryptedBytes = cachedEncryptedDbBytes || await loadDbFromIndexedDB();
     if (!encryptedBytes) {
+      recoveredRawMasterBytes.fill(0);
       throw new Error('No calendar database found on this device to recover.');
     }
 
@@ -3593,17 +3913,26 @@ async function handleForgotPinResetSubmit(e) {
 
     // 4. Derive fresh master key and salt from the new PIN
     const newSalt = crypto.getRandomValues(new Uint8Array(16));
-    const newMasterKey = await deriveKeyFromPin(newPin, newSalt);
+    const newRawMasterBytes = await deriveRawKeyBitsFromPin(newPin, newSalt, PBKDF2_ITERATIONS);
 
-    // 5. Generate a new Emergency Recovery Key and atomically re-encrypt snapshots, attachments, database, and recovery vault
+    // 5. Generate a new Emergency Recovery Key and build replacement vault
     const newRecoveryKey = generateRecoveryKey();
-    const reencryptResult = await atomicReencryptAllData(recoveredMasterKey, newMasterKey, newSalt, newRecoveryKey);
+    const stagedVaultBytes = await buildRecoveryVaultPackedBytes(newRawMasterBytes, newRecoveryKey);
+
+    // Import strictly non-extractable runtime key and wipe raw bytes
+    const newMasterKey = await importRuntimeAesGcmKey(newRawMasterBytes);
+    newRawMasterBytes.fill(0); // Zero memory
+    recoveredRawMasterBytes.fill(0); // Zero memory
+
+    // Atomically re-encrypt snapshots, attachments, database, and recovery vault
+    const reencryptResult = await atomicReencryptAllData(recoveredMasterKey, newMasterKey, newSalt, null, stagedVaultBytes);
     const packedVault = reencryptResult ? reencryptResult.stagedVaultBytes : null;
     const packedAuthToken = reencryptResult ? reencryptResult.stagedAuthTokenBytes : null;
 
-    // 6. Commit new security configuration in memory and update session
+    // 6. Commit new security configuration in memory
     currentEncryptionKey = newMasterKey;
-    await persistKeyToSession(newMasterKey);
+    resetAutoLockTimer();
+    purgeLegacySessionAndDiskTokens();
 
     // Update localStorage secondary caches safely (IndexedDB is already committed atomically)
     try {
@@ -3676,7 +4005,7 @@ function closeAboutModal() {
    ATOMIC RE-ENCRYPTION UTILITY
    ========================================================================== */
 // Atomically stages, validates, and re-encrypts all snapshots, attachments, active database, and recovery vault
-async function atomicReencryptAllData(oldKey, newKey, newSalt, recoveryKey = null) {
+async function atomicReencryptAllData(oldKey, newKey, newSalt, recoveryKey = null, prebuiltVaultBytes = null) {
   if (!oldKey || !newKey || !newSalt) {
     throw new Error('Missing encryption parameters for atomic re-encryption');
   }
@@ -3794,9 +4123,9 @@ async function atomicReencryptAllData(oldKey, newKey, newSalt, recoveryKey = nul
     }
   }
 
-  // 4. Stage and verify replacement recovery vault if recoveryKey provided
-  let stagedVaultBytes = null;
-  if (recoveryKey) {
+  // 4. Stage and verify replacement recovery vault if provided
+  let stagedVaultBytes = prebuiltVaultBytes;
+  if (!stagedVaultBytes && recoveryKey) {
     stagedVaultBytes = await buildRecoveryVaultPackedBytes(newKey, recoveryKey);
   }
 
@@ -3906,19 +4235,32 @@ async function handleChangePinSubmit(e) {
   }
 
   try {
-    const oldKey = currentEncryptionKey || (await deriveKeyFromPin(currentPin, getStoredCryptoSalt()));
+    let oldKey = currentEncryptionKey;
+    if (!oldKey) {
+      const storedSalt = await getEffectiveCryptoSalt();
+      if (!storedSalt) throw new Error('Could not retrieve encryption salt to verify current PIN.');
+      oldKey = await deriveKeyFromPin(currentPin, storedSalt);
+    }
     const newSalt = crypto.getRandomValues(new Uint8Array(16));
-    const newKey = await deriveKeyFromPin(newPin, newSalt);
+    const newRawMasterBytes = await deriveRawKeyBitsFromPin(newPin, newSalt, PBKDF2_ITERATIONS);
 
-    // Generate replacement Emergency Recovery Key and perform atomic multi-store re-encryption
+    // Generate replacement Emergency Recovery Key and build replacement vault
     const newRecoveryKey = generateRecoveryKey();
-    const reencryptResult = await atomicReencryptAllData(oldKey, newKey, newSalt, newRecoveryKey);
+    const stagedVaultBytes = await buildRecoveryVaultPackedBytes(newRawMasterBytes, newRecoveryKey);
+
+    // Import strictly non-extractable runtime key and wipe raw bytes
+    const newKey = await importRuntimeAesGcmKey(newRawMasterBytes);
+    newRawMasterBytes.fill(0); // Zero sensitive memory immediately
+
+    // Perform atomic multi-store re-encryption
+    const reencryptResult = await atomicReencryptAllData(oldKey, newKey, newSalt, null, stagedVaultBytes);
     const packedVault = reencryptResult ? reencryptResult.stagedVaultBytes : null;
     const packedAuthToken = reencryptResult ? reencryptResult.stagedAuthTokenBytes : null;
 
-    // Update in-memory active key
+    // Update in-memory active key (non-extractable)
     currentEncryptionKey = newKey;
-    await persistKeyToSession(newKey);
+    resetAutoLockTimer();
+    purgeLegacySessionAndDiskTokens();
 
     // Update localStorage secondary caches safely (IndexedDB is already committed atomically)
     try {
@@ -5710,6 +6052,24 @@ function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
 }
 
+function sanitizeColor(val, fallback = '#3b82f6') {
+  if (!val || typeof val !== 'string') return fallback;
+  const trimmed = val.trim();
+  // Safe hex (#rgb, #rrggbb, #rrggbbaa)
+  if (/^#([0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(trimmed)) {
+    return trimmed;
+  }
+  // Safe rgb/rgba/hsl/hsla functions
+  if (/^(rgb|hsl)a?\(\s*[\d.%\s,]+\)$/i.test(trimmed)) {
+    return trimmed;
+  }
+  // Safe named css colors
+  if (/^[a-zA-Z]{3,20}$/.test(trimmed)) {
+    return trimmed;
+  }
+  return fallback;
+}
+
 /* ==========================================================================
    6. SCHEDULE MODAL (ADD / EDIT / GROUP / TRAVEL TRANSIT / ATTACHMENTS)
    ========================================================================== */
@@ -5975,7 +6335,7 @@ function renderTagPickerInModal() {
     const catName = document.createElement('span');
     catName.className = 'picker-category-name';
     catName.textContent = cat.name;
-    catName.style.color = cat.color || '#94a3b8';
+    catName.style.color = sanitizeColor(cat.color, '#94a3b8');
 
     const addTagBtn = document.createElement('button');
     addTagBtn.type = 'button';
@@ -5999,7 +6359,7 @@ function renderTagPickerInModal() {
       const tagBtn = document.createElement('div');
       tagBtn.className = 'tag-selectable';
       tagBtn.textContent = t.name;
-      tagBtn.style.setProperty('--tag-color', t.color || '#3b82f6');
+      tagBtn.style.setProperty('--tag-color', sanitizeColor(t.color, '#3b82f6'));
 
       if (activeModalSelectedTagIds.has(t.id)) {
         tagBtn.classList.add('selected');
@@ -6207,7 +6567,7 @@ async function extractTextFromPdf(arrayBuffer) {
 
   try {
     pdfjsLib.GlobalWorkerOptions.workerSrc = './pdf.worker.min.js';
-    const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+    const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer, isEvalSupported: false });
     const pdf = await loadingTask.promise;
     const allTokens = [];
 
@@ -7285,7 +7645,7 @@ function renderTagMasterUI() {
     li.className = 'category-item-li';
     if (cat.id === activeMasterCatId) li.classList.add('active');
 
-    li.innerHTML = `<i class="fa-solid fa-circle" style="color:${cat.color || '#3b82f6'}; font-size:0.6rem;"></i> ${escapeHtml(cat.name)}`;
+    li.innerHTML = `<i class="fa-solid fa-circle" style="color:${sanitizeColor(cat.color, '#3b82f6')}; font-size:0.6rem;"></i> ${escapeHtml(cat.name)}`;
     li.addEventListener('click', () => {
       activeMasterCatId = cat.id;
       renderTagMasterUI();
@@ -7309,7 +7669,7 @@ function renderTagMasterUI() {
     tagChip.style.alignItems = 'center';
     tagChip.style.gap = '6px';
     tagChip.innerHTML = `
-      <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:${t.color || '#3b82f6'};"></span>
+      <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:${sanitizeColor(t.color, '#3b82f6')};"></span>
       ${escapeHtml(t.name)}
       <i class="fa-solid fa-xmark" style="font-size:0.75rem; margin-left:4px; opacity:0.7;" title="Delete tag"></i>
     `;
@@ -8678,7 +9038,8 @@ function openScheduleDetailsModal(s) {
     const tagsItem = document.createElement('div');
     tagsItem.className = 'schedule-detail-item';
     const tagBadges = s.tags.map(t => {
-      const bg = t.color ? t.color + '40' : 'rgba(255,255,255,0.1)';
+      const safeColor = sanitizeColor(t.color, '#3b82f6');
+      const bg = safeColor.startsWith('#') && safeColor.length === 7 ? safeColor + '40' : 'rgba(59,130,246,0.25)';
       return `<span class="chip-tag-pill" style="background:${bg}; font-size:0.75rem; padding:3px 8px; border-radius:4px;">${escapeHtml(t.name)}</span>`;
     }).join(' ');
     tagsItem.innerHTML = `
@@ -9383,7 +9744,7 @@ async function renderPdfArrayBufferToImage(arrayBuffer) {
   if (typeof pdfjsLib === 'undefined' || !arrayBuffer) return null;
   try {
     pdfjsLib.GlobalWorkerOptions.workerSrc = './pdf.worker.min.js';
-    const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+    const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer, isEvalSupported: false });
     const pdf = await loadingTask.promise;
     if (pdf.numPages === 0) return null;
 
