@@ -1,9 +1,9 @@
-# Calendar App (Offline PWA) v1.1.3
+# Calendar App (Offline PWA) v1.1.4
 
-A standalone, local-first Personal Calendar & Daily Organizer Progressive Web App (PWA) powered by client-side **SQLite (WASM)** and **IndexedDB** local storage.
+A standalone, local-first Personal Calendar & Daily Organizer Progressive Web App (PWA) powered by client-side **SQLite (WASM)** and **IndexedDB** local storage with **AES-256-GCM hardware-accelerated encryption at rest**.
 
-> **Production PWA (v1.1.3)**  
-> Fully client-side, local-first calendar with ACID SQLite storage, verified SHA-256 backup archives, and offline capabilities.
+> **Production PWA (v1.1.4)**  
+> Fully client-side, local-first calendar with ACID SQLite storage, Web Crypto AES-256-GCM encryption at rest, verified SHA-256 backup archives, and offline capabilities.
 
 ---
 
@@ -11,18 +11,20 @@ A standalone, local-first Personal Calendar & Daily Organizer Progressive Web Ap
 
 - **Local-First & Offline Architecture:** Calendar data and attachments are stored exclusively on your device in IndexedDB. All assets including SQLite WASM (`sql.js`), PDF.js, and workers are bundled locally so core features work 100% offline once installed or cached.
 - **Embedded SQLite WASM Engine (`sql.js`):** Embedded relational database providing SQL queries, atomic transaction guarantees on schedule saves, and direct `.db` file exports.
+- **Hardware-Accelerated AES-256-GCM Database Encryption at Rest:**
+  - Transparently encrypts the SQLite database and snapshots stored in browser IndexedDB with authenticated **AES-256-GCM**.
+  - Keys derived via **PBKDF2** (100,000 iterations, SHA-256) with cryptographic salts from the user's private PIN.
+  - Interactive first-time PIN setup prompts the user to choose their own Security PIN (no hardcoded defaults).
+  - Fast **Fingerprint & Face ID** biometric unlock on supported mobile and desktop devices via WebAuthn.
+  - Zero-knowledge architecture: data is encrypted exclusively inside your device browser and never sent to any server.
 - **IndexedDB Persistence (`SRGCalendarDB`):** Automatically persists edits, schedules, daily notes, financial entries, and file attachments in browser storage.
 - **Atomic 1-Click Complete Backup & Restore (`.zip`):**
   - **Full Export:** Creates an archive containing your SQLite database, an integrity manifest, and deduplicated ticket attachments (PDFs & images) verified with SHA-256 fingerprints.
   - **Atomic Restore:** Pre-validates the archive and stages all attachments before activating the new database. Automatically rolls back to the previous database if restoration fails.
-- **Local Snapshots:** Save named database safety snapshots in browser storage anytime.
-- **Convenience Screen Lock & Biometrics:**
-  - Fast **Fingerprint & Face ID** biometric unlock on supported mobile and desktop browsers via WebAuthn Platform Authenticator.
-  - 4-digit PIN lock fallback (Default PIN: `1234`).
-  - *Note:* The screen lock is a UI access gate designed for casual privacy; data at rest is not encrypted. We recommend enabling device-level encryption (BitLocker, FileVault, or mobile device passcode/biometrics).
+- **Local Snapshots:** Save named encrypted database safety snapshots in browser storage anytime.
 - **PWA (Progressive Web App):**
   - Installable directly to home screen or desktop from Chrome, Edge, Safari, or Brave.
-  - Version-scoped Service Worker cache cleanup (`v1.1.3`).
+  - Version-scoped Service Worker cache cleanup (`v1.1.4`).
   - In-app install and check for updates buttons.
 - **Comprehensive Calendar Views:**
   - **Calendar View:** 7-column month grid. In portrait mode, uniform square day cells with center indicator badges and a bottom day schedule agenda panel maximize usability. Long-pressing any day initiates multi-date selection for batch scheduling with single-tap date addition/removal. In landscape mode, full titles, times, and notes are shown.

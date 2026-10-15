@@ -41,7 +41,7 @@
               <div class="brand-logo">
                 <i class="fa-solid fa-calendar-days"></i>
               </div>
-              <span class="brand-name">Calendar App <small id="appVersionBadge" style="font-size:0.7rem; font-weight:600; color:#38bdf8; background:rgba(56,189,248,0.15); padding:1px 5px; border-radius:4px; margin-left:3px;">v1.1.3</small></span>
+              <span class="brand-name">Calendar App <small id="appVersionBadge" style="font-size:0.7rem; font-weight:600; color:#38bdf8; background:rgba(56,189,248,0.15); padding:1px 5px; border-radius:4px; margin-left:3px;">v1.1.4</small></span>
             </div>
           </div>
 
@@ -131,7 +131,7 @@
           </div>
           <div class="brand-text">
             <span class="brand-name">Calendar App</span>
-            <span class="brand-badge" id="drawerVersionBadge">v1.1.3 &bull; Offline PWA</span>
+            <span class="brand-badge" id="drawerVersionBadge">v1.1.4 &bull; Encrypted Offline PWA</span>
           </div>
         </div>
         <button id="closeSideMenuBtn" class="btn-icon" title="Close Menu"><i class="fa-solid fa-xmark"></i></button>
@@ -148,7 +148,7 @@
               <div class="drawer-card-title" id="drawerInstallUpdateTitle">Install / Update App</div>
               <div class="drawer-card-desc" id="drawerInstallUpdateDesc">Install or check for updates</div>
             </div>
-            <span id="drawerInstallUpdateBadge" class="drawer-badge">v1.1.3</span>
+            <span id="drawerInstallUpdateBadge" class="drawer-badge">v1.1.4</span>
           </button>
         </div>
 
@@ -1068,7 +1068,7 @@
           </div>
           <h2 style="font-size: 1.45rem; font-weight: 700; margin-bottom: 4px; color: var(--text-main);">Calendar App</h2>
           <div style="display: inline-block; font-size: 0.8rem; font-weight: 600; color: #38bdf8; background: rgba(56,189,248,0.12); padding: 3px 10px; border-radius: 12px; margin-bottom: 16px; border: 1px solid rgba(56,189,248,0.3);">
-            Version <span id="aboutModalVersion">v1.1.3 (PWA)</span>
+            Version <span id="aboutModalVersion">v1.1.4 (PWA)</span>
           </div>
 
           <div style="background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 14px 16px; text-align: left; font-size: 0.88rem; line-height: 1.55; margin-bottom: 16px;">
@@ -1076,7 +1076,7 @@
               <strong>Calendar App</strong> is a standalone, single-device Progressive Web App featuring full offline scheduling (Month, 30-Day Portrait Table, Day, Agenda), travel transit tracking, daily notes, double-entry financial statements, and local attachment archives.
             </p>
             <p style="margin: 0; color: var(--text-muted); font-size: 0.83rem;">
-              Built with SQLite WASM and browser IndexedDB storage. Operates 100% offline on any device without requiring PHP or an external server.
+              Built with SQLite WASM and browser IndexedDB storage with hardware-accelerated Web Crypto AES-256 database encryption at rest. Operates 100% offline on any device without external servers.
             </p>
           </div>
 
@@ -1084,6 +1084,10 @@
             <div style="display: flex; justify-content: space-between;">
               <span><strong>Developer:</strong></span>
               <span style="color: var(--text-main); font-weight: 600;">S. Rathinagiri</span>
+            </div>
+            <div style="display: flex; justify-content: space-between;">
+              <span><strong>Security:</strong></span>
+              <span style="color: #38bdf8; font-weight: 600;">AES-256-GCM Encrypted at Rest</span>
             </div>
             <div style="display: flex; justify-content: space-between;">
               <span><strong>Storage:</strong></span>
@@ -1104,40 +1108,73 @@
       </div>
     </div>
 
-    <!-- FULL-SCREEN SECURITY ACCESS KEY LOCK -->
+    <!-- FULL-SCREEN SECURITY ACCESS KEY LOCK & FIRST-TIME SETUP -->
     <div id="appLockOverlay" class="modal-backdrop hidden" style="z-index: 10000; background: rgba(15, 23, 42, 0.98); backdrop-filter: blur(16px); display: flex; align-items: center; justify-content: center;">
-      <div class="modal-card" style="max-width: 400px; text-align: center; padding: 28px 22px; border: 1px solid var(--border-color);">
-        <div style="width: 58px; height: 58px; background: linear-gradient(135deg, #3b82f6, #6366f1); border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 1.7rem; color: #fff; margin-bottom: 14px; box-shadow: 0 4px 15px rgba(59, 130, 246, 0.4);">
-          <i class="fa-solid fa-shield-halved"></i>
-        </div>
-        <h3 style="font-size: 1.25rem; margin-bottom: 6px;">Calendar App Lock</h3>
-        <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 18px;">Screen Lock (Convenience Protection). Unlock using biometrics or your 4-digit PIN (default: 1234).</p>
+      <div class="modal-card" style="max-width: 410px; text-align: center; padding: 28px 22px; border: 1px solid var(--border-color);">
         
-        <!-- BIOMETRIC UNLOCK BUTTON -->
-        <div id="biometricUnlockContainer" class="hidden" style="margin-bottom: 16px;">
-          <button type="button" id="biometricUnlockBtn" class="btn-primary" style="width: 100%; justify-content: center; padding: 12px; font-size: 0.96rem; background: linear-gradient(135deg, #10b981, #059669); border: 1px solid #34d399; box-shadow: 0 4px 14px rgba(16, 185, 129, 0.35);">
-            <i class="fa-solid fa-fingerprint" style="font-size: 1.2rem;"></i> Unlock with Biometrics
-          </button>
-          <div style="display: flex; align-items: center; margin: 14px 0 8px; color: var(--text-dim); font-size: 0.76rem;">
-            <div style="flex: 1; height: 1px; background: var(--border-color);"></div>
-            <span style="padding: 0 10px;">or enter PIN</span>
-            <div style="flex: 1; height: 1px; background: var(--border-color);"></div>
+        <!-- 1. FIRST-TIME PIN SETUP CONTAINER -->
+        <div id="appLockSetupContainer" class="hidden">
+          <div style="width: 58px; height: 58px; background: linear-gradient(135deg, #10b981, #059669); border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 1.7rem; color: #fff; margin-bottom: 14px; box-shadow: 0 4px 15px rgba(16, 185, 129, 0.4);">
+            <i class="fa-solid fa-lock"></i>
           </div>
+          <h3 id="appLockSetupTitle" style="font-size: 1.25rem; margin-bottom: 6px;">Set Up Security PIN</h3>
+          <p id="appLockSetupDesc" style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 18px; line-height: 1.45;">
+            Choose a 4-to-8 digit PIN to encrypt and secure your calendar database locally with hardware-accelerated AES-256 encryption.
+          </p>
+          <form id="appSetupPinForm" style="display: flex; flex-direction: column; gap: 12px;">
+            <div class="form-group" style="text-align: left;">
+              <label for="setupNewPinInput" style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px; display: block;">Create Security PIN (Min 4 digits) *</label>
+              <input type="password" id="setupNewPinInput" inputmode="numeric" placeholder="Enter 4-8 digit PIN" required minlength="4" maxlength="8" autocomplete="new-password" style="width: 100%; box-sizing: border-box; padding: 12px; font-size: 1rem; text-align: center; border-radius: var(--radius-md); border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-main); font-family: inherit;">
+            </div>
+            <div class="form-group" style="text-align: left;">
+              <label for="setupConfirmPinInput" style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px; display: block;">Confirm Security PIN *</label>
+              <input type="password" id="setupConfirmPinInput" inputmode="numeric" placeholder="Re-enter your PIN" required minlength="4" maxlength="8" autocomplete="new-password" style="width: 100%; box-sizing: border-box; padding: 12px; font-size: 1rem; text-align: center; border-radius: var(--radius-md); border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-main); font-family: inherit;">
+            </div>
+            <div id="setupPinErrorMsg" style="color: #fb7185; font-size: 0.85rem;" class="hidden"></div>
+            <button type="submit" id="submitSetupPinBtn" class="btn-primary" style="width: 100%; justify-content: center; padding: 12px; font-size: 0.96rem; margin-top: 4px;">
+              <i class="fa-solid fa-shield-halved"></i> Set PIN & Encrypt Database
+            </button>
+          </form>
+          <p style="font-size: 0.76rem; color: var(--text-dim); margin-top: 14px; line-height: 1.4;">
+            🔒 Zero-knowledge: Your PIN encrypts the database directly in your browser. We never transmit or store your PIN on any server.
+          </p>
         </div>
 
-        <form id="appUnlockForm" style="display: flex; flex-direction: column; gap: 12px;">
-          <input type="password" id="appLockKeyInput" placeholder="Enter Access Key / PIN" required style="width: 100%; box-sizing: border-box; padding: 12px; font-size: 1rem; text-align: center; border-radius: var(--radius-md); border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-main); font-family: inherit;">
-          <button type="submit" class="btn-primary" style="width: 100%; justify-content: center; padding: 12px; font-size: 0.96rem;"><i class="fa-solid fa-key"></i> Unlock with PIN</button>
-        </form>
+        <!-- 2. RETURNING USER UNLOCK CONTAINER -->
+        <div id="appLockUnlockContainer">
+          <div style="width: 58px; height: 58px; background: linear-gradient(135deg, #3b82f6, #6366f1); border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 1.7rem; color: #fff; margin-bottom: 14px; box-shadow: 0 4px 15px rgba(59, 130, 246, 0.4);">
+            <i class="fa-solid fa-shield-halved"></i>
+          </div>
+          <h3 style="font-size: 1.25rem; margin-bottom: 6px;">Calendar App Locked</h3>
+          <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 18px;">Unlock using biometrics or your Security PIN to decrypt your calendar.</p>
+          
+          <!-- BIOMETRIC UNLOCK BUTTON -->
+          <div id="biometricUnlockContainer" class="hidden" style="margin-bottom: 16px;">
+            <button type="button" id="biometricUnlockBtn" class="btn-primary" style="width: 100%; justify-content: center; padding: 12px; font-size: 0.96rem; background: linear-gradient(135deg, #10b981, #059669); border: 1px solid #34d399; box-shadow: 0 4px 14px rgba(16, 185, 129, 0.35);">
+              <i class="fa-solid fa-fingerprint" style="font-size: 1.2rem;"></i> Unlock with Biometrics
+            </button>
+            <div style="display: flex; align-items: center; margin: 14px 0 8px; color: var(--text-dim); font-size: 0.76rem;">
+              <div style="flex: 1; height: 1px; background: var(--border-color);"></div>
+              <span style="padding: 0 10px;">or enter PIN</span>
+              <div style="flex: 1; height: 1px; background: var(--border-color);"></div>
+            </div>
+          </div>
 
-        <!-- Biometric Setup Button (visible if device supports sensor but not enrolled) -->
-        <div id="enableBiometricPrompt" class="hidden" style="margin-top: 14px;">
-          <button type="button" id="enableBiometricBtn" class="btn-ghost btn-sm" style="font-size: 0.8rem; color: #34d399; border: 1px dashed rgba(52, 211, 153, 0.4); width: 100%; justify-content: center; padding: 8px;">
-            <i class="fa-solid fa-fingerprint"></i> Set up Fingerprint / Face Unlock
-          </button>
+          <form id="appUnlockForm" style="display: flex; flex-direction: column; gap: 12px;">
+            <input type="password" id="appLockKeyInput" inputmode="numeric" placeholder="Enter Security PIN" required style="width: 100%; box-sizing: border-box; padding: 12px; font-size: 1rem; text-align: center; border-radius: var(--radius-md); border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-main); font-family: inherit;">
+            <button type="submit" class="btn-primary" style="width: 100%; justify-content: center; padding: 12px; font-size: 0.96rem;"><i class="fa-solid fa-key"></i> Unlock Calendar</button>
+          </form>
+
+          <!-- Biometric Setup Button (visible if device supports sensor but not enrolled) -->
+          <div id="enableBiometricPrompt" class="hidden" style="margin-top: 14px;">
+            <button type="button" id="enableBiometricBtn" class="btn-ghost btn-sm" style="font-size: 0.8rem; color: #34d399; border: 1px dashed rgba(52, 211, 153, 0.4); width: 100%; justify-content: center; padding: 8px;">
+              <i class="fa-solid fa-fingerprint"></i> Set up Fingerprint / Face Unlock
+            </button>
+          </div>
+
+          <div id="appLockErrorMsg" style="color: #fb7185; font-size: 0.85rem; margin-top: 10px;" class="hidden">Incorrect Security PIN. Access Denied.</div>
         </div>
 
-        <div id="appLockErrorMsg" style="color: #fb7185; font-size: 0.85rem; margin-top: 10px;" class="hidden">Incorrect Access Key. Access Denied.</div>
       </div>
     </div>
 

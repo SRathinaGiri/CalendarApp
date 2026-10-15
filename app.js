@@ -112,7 +112,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.1.3';
+const APP_VERSION = 'v1.1.4';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -274,9 +274,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   updateReminderUI();
   await initSqliteDatabase();
   await checkAppSecurityLock();
-  loadMasterDataFromDb();
-  populateTitlesDatalist();
-  switchToView(currentView, currentDate);
+  if (isAppUnlocked && db) {
+    loadMasterDataFromDb();
+    populateTitlesDatalist();
+    switchToView(currentView, currentDate);
+  }
 
   // Periodic reminder checking for events & travel
   checkUpcomingEventReminders();
@@ -298,6 +300,8 @@ document.addEventListener('DOMContentLoaded', async () => {
    1. SQLITE & WASM PERSISTENCE (PURE LOCAL SINGLE-DEVICE)
    ========================================================================== */
 
+let cachedEncryptedDbBytes = null;
+
 async function initSqliteDatabase() {
   updateBadge('Initializing DB...');
   try {
@@ -312,37 +316,35 @@ async function initSqliteDatabase() {
       });
     }
 
-    const cachedDbBytes = await loadDbFromIndexedDB();
-    if (cachedDbBytes) {
-      db = new SQL.Database(cachedDbBytes);
-      ensureSchemaUpToDate();
-    } else {
-      // First run: Try loading bundled SRG_Calendar.db if available
-      let loadedFromBundle = false;
-      try {
-        const resp = await fetch('SRG_Calendar.db');
-        if (resp.ok) {
-          const buf = await resp.arrayBuffer();
-          if (buf && buf.byteLength > 0) {
-            db = new SQL.Database(new Uint8Array(buf));
-            ensureSchemaUpToDate();
-            await saveDbToIndexedDB(false);
-            loadedFromBundle = true;
-            console.log('Initialized database from bundled SRG_Calendar.db');
-          }
-        }
-      } catch (e) {
-        console.warn('Could not fetch bundled SRG_Calendar.db:', e);
-      }
-      if (!loadedFromBundle) {
-        await initDbFromSeedJson();
-      }
-    }
-    updateBadge('Local SQLite Active');
+    cachedEncryptedDbBytes = await loadDbFromIndexedDB();
+    updateBadge('Engine Ready');
+    return true;
   } catch (err) {
-    console.error('Failed to init SQLite:', err);
+    console.error('Failed to init SQLite WASM:', err);
     updateBadge('DB Error');
     alert('Error initializing SQLite WASM database: ' + err.message);
+    return false;
+  }
+}
+
+async function initializeFreshOrBundledDatabase() {
+  let loadedFromBundle = false;
+  try {
+    const resp = await fetch('SRG_Calendar.db');
+    if (resp.ok) {
+      const buf = await resp.arrayBuffer();
+      if (buf && buf.byteLength > 0) {
+        db = new SQL.Database(new Uint8Array(buf));
+        ensureSchemaUpToDate();
+        loadedFromBundle = true;
+        console.log('Initialized database from bundled SRG_Calendar.db');
+      }
+    }
+  } catch (e) {
+    console.warn('Could not fetch bundled SRG_Calendar.db:', e);
+  }
+  if (!loadedFromBundle) {
+    await initDbFromSeedJson();
   }
 }
 
@@ -588,11 +590,6 @@ async function initDbFromSeedJson() {
     console.warn('Could not populate initial taxonomy seed:', e);
   }
 
-  // Set default app PIN '1234' into metadata
-  try {
-    db.run("INSERT OR REPLACE INTO app_metadata (key, value) VALUES ('app_pin', '1234')");
-  } catch(e) {}
-
   await saveDbToIndexedDB(false);
 }
 
@@ -620,11 +617,15 @@ function saveDbToIndexedDB(updateTimestamp = true) {
   return new Promise(async (resolve, reject) => {
     if (!db) return resolve();
     try {
-      const binaryArray = db.export();
+      const rawBytes = db.export();
+      let bytesToStore = rawBytes;
+      if (currentEncryptionKey) {
+        bytesToStore = await encryptDatabaseBytes(rawBytes);
+      }
       const idb = await openSRGDatabase();
       const tx = idb.transaction('files', 'readwrite');
       const store = tx.objectStore('files');
-      store.put(binaryArray, 'active_sqlite');
+      store.put(bytesToStore, 'active_sqlite');
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     } catch(err) {
@@ -653,7 +654,10 @@ async function saveLocalDbSnapshot(customLabel = null) {
   if (!db) return;
   try {
     const idb = await openSRGDatabase();
-    const binary = db.export();
+    let binary = db.export();
+    if (currentEncryptionKey) {
+      binary = await encryptDatabaseBytes(binary);
+    }
     const now = Date.now();
     const label = customLabel || `Snapshot ${formatFullDateTime(now)}`;
     const snapshot = {
@@ -724,7 +728,13 @@ async function restoreLocalDbSnapshot(snapId) {
     // Safety backup of current database before restore
     await saveLocalDbSnapshot('Pre-restore Safety Backup');
 
-    db = new SQL.Database(new Uint8Array(snap.data));
+    let snapBytes = new Uint8Array(snap.data);
+    if (isEncryptedDbBytes(snapBytes)) {
+      if (!currentEncryptionKey) throw new Error('Unlock database with your PIN first.');
+      snapBytes = await decryptDatabaseBytes(snapBytes, currentEncryptionKey);
+    }
+
+    db = new SQL.Database(snapBytes);
     ensureSchemaUpToDate();
     await saveDbToIndexedDB();
     loadMasterDataFromDb();
@@ -2087,15 +2097,248 @@ function toggleAppTheme() {
   showToast(`Switched to ${currentTheme.toUpperCase()} theme`, 'info');
 }
 
-function getStoredAppPin() {
-  if (!db) return localStorage.getItem('srg_app_pin') || '1234';
+/* ==========================================================================
+   WEB CRYPTO (AES-256-GCM + PBKDF2) DATABASE ENCRYPTION AT REST
+   ========================================================================== */
+
+const CRYPTO_MAGIC = new Uint8Array([0x53, 0x52, 0x47, 0x45, 0x31]); // "SRGE1"
+const PBKDF2_ITERATIONS = 100000;
+let currentEncryptionKey = null;
+
+function isEncryptedDbBytes(bytes) {
+  if (!bytes || bytes.length < 33) return false;
+  for (let i = 0; i < CRYPTO_MAGIC.length; i++) {
+    if (bytes[i] !== CRYPTO_MAGIC[i]) return false;
+  }
+  return true;
+}
+
+function bufferToBase64(buf) {
+  const bytes = new Uint8Array(buf);
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+function base64ToBuffer(b64) {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+function getStoredCryptoSalt() {
+  const b64 = localStorage.getItem('srg_crypto_salt');
+  return b64 ? base64ToBuffer(b64) : null;
+}
+
+function storeCryptoSalt(saltBytes) {
+  localStorage.setItem('srg_crypto_salt', bufferToBase64(saltBytes));
+}
+
+async function deriveKeyFromPin(pin, salt) {
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(pin),
+    'PBKDF2',
+    false,
+    ['deriveKey']
+  );
+  return await crypto.subtle.deriveKey(
+    {
+      name: 'PBKDF2',
+      salt: salt,
+      iterations: PBKDF2_ITERATIONS,
+      hash: 'SHA-256'
+    },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    true,
+    ['encrypt', 'decrypt']
+  );
+}
+
+async function createAuthVerificationToken(key) {
   try {
-    const res = db.exec("SELECT value FROM app_metadata WHERE key = 'app_pin' LIMIT 1");
-    if (res.length > 0 && res[0].values.length > 0 && res[0].values[0][0]) {
-      return String(res[0].values[0][0]);
-    }
+    const enc = new TextEncoder();
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const tokenCipher = await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv: iv },
+      key,
+      enc.encode('SRG_CALENDAR_AUTHENTICATED')
+    );
+    const packed = new Uint8Array(iv.length + tokenCipher.byteLength);
+    packed.set(iv, 0);
+    packed.set(new Uint8Array(tokenCipher), iv.length);
+    localStorage.setItem('srg_crypto_auth_token', bufferToBase64(packed));
+  } catch(e) {
+    console.warn('Failed to save auth verification token:', e);
+  }
+}
+
+async function verifyPinWithAuthToken(pin) {
+  const salt = getStoredCryptoSalt();
+  const tokenB64 = localStorage.getItem('srg_crypto_auth_token');
+  if (!salt || !tokenB64) return false;
+  try {
+    const tokenBytes = base64ToBuffer(tokenB64);
+    const iv = tokenBytes.slice(0, 12);
+    const ciphertext = tokenBytes.slice(12);
+    const key = await deriveKeyFromPin(pin, salt);
+    const decrypted = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: iv },
+      key,
+      ciphertext
+    );
+    const str = new TextDecoder().decode(decrypted);
+    return str === 'SRG_CALENDAR_AUTHENTICATED';
+  } catch(e) {
+    return false;
+  }
+}
+
+async function encryptDatabaseBytes(rawBytes) {
+  if (!currentEncryptionKey) {
+    throw new Error('No encryption key active');
+  }
+
+  let salt = getStoredCryptoSalt();
+  if (!salt) {
+    salt = crypto.getRandomValues(new Uint8Array(16));
+    storeCryptoSalt(salt);
+  }
+
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertextBuffer = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv: iv },
+    currentEncryptionKey,
+    rawBytes
+  );
+  const ciphertext = new Uint8Array(ciphertextBuffer);
+
+  // Packed layout: MAGIC (5) + SALT (16) + IV (12) + CIPHERTEXT
+  const packed = new Uint8Array(CRYPTO_MAGIC.length + salt.length + iv.length + ciphertext.length);
+  packed.set(CRYPTO_MAGIC, 0);
+  packed.set(salt, CRYPTO_MAGIC.length);
+  packed.set(iv, CRYPTO_MAGIC.length + salt.length);
+  packed.set(ciphertext, CRYPTO_MAGIC.length + salt.length + iv.length);
+
+  return packed;
+}
+
+async function decryptDatabaseBytes(encryptedBytes, pinOrKey) {
+  if (!isEncryptedDbBytes(encryptedBytes)) {
+    return encryptedBytes;
+  }
+
+  const saltStart = CRYPTO_MAGIC.length;
+  const ivStart = saltStart + 16;
+  const cipherStart = ivStart + 12;
+
+  const salt = encryptedBytes.slice(saltStart, ivStart);
+  const iv = encryptedBytes.slice(ivStart, cipherStart);
+  const ciphertext = encryptedBytes.slice(cipherStart);
+
+  let key = null;
+  if (typeof pinOrKey === 'string') {
+    key = await deriveKeyFromPin(pinOrKey, salt);
+  } else if (pinOrKey instanceof CryptoKey) {
+    key = pinOrKey;
+  } else {
+    throw new Error('Invalid key or PIN provided for decryption');
+  }
+
+  const decryptedBuffer = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: iv },
+    key,
+    ciphertext
+  );
+
+  currentEncryptionKey = key;
+  storeCryptoSalt(salt);
+
+  return new Uint8Array(decryptedBuffer);
+}
+
+async function persistKeyToSession(key) {
+  try {
+    const raw = await crypto.subtle.exportKey('raw', key);
+    sessionStorage.setItem('srg_session_key', bufferToBase64(raw));
+    sessionStorage.setItem('srg_app_unlocked', 'true');
   } catch(e) {}
-  return localStorage.getItem('srg_app_pin') || '1234';
+}
+
+async function restoreKeyFromSession() {
+  const b64 = sessionStorage.getItem('srg_session_key');
+  if (!b64) return null;
+  try {
+    const raw = base64ToBuffer(b64);
+    return await crypto.subtle.importKey(
+      'raw',
+      raw,
+      { name: 'AES-GCM' },
+      true,
+      ['encrypt', 'decrypt']
+    );
+  } catch(e) {
+    return null;
+  }
+}
+
+async function saveBiometricEncryptionKey(key) {
+  try {
+    const raw = await crypto.subtle.exportKey('raw', key);
+    const idb = await openSRGDatabase();
+    const tx = idb.transaction('files', 'readwrite');
+    tx.objectStore('files').put(raw, 'srg_bio_key_token');
+  } catch(e) {
+    console.warn('Failed to save biometric encryption key:', e);
+  }
+}
+
+async function loadBiometricEncryptionKey() {
+  try {
+    const idb = await openSRGDatabase();
+    return new Promise((resolve) => {
+      const tx = idb.transaction('files', 'readonly');
+      const req = tx.objectStore('files').get('srg_bio_key_token');
+      req.onsuccess = async () => {
+        if (!req.result) return resolve(null);
+        try {
+          const key = await crypto.subtle.importKey(
+            'raw',
+            req.result,
+            { name: 'AES-GCM' },
+            true,
+            ['encrypt', 'decrypt']
+          );
+          resolve(key);
+        } catch(err) {
+          resolve(null);
+        }
+      };
+      req.onerror = () => resolve(null);
+    });
+  } catch(e) {
+    return null;
+  }
+}
+
+async function removeBiometricEncryptionKey() {
+  try {
+    const idb = await openSRGDatabase();
+    const tx = idb.transaction('files', 'readwrite');
+    tx.objectStore('files').delete('srg_bio_key_token');
+  } catch(e) {}
+}
+
+function isPinConfigured() {
+  return localStorage.getItem('srg_app_pin_configured') === 'true';
 }
 
 /* ==========================================================================
@@ -2138,6 +2381,10 @@ async function registerBiometricCredential() {
     showToast('Biometric sensor is not available on this device.', 'warning', 4000);
     return false;
   }
+  if (!currentEncryptionKey) {
+    showToast('Please unlock with your PIN first before configuring biometrics.', 'warning');
+    return false;
+  }
 
   const loadingToast = showToast('Scan fingerprint or face to register...', 'info', 0);
   try {
@@ -2173,6 +2420,7 @@ async function registerBiometricCredential() {
       const credIdBase64 = btoa(String.fromCharCode(...new Uint8Array(cred.rawId)));
       localStorage.setItem('srg_biometric_cred_id', credIdBase64);
       localStorage.setItem('srg_biometric_enabled', 'true');
+      await saveBiometricEncryptionKey(currentEncryptionKey);
       showToast('✓ Biometric unlock enabled successfully!', 'success', 4000);
       updateBiometricUI();
       return true;
@@ -2214,12 +2462,32 @@ async function unlockAppWithBiometric(autoPrompt = false) {
     });
 
     if (assertion) {
+      const key = await loadBiometricEncryptionKey();
+      if (!key) {
+        throw new Error('Biometric key not available. Please enter your PIN.');
+      }
+
+      const bytesToDecrypt = cachedEncryptedDbBytes || await loadDbFromIndexedDB();
+      if (bytesToDecrypt) {
+        const decryptedBytes = await decryptDatabaseBytes(bytesToDecrypt, key);
+        db = new SQL.Database(decryptedBytes);
+        ensureSchemaUpToDate();
+      }
+
+      currentEncryptionKey = key;
+      await persistKeyToSession(key);
+
       isAppUnlocked = true;
-      sessionStorage.setItem('srg_app_unlocked', 'true');
       const overlay = document.getElementById('appLockOverlay');
       if (overlay) overlay.classList.add('hidden');
       const errEl = document.getElementById('appLockErrorMsg');
       if (errEl) errEl.classList.add('hidden');
+
+      loadMasterDataFromDb();
+      populateTitlesDatalist();
+      switchToView(currentView, currentDate);
+
+      updateBadge('Local SQLite Active');
       showToast('✓ Unlocked with Biometrics!', 'success', 3000);
     }
   } catch(err) {
@@ -2235,6 +2503,7 @@ async function toggleBiometricSetting() {
   if (isEnabled) {
     localStorage.removeItem('srg_biometric_enabled');
     localStorage.removeItem('srg_biometric_cred_id');
+    await removeBiometricEncryptionKey();
     showToast('Biometric unlock disabled.', 'info');
     updateBiometricUI();
   } else {
@@ -2246,18 +2515,145 @@ async function checkAppSecurityLock() {
   const overlay = document.getElementById('appLockOverlay');
   if (!overlay) return;
 
-  if (!isAppUnlocked) {
-    overlay.classList.remove('hidden');
-    updateBiometricUI();
-    const keyInp = document.getElementById('appLockKeyInput');
-    if (keyInp) keyInp.focus();
+  const setupWrap = document.getElementById('appLockSetupContainer');
+  const unlockWrap = document.getElementById('appLockUnlockContainer');
 
-    // Auto-prompt biometrics if already registered
-    if (localStorage.getItem('srg_biometric_enabled') === 'true') {
-      setTimeout(() => unlockAppWithBiometric(true), 400);
+  // Case 1: First-time user in this browser (PIN not yet configured)
+  if (!isPinConfigured()) {
+    isAppUnlocked = false;
+    overlay.classList.remove('hidden');
+    if (setupWrap) setupWrap.classList.remove('hidden');
+    if (unlockWrap) unlockWrap.classList.add('hidden');
+    const pinInp = document.getElementById('setupNewPinInput');
+    if (pinInp) pinInp.focus();
+    return;
+  }
+
+  // Case 2: Returning user with an active session in this tab
+  const sessionKey = await restoreKeyFromSession();
+  if (sessionKey) {
+    try {
+      const bytesToDecrypt = cachedEncryptedDbBytes || await loadDbFromIndexedDB();
+      if (bytesToDecrypt) {
+        const decryptedBytes = await decryptDatabaseBytes(bytesToDecrypt, sessionKey);
+        db = new SQL.Database(decryptedBytes);
+        ensureSchemaUpToDate();
+      }
+      currentEncryptionKey = sessionKey;
+      isAppUnlocked = true;
+      overlay.classList.add('hidden');
+      updateBadge('Local SQLite Active');
+      return;
+    } catch(e) {
+      console.warn('Session decryption failed, showing lock screen:', e);
     }
-  } else {
-    overlay.classList.add('hidden');
+  }
+
+  // Case 3: Returning user locked (new session or explicit lock)
+  isAppUnlocked = false;
+  overlay.classList.remove('hidden');
+  if (setupWrap) setupWrap.classList.add('hidden');
+  if (unlockWrap) unlockWrap.classList.remove('hidden');
+  updateBiometricUI();
+
+  const keyInp = document.getElementById('appLockKeyInput');
+  if (keyInp) {
+    keyInp.value = '';
+    keyInp.focus();
+  }
+
+  // Auto-prompt biometrics if registered
+  if (localStorage.getItem('srg_biometric_enabled') === 'true') {
+    setTimeout(() => unlockAppWithBiometric(true), 400);
+  }
+}
+
+async function handleSetupPinSubmit(e) {
+  e.preventDefault();
+  const pin1 = (document.getElementById('setupNewPinInput')?.value || '').trim();
+  const pin2 = (document.getElementById('setupConfirmPinInput')?.value || '').trim();
+  const errEl = document.getElementById('setupPinErrorMsg');
+
+  if (!pin1 || pin1.length < 4 || pin1.length > 8) {
+    if (errEl) {
+      errEl.textContent = 'Security PIN must be between 4 and 8 digits.';
+      errEl.classList.remove('hidden');
+    }
+    return;
+  }
+  if (pin1 !== pin2) {
+    if (errEl) {
+      errEl.textContent = 'Confirmation PIN does not match.';
+      errEl.classList.remove('hidden');
+    }
+    return;
+  }
+
+  const submitBtn = document.getElementById('submitSetupPinBtn');
+  const originalText = submitBtn ? submitBtn.innerHTML : '';
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Encrypting...';
+  }
+
+  try {
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    storeCryptoSalt(salt);
+    const key = await deriveKeyFromPin(pin1, salt);
+    currentEncryptionKey = key;
+
+    await createAuthVerificationToken(key);
+    await persistKeyToSession(key);
+
+    localStorage.setItem('srg_app_pin_configured', 'true');
+    localStorage.removeItem('srg_app_pin'); // Purge legacy plaintext PIN
+
+    // Initialize or migrate database
+    if (!db) {
+      if (cachedEncryptedDbBytes && !isEncryptedDbBytes(cachedEncryptedDbBytes)) {
+        // Migrate legacy unencrypted database
+        db = new SQL.Database(cachedEncryptedDbBytes);
+      } else {
+        await initializeFreshOrBundledDatabase();
+      }
+    }
+
+    ensureSchemaUpToDate();
+    await saveDbToIndexedDB(false);
+
+    isAppUnlocked = true;
+    const overlay = document.getElementById('appLockOverlay');
+    if (overlay) overlay.classList.add('hidden');
+    if (errEl) errEl.classList.add('hidden');
+
+    loadMasterDataFromDb();
+    populateTitlesDatalist();
+    switchToView(currentView, currentDate);
+    updateBadge('Local SQLite Active');
+
+    showToast('✓ Security PIN set & Database encrypted with AES-256!', 'success', 4000);
+
+    // Offer biometric unlock if available
+    isBiometricAvailable().then(available => {
+      if (available) {
+        setTimeout(() => {
+          if (confirm('Enable fingerprint / biometric unlock on this device for instant access?')) {
+            registerBiometricCredential();
+          }
+        }, 600);
+      }
+    });
+  } catch(err) {
+    console.error('Setup PIN error:', err);
+    if (errEl) {
+      errEl.textContent = 'Error setting PIN: ' + err.message;
+      errEl.classList.remove('hidden');
+    }
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = originalText;
+    }
   }
 }
 
@@ -2267,23 +2663,55 @@ async function unlockAppWithKey(enteredKey) {
 
   if (!trimmedKey) {
     if (errEl) {
-      errEl.textContent = 'Please enter your Security PIN / Access Key';
+      errEl.textContent = 'Please enter your Security PIN';
       errEl.classList.remove('hidden');
     }
     return;
   }
 
-  const storedPin = getStoredAppPin();
-  if (trimmedKey === storedPin) {
+  const salt = getStoredCryptoSalt();
+  if (!salt) {
+    if (errEl) {
+      errEl.textContent = 'Security configuration missing. Please reload.';
+      errEl.classList.remove('hidden');
+    }
+    return;
+  }
+
+  const submitBtn = document.querySelector('#appUnlockForm button[type="submit"]');
+  const originalText = submitBtn ? submitBtn.innerHTML : '';
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Decrypting...';
+  }
+
+  try {
+    const key = await deriveKeyFromPin(trimmedKey, salt);
+    const bytesToDecrypt = cachedEncryptedDbBytes || await loadDbFromIndexedDB();
+    if (!bytesToDecrypt) {
+      throw new Error('Database not found');
+    }
+
+    const decryptedBytes = await decryptDatabaseBytes(bytesToDecrypt, key);
+    db = new SQL.Database(decryptedBytes);
+    ensureSchemaUpToDate();
+
+    currentEncryptionKey = key;
+    await persistKeyToSession(key);
+
     isAppUnlocked = true;
-    sessionStorage.setItem('srg_app_unlocked', 'true');
-    localStorage.setItem('srg_app_pin', trimmedKey);
     const overlay = document.getElementById('appLockOverlay');
     if (overlay) overlay.classList.add('hidden');
     if (errEl) errEl.classList.add('hidden');
-    showToast('✓ Calendar Authenticated & Unlocked', 'success');
 
-    // Prompt to enable biometrics if supported on this mobile device but not yet enabled
+    loadMasterDataFromDb();
+    populateTitlesDatalist();
+    switchToView(currentView, currentDate);
+    updateBadge('Local SQLite Active');
+
+    showToast('✓ Calendar Authenticated & Decrypted', 'success', 3000);
+
+    // Prompt to enable biometrics if supported but not enrolled
     if (localStorage.getItem('srg_biometric_enabled') !== 'true') {
       isBiometricAvailable().then(available => {
         if (available) {
@@ -2295,21 +2723,49 @@ async function unlockAppWithKey(enteredKey) {
         }
       });
     }
-  } else {
+  } catch(err) {
+    console.warn('Decryption / PIN authentication failed:', err);
     if (errEl) {
-      errEl.textContent = 'Incorrect Security PIN. Access Denied.';
+      errEl.textContent = 'Incorrect Security PIN. Decryption failed.';
       errEl.classList.remove('hidden');
     }
     showToast('❌ Authentication Failed: Invalid PIN', 'error', 3000);
+    const keyInp = document.getElementById('appLockKeyInput');
+    if (keyInp) {
+      keyInp.value = '';
+      keyInp.focus();
+    }
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = originalText;
+    }
   }
 }
 
 async function lockAppSecurity() {
   isAppUnlocked = false;
   sessionStorage.removeItem('srg_app_unlocked');
+  sessionStorage.removeItem('srg_session_key');
+  currentEncryptionKey = null;
+
+  // Close plaintext database in memory
+  if (db) {
+    try {
+      db.close();
+    } catch(e) {}
+    db = null;
+  }
 
   const overlay = document.getElementById('appLockOverlay');
-  if (overlay) overlay.classList.remove('hidden');
+  if (overlay) {
+    overlay.classList.remove('hidden');
+    const setupWrap = document.getElementById('appLockSetupContainer');
+    const unlockWrap = document.getElementById('appLockUnlockContainer');
+    if (setupWrap) setupWrap.classList.add('hidden');
+    if (unlockWrap) unlockWrap.classList.remove('hidden');
+  }
+
   updateBiometricUI();
   const keyInp = document.getElementById('appLockKeyInput');
   if (keyInp) {
@@ -2336,7 +2792,8 @@ function openAboutModal() {
 
 function closeAboutModal() {
   const modal = document.getElementById('aboutModal');
-  if (modal) modal.classList.add('hidden');
+  if (!modal) return;
+  modal.classList.add('hidden');
 }
 
 /* ==========================================================================
@@ -2345,6 +2802,7 @@ function closeAboutModal() {
 function openChangePinModal() {
   const modal = document.getElementById('changePinModal');
   if (!modal) return;
+  modal.classList.remove('hidden');
   const currentPinInput = document.getElementById('currentPinInput');
   const newPinInput = document.getElementById('newPinInput');
   const confirmPinInput = document.getElementById('confirmPinInput');
@@ -2373,17 +2831,18 @@ async function handleChangePinSubmit(e) {
   const confirmPin = (document.getElementById('confirmPinInput')?.value || '').trim();
   const errEl = document.getElementById('changePinErrorMsg');
 
-  const storedPin = getStoredAppPin();
-  if (currentPin !== storedPin) {
+  // Verify current PIN using auth verification token
+  const isCurrentPinValid = await verifyPinWithAuthToken(currentPin);
+  if (!isCurrentPinValid) {
     if (errEl) {
       errEl.textContent = 'Current PIN is incorrect.';
       errEl.classList.remove('hidden');
     }
     return;
   }
-  if (!newPin || newPin.length < 4) {
+  if (!newPin || newPin.length < 4 || newPin.length > 8) {
     if (errEl) {
-      errEl.textContent = 'New PIN must be at least 4 characters long.';
+      errEl.textContent = 'New PIN must be between 4 and 8 digits.';
       errEl.classList.remove('hidden');
     }
     return;
@@ -2400,17 +2859,28 @@ async function handleChangePinSubmit(e) {
   const originalBtnText = saveBtn ? saveBtn.innerHTML : '';
   if (saveBtn) {
     saveBtn.disabled = true;
-    saveBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Updating...';
+    saveBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Re-encrypting...';
   }
 
   try {
+    const newSalt = crypto.getRandomValues(new Uint8Array(16));
+    storeCryptoSalt(newSalt);
+    const newKey = await deriveKeyFromPin(newPin, newSalt);
+    currentEncryptionKey = newKey;
+
+    await createAuthVerificationToken(newKey);
+    await persistKeyToSession(newKey);
+
+    if (localStorage.getItem('srg_biometric_enabled') === 'true') {
+      await saveBiometricEncryptionKey(newKey);
+    }
+
     if (db) {
-      db.run("INSERT OR REPLACE INTO app_metadata (key, value) VALUES ('app_pin', ?)", [newPin]);
       await saveDbToIndexedDB();
     }
-    localStorage.setItem('srg_app_pin', newPin);
+
     closeChangePinModal();
-    showToast('✓ Security PIN changed successfully!', 'success');
+    showToast('✓ Security PIN changed & Database re-encrypted!', 'success');
   } catch (err) {
     console.error('Error changing PIN:', err);
     if (errEl) {
@@ -6176,15 +6646,22 @@ function importSqliteFile(e) {
 
   const reader = new FileReader();
   reader.onload = async () => {
-    const u8 = new Uint8Array(reader.result);
+    let u8 = new Uint8Array(reader.result);
     try {
+      if (isEncryptedDbBytes(u8)) {
+        const pin = prompt('This backup file is encrypted. Please enter its Security PIN:');
+        if (!pin) {
+          showToast('Import cancelled: PIN required for encrypted backup.', 'warning');
+          return;
+        }
+        u8 = await decryptDatabaseBytes(u8, pin);
+      }
       db = new SQL.Database(u8);
       ensureSchemaUpToDate();
       await saveDbToIndexedDB();
       loadMasterDataFromDb();
       populateTitlesDatalist();
       renderCurrentView();
-      triggerAutoSync();
       showToast('SQLite database restored successfully!', 'success', 4000);
     } catch (err) {
       showToast('Error parsing SQLite backup file: ' + err.message, 'error', 5000);
@@ -6497,6 +6974,11 @@ function setupUIEventListeners() {
   }
 
   // App Lock & Biometrics
+  const setupPinForm = document.getElementById('appSetupPinForm');
+  if (setupPinForm) {
+    setupPinForm.addEventListener('submit', handleSetupPinSubmit);
+  }
+
   const unlockForm = document.getElementById('appUnlockForm');
   if (unlockForm) {
     unlockForm.addEventListener('submit', (e) => {
