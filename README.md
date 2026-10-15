@@ -1,9 +1,9 @@
-# Calendar App (Offline PWA) v1.2.3
+# Calendar App (Offline PWA) v1.2.4
 
 A standalone, local-first Personal Calendar & Daily Organizer Progressive Web App (PWA) powered by client-side **SQLite (WASM)** and **IndexedDB** local storage with **AES-256-GCM hardware-accelerated encryption at rest for both database and file attachments**.
 
-> **Production PWA (v1.2.3)**  
-> Fully client-side, local-first calendar with ACID SQLite storage, Web Crypto AES-256-GCM encryption at rest for database and attachments, Emergency Recovery Key kit with 1-click email/download options, forgot PIN reset loop, enforced 6+ character PIN/passphrase protection, SHA-256 verified backup archives, smart restore re-encryption, wrapped biometric unlock, and 100% offline capabilities.
+> **Production PWA (v1.2.4)**  
+> Fully client-side, local-first calendar with ACID SQLite storage, Web Crypto AES-256-GCM encryption at rest for database and attachments, Zero-Disk Emergency Recovery Key kit with 1-click email/download options, forgot PIN reset loop, enforced 6+ character PIN/passphrase protection, SHA-256 corruption-verified backup archives, optional AES-256 encrypted backups, smart restore re-encryption, session-bound biometric re-auth, automatic attachment encryption migration, and 100% offline capabilities.
 
 ---
 
@@ -15,21 +15,23 @@ A standalone, local-first Personal Calendar & Daily Organizer Progressive Web Ap
   - Transparently encrypts the SQLite database, all historical snapshots, and all ticket attachments stored in browser IndexedDB with authenticated **AES-256-GCM**.
   - Keys derived via **PBKDF2** (100,000 iterations, SHA-256) with cryptographic salts from the user's private PIN / Passphrase (minimum 6 characters, up to 64 characters).
   - Interactive first-time PIN setup prompts the user to choose their own Security PIN (no hardcoded defaults).
-  - Secure **Fingerprint & Face ID** biometric quick-unlock via WebAuthn platform authenticators with wrapped key protection.
+  - Secure **Fingerprint & Face ID** biometric quick-unlock via WebAuthn platform authenticators during active sessions without exposing or storing encryption keys on disk.
   - Zero-knowledge architecture: data is encrypted exclusively inside your device browser and never sent to any server.
-- **Emergency Recovery Key (Cryptographic Recovery Kit):**
+  - Automatic post-unlock migration automatically detects and upgrades any legacy plaintext attachments to AES-256-GCM encryption at rest.
+- **Emergency Recovery Key (Zero-Disk Cryptographic Recovery Kit):**
   - High-entropy 20-character Emergency Recovery Key (`SRG-XXXX-XXXX-XXXX-XXXX`) generated during PIN setup and PIN changes.
   - Secure PBKDF2 (100,000 iterations) + AES-GCM recovery vault unlocks and unwraps the master key if you forget your PIN.
+  - Never stored on disk or in browser storage: shown only ephemerally on creation or explicit PIN verification.
   - 1-click **"Email to Myself"** (`mailto:`), **"Download (.txt)"**, and **"Copy"** options so you never lose access.
-  - **"Forgot PIN / Passphrase?"** recovery loop on the lock screen resets your PIN, restores your calendar, and re-encrypts all database records, snapshots, and attachments with your new key.
+  - **"Forgot PIN / Passphrase?"** recovery loop on the lock screen resets your PIN, restores your calendar, and atomically re-encrypts all database records, snapshots, and attachments with your new key.
 - **IndexedDB Persistence (`SRGCalendarDB`):** Automatically persists edits, schedules, daily notes, financial entries, and file attachments in browser storage.
 - **Atomic 1-Click Complete Backup & Restore (`.zip`):**
-  - **Full Export:** Creates an archive containing your SQLite database, an integrity manifest with per-file SHA-256 hashes, and deduplicated ticket attachments (PDFs & images). Supports optional **AES-256 PIN encryption** for both database and all attachments so exported archives can be safely stored on cloud drives (Google Drive, OneDrive, iCloud) or USB drives.
-  - **Atomic Restore & Smart Re-Encryption:** Verifies SHA-256 file hashes before committing changes. Automatically detects whether the backup archive or `.db` file is encrypted or unencrypted. When restoring on a device with an existing PIN, decrypts using the backup PIN and immediately re-encrypts using this device's current PIN so keys and tokens stay in sync. Pre-validates the archive and stages all attachments in memory before activating the new database. Automatically rolls back to the previous database if restoration fails.
-- **Local Snapshots:** Save named encrypted database safety snapshots in browser storage anytime. When changing PIN, all past snapshots and attachments are atomically re-encrypted under the new key.
+  - **Full Export:** Creates an archive containing your SQLite database, an integrity manifest with per-file SHA-256 hashes for corruption detection, and deduplicated ticket attachments (PDFs & images). Supports optional **AES-256 PIN encryption** for both database and all attachments so exported archives are cryptographically protected against eavesdropping and tampering when stored on cloud drives (Google Drive, OneDrive, iCloud) or USB drives.
+  - **Atomic Restore & Smart Re-Encryption:** Verifies SHA-256 file hashes to detect accidental archive corruption before committing changes. Automatically detects whether the backup archive or `.db` file is encrypted or unencrypted. When restoring on a device with an existing PIN, decrypts using the backup PIN and immediately re-encrypts using this device's current PIN so keys and tokens stay in sync. Pre-validates the archive and stages all attachments in memory before activating the new database. Automatically rolls back to the previous database if restoration fails.
+- **Local Snapshots:** Save named encrypted database safety snapshots in browser storage anytime. When changing PIN, all past snapshots and attachments are atomically re-encrypted under the new key with full pre-commit verification.
 - **PWA (Progressive Web App):**
   - Installable directly to home screen or desktop from Chrome, Edge, Safari, or Brave.
-  - Version-scoped Service Worker cache cleanup (`v1.2.3`).
+  - Version-scoped Service Worker cache cleanup (`v1.2.4`).
   - In-app install and check for updates buttons.
 - **Comprehensive Calendar Views:**
   - **Calendar View:** 7-column month grid. In portrait mode, uniform square day cells with center indicator badges and a bottom day schedule agenda panel maximize usability. Long-pressing any day initiates multi-date selection for batch scheduling with single-tap date addition/removal. In landscape mode, full titles, times, and notes are shown.
@@ -100,9 +102,9 @@ The web app is deployed directly at:
 
 - **Hardware-Accelerated AES-256-GCM Encryption:** All SQLite database records, daily notes, transactions, snapshots, and file attachments stored in browser IndexedDB are encrypted at rest using AES-256-GCM via the browser's native Web Crypto API.
 - **User-Defined Security PIN / Passphrase:** First launch prompts you to create a private PIN or Passphrase (minimum 6 characters, up to 64 characters). Keys are derived via PBKDF2 (100,000 iterations, SHA-256) with unique cryptographic salts.
-- **Hardened Biometric Unlock:** Secure Fingerprint and Face ID quick-unlock via WebAuthn platform authenticators during active browser sessions without exposing or storing raw master keys on disk.
-- **Emergency Recovery Kit & Forgot PIN Loop:** Generate a 20-character cryptographic recovery key during PIN setup. Email it to yourself via `mailto:`, download it as a `.txt` file, or copy it. If you forget your PIN, tap "Forgot PIN / Passphrase?" to unlock and re-encrypt the vault without data loss.
-- **Atomic Change PIN:** Open the side drawer -> tap **"Change Security PIN"** to derive a new key with a fresh salt, re-encrypt the active database, re-encrypt all historical snapshots, and re-encrypt all stored attachments atomically.
+- **Hardened Biometric Unlock:** Secure Fingerprint and Face ID quick-unlock via WebAuthn platform authenticators during active browser sessions without exposing or storing raw master keys on disk at rest.
+- **Emergency Recovery Kit & Forgot PIN Loop:** Generate a 20-character cryptographic recovery key during PIN setup. Email it to yourself via `mailto:`, download it as a `.txt` file, or copy it. The recovery key is never stored on disk or in browser storage. If you forget your PIN, tap "Forgot PIN / Passphrase?" to unwrap the vault and set a new PIN without data loss.
+- **Atomic Change PIN & Re-Encryption:** Open the side drawer -> tap **"Change Security PIN"** to derive a new key with a fresh salt. Snapshots, attachments, and the active database are verified and staged in memory before committing any changes, preventing partial re-encryption states.
 - **Zero-Knowledge Privacy:** Your PIN, database, and attachments are encrypted strictly inside your browser. No data or keys are ever transmitted to any external server.
 
 ---
@@ -112,6 +114,7 @@ The web app is deployed directly at:
 Because Calendar App is a single-device, local-first application, all your data lives inside your device's browser profile. **Always keep recent full backups!**
 
 ### 1. Complete Full Backup & Restore (`.zip`) — Recommended
+- **Corruption Detection vs Encrypted Backups:** Full backup exports compute per-file SHA-256 hashes in `manifest.json` to detect accidental file corruption or truncation during transfer. For storage on cloud drives (Google Drive, OneDrive, iCloud) or shared USB drives where secrecy and tamper-proof security against adversaries are required, enable **"Encrypt Backup with PIN"** to authenticate and encrypt both the database and all attachments with AES-256-GCM.
 - **To Backup:** Click the database icon in the top header -> Click **"💾 Export Full (.zip)"**. This generates an integrity-hashed `.zip` containing your SQLite database and all uploaded ticket PDFs/images.
 - **To Restore:** Click **"📁 Restore Full (.zip)"** -> Select your backup `.zip` file. Staged atomically with pre-restore fallback rollback.
 

@@ -112,7 +112,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.2.3';
+const APP_VERSION = 'v1.2.4';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -269,6 +269,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const vBadge = document.getElementById('appVersionBadge');
   if (vBadge) vBadge.textContent = APP_VERSION;
   initAppTheme();
+  await purgeLegacyBiometricDiskTokens();
   setupUIEventListeners();
   updateInstallButtonState();
   updateReminderUI();
@@ -278,6 +279,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     loadMasterDataFromDb();
     populateTitlesDatalist();
     switchToView(currentView, currentDate);
+    if (currentEncryptionKey) {
+      migratePlaintextAttachmentsToEncrypted(currentEncryptionKey);
+    }
   }
 
   // Periodic reminder checking for events & travel
@@ -850,6 +854,59 @@ async function loadAttachmentFromIndexedDB(attId) {
   } catch(e) {
     console.warn('loadAttachmentFromIndexedDB error:', e);
     return null;
+  }
+}
+
+// Post-unlock migration: scans IndexedDB and encrypts any legacy plaintext attachments at rest
+async function migratePlaintextAttachmentsToEncrypted(key = currentEncryptionKey) {
+  if (!key) return 0;
+  try {
+    const idb = await openSRGDatabase();
+    const tx = idb.transaction('files', 'readwrite');
+    const store = tx.objectStore('files');
+    const cursorReq = store.openCursor();
+    let migratedCount = 0;
+    await new Promise((resolve) => {
+      cursorReq.onsuccess = async (e) => {
+        const cursor = e.target.result;
+        if (cursor) {
+          const k = String(cursor.key);
+          if (k.startsWith('att_') || k.startsWith('ticket_') || k.includes('.')) {
+            const val = cursor.value;
+            if (!isEncryptedAttachmentBytes(val)) {
+              let plainText = null;
+              if (typeof val === 'string' && val.startsWith('data:')) {
+                plainText = val;
+              } else if (val instanceof Uint8Array || val instanceof ArrayBuffer) {
+                try {
+                  const dec = new TextDecoder().decode(val);
+                  if (dec.startsWith('data:')) plainText = dec;
+                } catch(err) {}
+              }
+              if (plainText) {
+                try {
+                  const enc = await encryptAttachmentData(plainText, key);
+                  cursor.update(enc);
+                  migratedCount++;
+                } catch(err) {}
+              }
+            }
+          }
+          cursor.continue();
+        } else {
+          resolve();
+        }
+      };
+      cursorReq.onerror = () => resolve();
+    });
+    await new Promise(r => { tx.oncomplete = r; tx.onerror = r; });
+    if (migratedCount > 0) {
+      console.log(`Migrated ${migratedCount} legacy attachments to AES-256-GCM encryption at rest.`);
+    }
+    return migratedCount;
+  } catch(e) {
+    console.warn('migratePlaintextAttachmentsToEncrypted error:', e);
+    return 0;
   }
 }
 
@@ -2465,129 +2522,21 @@ async function restoreKeyFromSession() {
   }
 }
 
-async function getBiometricWrappingKey(credIdBase64) {
-  let bioSalt = localStorage.getItem('srg_bio_salt');
-  if (!bioSalt) {
-    const saltBytes = crypto.getRandomValues(new Uint8Array(16));
-    bioSalt = bufferToBase64(saltBytes);
-    localStorage.setItem('srg_bio_salt', bioSalt);
-  }
-  const saltBuf = base64ToBuffer(bioSalt);
-  const enc = new TextEncoder();
-  const keyMaterial = await crypto.subtle.importKey(
-    'raw',
-    enc.encode(credIdBase64 || 'srg_bio_cred'),
-    'PBKDF2',
-    false,
-    ['deriveKey']
-  );
-  return await crypto.subtle.deriveKey(
-    {
-      name: 'PBKDF2',
-      salt: saltBuf,
-      iterations: 50000,
-      hash: 'SHA-256'
-    },
-    keyMaterial,
-    { name: 'AES-GCM', length: 256 },
-    false,
-    ['encrypt', 'decrypt']
-  );
-}
-
-async function saveBiometricEncryptionKey(key) {
-  if (!key) return;
+// Purge legacy biometric disk tokens and plaintext recovery key from disk
+async function purgeLegacyBiometricDiskTokens() {
+  localStorage.removeItem('srg_bio_salt');
+  localStorage.removeItem('srg_recovery_key_display');
   try {
-    const credIdBase64 = localStorage.getItem('srg_biometric_cred_id');
-    const wrapKey = await getBiometricWrappingKey(credIdBase64);
-    const rawKey = await crypto.subtle.exportKey('raw', key);
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const encryptedKeyBuffer = await crypto.subtle.encrypt(
-      { name: 'AES-GCM', iv: iv },
-      wrapKey,
-      rawKey
-    );
-    const encryptedKey = new Uint8Array(encryptedKeyBuffer);
-
-    // Store wrapped key: [MAGIC (7 bytes: "SRGBIO1")] + [IV (12 bytes)] + [CIPHERTEXT]
-    const BIO_MAGIC = new Uint8Array([0x53, 0x52, 0x47, 0x42, 0x49, 0x4F, 0x31]); // "SRGBIO1"
-    const packed = new Uint8Array(BIO_MAGIC.length + iv.length + encryptedKey.length);
-    packed.set(BIO_MAGIC, 0);
-    packed.set(iv, BIO_MAGIC.length);
-    packed.set(encryptedKey, BIO_MAGIC.length + iv.length);
-
     const idb = await openSRGDatabase();
     const tx = idb.transaction('files', 'readwrite');
-    tx.objectStore('files').put(packed, 'srg_bio_key_token');
-    await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = rej; });
-  } catch(e) {
-    console.warn('Failed to save biometric encryption key:', e);
-  }
-}
-
-async function loadBiometricEncryptionKey() {
-  try {
-    const idb = await openSRGDatabase();
-    const packed = await new Promise((resolve) => {
-      const tx = idb.transaction('files', 'readonly');
-      const req = tx.objectStore('files').get('srg_bio_key_token');
-      req.onsuccess = () => resolve(req.result || null);
-      req.onerror = () => resolve(null);
-    });
-
-    if (!packed) return null;
-
-    const BIO_MAGIC = new Uint8Array([0x53, 0x52, 0x47, 0x42, 0x49, 0x4F, 0x31]); // "SRGBIO1"
-    const bytes = packed instanceof Uint8Array ? packed : new Uint8Array(packed);
-
-    let isWrapped = bytes.length > BIO_MAGIC.length + 12 + 16;
-    if (isWrapped) {
-      for (let i = 0; i < BIO_MAGIC.length; i++) {
-        if (bytes[i] !== BIO_MAGIC[i]) {
-          isWrapped = false;
-          break;
-        }
-      }
-    }
-
-    if (isWrapped) {
-      const credIdBase64 = localStorage.getItem('srg_biometric_cred_id');
-      const wrapKey = await getBiometricWrappingKey(credIdBase64);
-      const iv = bytes.slice(BIO_MAGIC.length, BIO_MAGIC.length + 12);
-      const ciphertext = bytes.slice(BIO_MAGIC.length + 12);
-      const decryptedRaw = await crypto.subtle.decrypt(
-        { name: 'AES-GCM', iv: iv },
-        wrapKey,
-        ciphertext
-      );
-      return await crypto.subtle.importKey(
-        'raw',
-        decryptedRaw,
-        { name: 'AES-GCM' },
-        true,
-        ['encrypt', 'decrypt']
-      );
-    } else if (bytes.length === 32) {
-      // Legacy raw 32-byte key: import and automatically migrate to wrapped format
-      const imported = await crypto.subtle.importKey(
-        'raw',
-        bytes,
-        { name: 'AES-GCM' },
-        true,
-        ['encrypt', 'decrypt']
-      );
-      await saveBiometricEncryptionKey(imported);
-      return imported;
-    }
-    return null;
-  } catch(e) {
-    console.warn('loadBiometricEncryptionKey error:', e);
-    return null;
-  }
+    tx.objectStore('files').delete('srg_bio_key_token');
+  } catch(e) {}
 }
 
 async function removeBiometricEncryptionKey() {
-  sessionStorage.removeItem('srg_bio_session_token');
+  localStorage.removeItem('srg_biometric_enabled');
+  localStorage.removeItem('srg_biometric_cred_id');
+  localStorage.removeItem('srg_bio_salt');
   try {
     const idb = await openSRGDatabase();
     const tx = idb.transaction('files', 'readwrite');
@@ -2600,7 +2549,7 @@ function isPinConfigured() {
 }
 
 /* ==========================================================================
-   BIOMETRIC AUTHENTICATION (WEBAUTHN FINGERPRINT / FACE ID)
+   BIOMETRIC AUTHENTICATION (WEBAUTHN PLATFORM SENSOR - SESSION RE-AUTH)
    ========================================================================== */
 
 async function isBiometricAvailable() {
@@ -2618,12 +2567,13 @@ async function isBiometricAvailable() {
 function updateBiometricUI() {
   const bioContainer = document.getElementById('biometricUnlockContainer');
   const bioPrompt = document.getElementById('enableBiometricPrompt');
-  const drawerBioText = document.getElementById('drawerBiometricText');
+  const drawerBioText = document.getElementById('drawerBioText') || document.getElementById('drawerBiometricText');
   const isEnabled = localStorage.getItem('srg_biometric_enabled') === 'true';
+  const hasSessionKey = !!sessionStorage.getItem('srg_session_key');
 
   isBiometricAvailable().then(available => {
     if (bioContainer) {
-      bioContainer.classList.toggle('hidden', !(available && isEnabled));
+      bioContainer.classList.toggle('hidden', !(available && isEnabled && hasSessionKey));
     }
     if (bioPrompt) {
       bioPrompt.classList.toggle('hidden', !(available && !isEnabled));
@@ -2678,8 +2628,7 @@ async function registerBiometricCredential() {
       const credIdBase64 = btoa(String.fromCharCode(...new Uint8Array(cred.rawId)));
       localStorage.setItem('srg_biometric_cred_id', credIdBase64);
       localStorage.setItem('srg_biometric_enabled', 'true');
-      await saveBiometricEncryptionKey(currentEncryptionKey);
-      showToast('✓ Biometric unlock enabled successfully!', 'success', 4000);
+      showToast('✓ Biometric unlock enabled for active sessions!', 'success', 4000);
       updateBiometricUI();
       return true;
     }
@@ -2702,6 +2651,16 @@ async function unlockAppWithBiometric(autoPrompt = false) {
     return;
   }
 
+  const sessionKey = await restoreKeyFromSession();
+  if (!sessionKey) {
+    if (!autoPrompt) {
+      showToast('Session expired: Please enter your Security PIN to unlock.', 'info', 4000);
+      const keyInp = document.getElementById('appLockKeyInput');
+      if (keyInp) keyInp.focus();
+    }
+    return;
+  }
+
   try {
     const rawId = Uint8Array.from(atob(credIdBase64), c => c.charCodeAt(0));
     const challenge = new Uint8Array(16);
@@ -2720,29 +2679,15 @@ async function unlockAppWithBiometric(autoPrompt = false) {
     });
 
     if (assertion) {
-      const key = await loadBiometricEncryptionKey();
-      if (!key) {
-        showToast('Please enter your 6-digit PIN once to re-sync biometric unlock.', 'info', 4500);
-        const keyInp = document.getElementById('appLockKeyInput');
-        if (keyInp) keyInp.focus();
-        return;
-      }
-
       const bytesToDecrypt = cachedEncryptedDbBytes || await loadDbFromIndexedDB();
       if (bytesToDecrypt) {
-        const decryptedBytes = await decryptDatabaseBytes(bytesToDecrypt, key, true);
+        const decryptedBytes = await decryptDatabaseBytes(bytesToDecrypt, sessionKey, true);
         db = new SQL.Database(decryptedBytes);
         ensureSchemaUpToDate();
       }
 
-      currentEncryptionKey = key;
-      await persistKeyToSession(key);
-
-      // Auto-generate recovery vault for existing users upgrading to v1.2.2+
-      if (!localStorage.getItem('srg_recovery_vault')) {
-        const autoKey = generateRecoveryKey();
-        await saveRecoveryVault(key, autoKey);
-      }
+      currentEncryptionKey = sessionKey;
+      sessionStorage.setItem('srg_app_unlocked', 'true');
 
       isAppUnlocked = true;
       const overlay = document.getElementById('appLockOverlay');
@@ -2756,6 +2701,9 @@ async function unlockAppWithBiometric(autoPrompt = false) {
 
       updateBadge('Local SQLite Active');
       showToast('✓ Unlocked with Biometrics!', 'success', 3000);
+
+      // Post-unlock migration of legacy attachments if any
+      migratePlaintextAttachmentsToEncrypted(sessionKey);
     }
   } catch(err) {
     console.warn('Biometric verification error:', err);
@@ -2807,16 +2755,10 @@ async function checkAppSecurityLock() {
         ensureSchemaUpToDate();
       }
       currentEncryptionKey = sessionKey;
-
-      // Auto-generate recovery vault for existing users upgrading to v1.2.2+
-      if (!localStorage.getItem('srg_recovery_vault')) {
-        const autoKey = generateRecoveryKey();
-        await saveRecoveryVault(sessionKey, autoKey);
-      }
-
       isAppUnlocked = true;
       overlay.classList.add('hidden');
       updateBadge('Local SQLite Active');
+      migratePlaintextAttachmentsToEncrypted(sessionKey);
       return;
     } catch(e) {
       console.warn('Session decryption failed, showing lock screen:', e);
@@ -2989,16 +2931,6 @@ async function unlockAppWithKey(enteredKey) {
     currentEncryptionKey = key;
     await persistKeyToSession(key);
 
-    if (localStorage.getItem('srg_biometric_enabled') === 'true') {
-      await saveBiometricEncryptionKey(key);
-    }
-
-    // Auto-generate recovery vault for existing users upgrading to v1.2.2+
-    if (!localStorage.getItem('srg_recovery_vault')) {
-      const autoKey = generateRecoveryKey();
-      await saveRecoveryVault(key, autoKey);
-    }
-
     isAppUnlocked = true;
     const overlay = document.getElementById('appLockOverlay');
     if (overlay) overlay.classList.add('hidden');
@@ -3010,6 +2942,7 @@ async function unlockAppWithKey(enteredKey) {
     updateBadge('Local SQLite Active');
 
     showToast('✓ Calendar Authenticated & Decrypted', 'success', 3000);
+    migratePlaintextAttachmentsToEncrypted(key);
 
     // Prompt to enable biometrics if supported but not enrolled
     if (localStorage.getItem('srg_biometric_enabled') !== 'true') {
@@ -3046,7 +2979,9 @@ async function unlockAppWithKey(enteredKey) {
 async function lockAppSecurity() {
   isAppUnlocked = false;
   sessionStorage.removeItem('srg_app_unlocked');
-  sessionStorage.removeItem('srg_session_key');
+  if (localStorage.getItem('srg_biometric_enabled') !== 'true') {
+    sessionStorage.removeItem('srg_session_key');
+  }
   currentEncryptionKey = null;
 
   // Close plaintext database in memory
@@ -3156,7 +3091,7 @@ async function saveRecoveryVault(masterKey, recoveryKey) {
 
     const b64 = bufferToBase64(packed);
     localStorage.setItem('srg_recovery_vault', b64);
-    localStorage.setItem('srg_recovery_key_display', recoveryKey);
+    localStorage.removeItem('srg_recovery_key_display'); // NEVER store plaintext recovery key at rest
 
     // Also persist in IndexedDB 'files' store for redundancy
     try {
@@ -3240,10 +3175,9 @@ async function unwrapMasterKeyWithRecoveryKey(inputRecoveryKey) {
 // UI: Open Emergency Recovery Kit Modal
 function openRecoveryKitModal(recoveryKey, isNewSetup = false) {
   const modal = document.getElementById('recoveryKitModal');
-  if (!modal) return;
+  if (!modal || !recoveryKey) return;
   const display = document.getElementById('recoveryKeyDisplay');
-  const key = recoveryKey || localStorage.getItem('srg_recovery_key_display') || 'SRG-XXXX-XXXX-XXXX-XXXX';
-  if (display) display.textContent = key;
+  if (display) display.textContent = recoveryKey;
   modal.classList.remove('hidden');
 }
 
@@ -3252,6 +3186,8 @@ function closeRecoveryKitModal() {
   const modal = document.getElementById('recoveryKitModal');
   if (!modal) return;
   modal.classList.add('hidden');
+  const display = document.getElementById('recoveryKeyDisplay');
+  if (display) display.textContent = '••••-••••-••••-••••'; // Wipe ephemeral key from DOM
 }
 
 // UI: Copy Recovery Key to Clipboard
@@ -3432,89 +3368,18 @@ async function handleForgotPinResetSubmit(e) {
     const newSalt = crypto.getRandomValues(new Uint8Array(16));
     const newMasterKey = await deriveKeyFromPin(newPin, newSalt);
 
-    // 5. Re-encrypt all historical snapshots with the new key
-    const idb = await openSRGDatabase();
-    try {
-      const snapTx = idb.transaction('snapshots', 'readwrite');
-      const snapStore = snapTx.objectStore('snapshots');
-      const snapReq = snapStore.getAll();
-      await new Promise((resolve) => {
-        snapReq.onsuccess = async () => {
-          const list = snapReq.result || [];
-          for (const snap of list) {
-            if (snap && snap.data) {
-              let snapBytes = new Uint8Array(snap.data);
-              if (isEncryptedDbBytes(snapBytes)) {
-                try {
-                  const dec = await decryptDatabaseBytes(snapBytes, recoveredMasterKey, false);
-                  const reEnc = await encryptWithKeyAndSalt(dec, newMasterKey, newSalt);
-                  snap.data = reEnc;
-                  snap.size = reEnc.byteLength;
-                  snapStore.put(snap);
-                } catch(e) {}
-              }
-            }
-          }
-          resolve();
-        };
-        snapReq.onerror = () => resolve();
-      });
-      await new Promise(r => { snapTx.oncomplete = r; snapTx.onerror = r; });
-    } catch(snapErr) {
-      console.warn('Snapshot re-encryption error during recovery:', snapErr);
-    }
+    // 5. Atomically re-encrypt snapshots, attachments, and the database
+    await atomicReencryptAllData(recoveredMasterKey, newMasterKey, newSalt);
 
-    // 6. Re-encrypt all stored attachments with the new key
-    try {
-      const fileTx = idb.transaction('files', 'readwrite');
-      const fileStore = fileTx.objectStore('files');
-      const cursorReq = fileStore.openCursor();
-      await new Promise((resolve) => {
-        cursorReq.onsuccess = async (ev) => {
-          const cursor = ev.target.result;
-          if (cursor) {
-            const k = String(cursor.key);
-            if (k.startsWith('att_')) {
-              const val = cursor.value;
-              if (isEncryptedAttachmentBytes(val)) {
-                try {
-                  const plain = await decryptAttachmentData(val, recoveredMasterKey);
-                  if (plain) {
-                    const reEnc = await encryptAttachmentData(plain, newMasterKey);
-                    cursor.update(reEnc);
-                  }
-                } catch(err) {}
-              }
-            }
-            cursor.continue();
-          } else {
-            resolve();
-          }
-        };
-        cursorReq.onerror = () => resolve();
-      });
-      await new Promise(r => { fileTx.oncomplete = r; fileTx.onerror = r; });
-    } catch(fileErr) {
-      console.warn('Attachment re-encryption error during recovery:', fileErr);
-    }
-
-    // 7. Generate a new Emergency Recovery Key and update the recovery vault
+    // 6. Generate a new Emergency Recovery Key and update the recovery vault
     const newRecoveryKey = generateRecoveryKey();
     await saveRecoveryVault(newMasterKey, newRecoveryKey);
 
-    // 8. Commit new security configuration
+    // 7. Commit new security configuration
     storeCryptoSalt(newSalt);
     currentEncryptionKey = newMasterKey;
     await createAuthVerificationToken(newMasterKey);
     await persistKeyToSession(newMasterKey);
-
-    // 9. If biometrics were enabled, re-wrap with the new master key
-    if (localStorage.getItem('srg_biometric_enabled') === 'true') {
-      await saveBiometricEncryptionKey(newMasterKey);
-    }
-
-    // 10. Save newly encrypted database to IndexedDB
-    await saveDbToIndexedDB(false);
 
     // 11. Unlock application
     isAppUnlocked = true;
@@ -3563,6 +3428,159 @@ function closeAboutModal() {
   const modal = document.getElementById('aboutModal');
   if (!modal) return;
   modal.classList.add('hidden');
+}
+
+/* ==========================================================================
+   ATOMIC RE-ENCRYPTION UTILITY
+   ========================================================================== */
+// Atomically stages, validates, and re-encrypts all snapshots, attachments, and active database
+async function atomicReencryptAllData(oldKey, newKey, newSalt) {
+  if (!oldKey || !newKey || !newSalt) {
+    throw new Error('Missing encryption parameters for atomic re-encryption');
+  }
+
+  const idb = await openSRGDatabase();
+
+  // 1. Stage and verify snapshots
+  const stagedSnapshots = [];
+  const snapList = await new Promise((resolve, reject) => {
+    try {
+      const tx = idb.transaction('snapshots', 'readonly');
+      const store = tx.objectStore('snapshots');
+      const req = store.getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+    } catch(e) {
+      resolve([]);
+    }
+  });
+
+  for (const snap of snapList) {
+    if (snap && snap.data) {
+      const snapBytes = new Uint8Array(snap.data);
+      if (isEncryptedDbBytes(snapBytes)) {
+        let dec;
+        try {
+          dec = await decryptDatabaseBytes(snapBytes, oldKey, false);
+        } catch(err) {
+          throw new Error(`Failed to decrypt snapshot "${snap.name || snap.id}" with current key: ${err.message}. Aborting re-encryption.`);
+        }
+        const reEnc = await encryptWithKeyAndSalt(dec, newKey, newSalt);
+        try {
+          const verifyDec = await decryptDatabaseBytes(reEnc, newKey, false);
+          if (verifyDec.byteLength !== dec.byteLength) {
+            throw new Error('Byte length mismatch during snapshot verification.');
+          }
+        } catch(err) {
+          throw new Error(`Verification failed for re-encrypted snapshot "${snap.name || snap.id}": ${err.message}`);
+        }
+        const updatedSnap = Object.assign({}, snap, {
+          data: reEnc,
+          size: reEnc.byteLength
+        });
+        stagedSnapshots.push(updatedSnap);
+      }
+    }
+  }
+
+  // 2. Stage and verify attachments
+  const stagedAttachments = [];
+  const fileEntries = await new Promise((resolve, reject) => {
+    try {
+      const tx = idb.transaction('files', 'readonly');
+      const store = tx.objectStore('files');
+      const entries = [];
+      const cursorReq = store.openCursor();
+      cursorReq.onsuccess = (e) => {
+        const cursor = e.target.result;
+        if (cursor) {
+          const k = String(cursor.key);
+          if (k !== 'active_sqlite' && k !== 'srg_bio_key_token') {
+            entries.push({ key: k, value: cursor.value });
+          }
+          cursor.continue();
+        } else {
+          resolve(entries);
+        }
+      };
+      cursorReq.onerror = () => reject(cursorReq.error);
+    } catch(e) {
+      resolve([]);
+    }
+  });
+
+  for (const entry of fileEntries) {
+    let plainData = null;
+    if (isEncryptedAttachmentBytes(entry.value)) {
+      try {
+        plainData = await decryptAttachmentData(entry.value, oldKey);
+      } catch(err) {
+        throw new Error(`Failed to decrypt attachment ${entry.key} with current key: ${err.message}. Aborting.`);
+      }
+      if (!plainData) {
+        throw new Error(`Empty decrypted payload for attachment ${entry.key}. Aborting.`);
+      }
+    } else {
+      if (typeof entry.value === 'string') {
+        plainData = entry.value;
+      } else if (entry.value instanceof Uint8Array || entry.value instanceof ArrayBuffer) {
+        try {
+          const dec = new TextDecoder().decode(entry.value);
+          if (dec.startsWith('data:')) plainData = dec;
+        } catch(err) {}
+      }
+    }
+
+    if (plainData) {
+      const reEnc = await encryptAttachmentData(plainData, newKey);
+      const verifyPlain = await decryptAttachmentData(reEnc, newKey);
+      if (!verifyPlain || verifyPlain.length !== plainData.length) {
+        throw new Error(`Verification failed for re-encrypted attachment ${entry.key}.`);
+      }
+      stagedAttachments.push({ key: entry.key, value: reEnc });
+    }
+  }
+
+  // 3. Stage and verify live active database if loaded
+  let stagedActiveDb = null;
+  if (db) {
+    const rawDbBytes = db.export();
+    stagedActiveDb = await encryptWithKeyAndSalt(rawDbBytes, newKey, newSalt);
+    const verifyDb = await decryptDatabaseBytes(stagedActiveDb, newKey, false);
+    if (verifyDb.byteLength !== rawDbBytes.byteLength) {
+      throw new Error('Live database re-encryption verification failed. Aborting.');
+    }
+  }
+
+  // 4. Commit all staged items to IndexedDB
+  if (stagedSnapshots.length > 0) {
+    await new Promise((resolve, reject) => {
+      const tx = idb.transaction('snapshots', 'readwrite');
+      const store = tx.objectStore('snapshots');
+      for (const snap of stagedSnapshots) {
+        store.put(snap);
+      }
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  await new Promise((resolve, reject) => {
+    const tx = idb.transaction('files', 'readwrite');
+    const store = tx.objectStore('files');
+    for (const att of stagedAttachments) {
+      store.put(att.value, att.key);
+    }
+    if (stagedActiveDb) {
+      store.put(stagedActiveDb, 'active_sqlite');
+    }
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+
+  if (stagedActiveDb) {
+    cachedEncryptedDbBytes = stagedActiveDb;
+  }
 }
 
 /* ==========================================================================
@@ -3636,93 +3654,17 @@ async function handleChangePinSubmit(e) {
     const newSalt = crypto.getRandomValues(new Uint8Array(16));
     const newKey = await deriveKeyFromPin(newPin, newSalt);
 
-    const idb = await openSRGDatabase();
+    // Perform atomic staged re-encryption of all data (snapshots, attachments, active database)
+    await atomicReencryptAllData(oldKey, newKey, newSalt);
 
-    // 1. Re-encrypt all historical database snapshots in IndexedDB
-    try {
-      const snapTx = idb.transaction('snapshots', 'readwrite');
-      const snapStore = snapTx.objectStore('snapshots');
-      const snapReq = snapStore.getAll();
-      await new Promise((resolve) => {
-        snapReq.onsuccess = async () => {
-          const list = snapReq.result || [];
-          for (const snap of list) {
-            if (snap && snap.data) {
-              let snapBytes = new Uint8Array(snap.data);
-              if (isEncryptedDbBytes(snapBytes)) {
-                try {
-                  const decrypted = await decryptDatabaseBytes(snapBytes, oldKey, false);
-                  const reEncrypted = await encryptWithKeyAndSalt(decrypted, newKey, newSalt);
-                  snap.data = reEncrypted;
-                  snap.size = reEncrypted.byteLength;
-                  snapStore.put(snap);
-                } catch(e) {
-                  console.warn('Could not re-encrypt snapshot:', snap.id, e);
-                }
-              }
-            }
-          }
-          resolve();
-        };
-        snapReq.onerror = () => resolve();
-      });
-      await new Promise(r => { snapTx.oncomplete = r; snapTx.onerror = r; });
-    } catch(snapErr) {
-      console.warn('Snapshot re-encryption error:', snapErr);
-    }
-
-    // 2. Re-encrypt all stored attachments in IndexedDB
-    try {
-      const fileTx = idb.transaction('files', 'readwrite');
-      const fileStore = fileTx.objectStore('files');
-      const cursorReq = fileStore.openCursor();
-      await new Promise((resolve) => {
-        cursorReq.onsuccess = async (e) => {
-          const cursor = e.target.result;
-          if (cursor) {
-            const k = String(cursor.key);
-            if (k.startsWith('att_')) {
-              const val = cursor.value;
-              if (isEncryptedAttachmentBytes(val)) {
-                try {
-                  const plain = await decryptAttachmentData(val, oldKey);
-                  if (plain) {
-                    const reEnc = await encryptAttachmentData(plain, newKey);
-                    cursor.update(reEnc);
-                  }
-                } catch(err) {
-                  console.warn('Could not re-encrypt attachment:', k, err);
-                }
-              }
-            }
-            cursor.continue();
-          } else {
-            resolve();
-          }
-        };
-        cursorReq.onerror = () => resolve();
-      });
-      await new Promise(r => { fileTx.oncomplete = r; fileTx.onerror = r; });
-    } catch(fileErr) {
-      console.warn('Attachment re-encryption error:', fileErr);
-    }
-
-    // 3. Update current active key, salt and auth token
+    // Update current active key, salt and auth token
     storeCryptoSalt(newSalt);
     currentEncryptionKey = newKey;
 
     await createAuthVerificationToken(newKey);
     await persistKeyToSession(newKey);
 
-    if (localStorage.getItem('srg_biometric_enabled') === 'true') {
-      await saveBiometricEncryptionKey(newKey);
-    }
-
-    if (db) {
-      await saveDbToIndexedDB();
-    }
-
-    // 4. Generate replacement Emergency Recovery Key and update recovery vault
+    // Generate replacement Emergency Recovery Key and update recovery vault
     const newRecoveryKey = generateRecoveryKey();
     await saveRecoveryVault(newKey, newRecoveryKey);
 
@@ -7680,38 +7622,24 @@ function setupUIEventListeners() {
         showToast('Please set up a Security PIN first to enable encryption and recovery.', 'warning', 4000);
         return;
       }
-      let key = localStorage.getItem('srg_recovery_key_display');
-      if (!currentEncryptionKey) {
-        currentEncryptionKey = await restoreKeyFromSession();
+      const enteredPin = prompt('To view or generate a fresh Emergency Recovery Key, enter your Security PIN:');
+      if (!enteredPin || !enteredPin.trim()) return;
+      const salt = getStoredCryptoSalt();
+      if (!salt) {
+        showToast('Security configuration missing. Please reload.', 'error');
+        return;
       }
-      if (!key) {
-        if (currentEncryptionKey) {
-          key = generateRecoveryKey();
-          await saveRecoveryVault(currentEncryptionKey, key);
-        } else {
-          // Key not in active session: ask user for their PIN to derive key & create recovery kit
-          const enteredPin = prompt('Enter your Security PIN to generate your Emergency Recovery Key:');
-          if (enteredPin && enteredPin.trim()) {
-            const salt = getStoredCryptoSalt();
-            if (salt) {
-              const derived = await deriveKeyFromPin(enteredPin.trim(), salt);
-              const valid = await verifyPinWithAuthToken(enteredPin.trim());
-              if (valid) {
-                currentEncryptionKey = derived;
-                await persistKeyToSession(derived);
-                key = generateRecoveryKey();
-                await saveRecoveryVault(derived, key);
-              } else {
-                showToast('Incorrect Security PIN. Could not generate recovery key.', 'error', 3500);
-                return;
-              }
-            }
-          } else {
-            return;
-          }
-        }
+      const valid = await verifyPinWithAuthToken(enteredPin.trim());
+      if (!valid) {
+        showToast('❌ Incorrect Security PIN. Access denied.', 'error', 3500);
+        return;
       }
-      openRecoveryKitModal(key);
+      const derived = await deriveKeyFromPin(enteredPin.trim(), salt);
+      currentEncryptionKey = derived;
+      await persistKeyToSession(derived);
+      const freshKey = generateRecoveryKey();
+      await saveRecoveryVault(derived, freshKey);
+      openRecoveryKitModal(freshKey);
     });
   }
   const drawerBiometricBtn = document.getElementById('drawerBiometricBtn');
