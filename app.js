@@ -112,7 +112,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.2.9';
+const APP_VERSION = 'v1.3.0';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -131,7 +131,7 @@ window.addEventListener('appinstalled', () => {
 });
 
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('sw.js').then((reg) => {
+  navigator.serviceWorker.register(`sw.js?v=${APP_VERSION}`).then((reg) => {
     swRegistration = reg;
     console.log('Calendar App SW Registered');
 
@@ -250,13 +250,13 @@ async function handleInstallOrUpdateClick() {
   }
 }
 
-// Automatic cache cleanup on version update (scoped exclusively to calendar-app caches)
+// Automatic cache cleanup on version update (purges all legacy/outdated caches)
 if (localStorage.getItem('srg_installed_version') !== APP_VERSION) {
   localStorage.setItem('srg_installed_version', APP_VERSION);
   if ('caches' in window) {
     caches.keys().then(names => {
       names.forEach(name => {
-        if (name.startsWith('calendar-app-') && name !== `calendar-app-${APP_VERSION}`) {
+        if (name !== `calendar-app-${APP_VERSION}`) {
           caches.delete(name);
         }
       });
@@ -266,33 +266,44 @@ if (localStorage.getItem('srg_installed_version') !== APP_VERSION) {
 
 // Initialization on DOM Loaded
 document.addEventListener('DOMContentLoaded', async () => {
-  const vBadge = document.getElementById('appVersionBadge');
-  if (vBadge) vBadge.textContent = APP_VERSION;
-  initAppTheme();
-  purgeLegacySessionAndDiskTokens();
-  await purgeLegacyBiometricDiskTokens();
-  initAutoLockListeners();
-  setupUIEventListeners();
-  updateInstallButtonState();
-  await initSqliteDatabase();
-  await checkAppSecurityLock();
-  if (isAppUnlocked && db) {
-    loadMasterDataFromDb();
-    populateTitlesDatalist();
-    switchToView(currentView, currentDate);
-    if (currentEncryptionKey) {
-      migratePlaintextAttachmentsToEncrypted(currentEncryptionKey);
-    }
-  }
+  try {
+    const vBadge = document.getElementById('appVersionBadge');
+    if (vBadge) vBadge.textContent = APP_VERSION;
+    initAppTheme();
+    setupUIEventListeners(); // Set up all UI event listeners FIRST so form submission and clicks always work
+    initAutoLockListeners();
+    updateInstallButtonState();
 
-  // Re-render calendar view on orientation / window resize change between portrait & landscape
-  const mql = window.matchMedia('(orientation: portrait), (max-width: 600px)');
-  if (mql && mql.addEventListener) {
-    mql.addEventListener('change', () => {
-      if (currentView === 'calendar') {
-        renderMonthView();
+    try {
+      purgeLegacySessionAndDiskTokens();
+      await purgeLegacyBiometricDiskTokens();
+    } catch(e) {
+      console.warn('Storage purge notice:', e);
+    }
+
+    await initSqliteDatabase();
+    await checkAppSecurityLock();
+
+    if (isAppUnlocked && db) {
+      loadMasterDataFromDb();
+      populateTitlesDatalist();
+      switchToView(currentView, currentDate);
+      if (currentEncryptionKey) {
+        migratePlaintextAttachmentsToEncrypted(currentEncryptionKey);
       }
-    });
+    }
+
+    // Re-render calendar view on orientation / window resize change between portrait & landscape
+    const mql = window.matchMedia('(orientation: portrait), (max-width: 600px)');
+    if (mql && mql.addEventListener) {
+      mql.addEventListener('change', () => {
+        if (currentView === 'calendar') {
+          renderMonthView();
+        }
+      });
+    }
+  } catch (err) {
+    console.error('Fatal initialization error:', err);
   }
 });
 
@@ -461,7 +472,7 @@ function ensureSchemaUpToDate() {
       const todayYmd = new Date().toISOString().split('T')[0];
       db.run("UPDATE schedules SET status = 'completed' WHERE (status = 'planned' OR status = 'confirmed') AND schedule_date < ?", [todayYmd]);
       if (db.getRowsModified && db.getRowsModified() > 0) {
-        saveDatabaseToIndexedDB();
+        saveDbToIndexedDB();
       }
     } catch (e) {}
 
@@ -647,7 +658,14 @@ function loadDbFromIndexedDB() {
       const tx = idb.transaction('files', 'readonly');
       const store = tx.objectStore('files');
       const getReq = store.get('active_sqlite');
-      getReq.onsuccess = () => resolve(getReq.result || null);
+      getReq.onsuccess = () => {
+        const res = getReq.result;
+        if (!res) return resolve(null);
+        if (res instanceof Uint8Array) return resolve(res);
+        if (res instanceof ArrayBuffer) return resolve(new Uint8Array(res));
+        if (ArrayBuffer.isView(res)) return resolve(new Uint8Array(res.buffer, res.byteOffset, res.byteLength));
+        resolve(null);
+      };
       getReq.onerror = () => resolve(null);
     } catch(e) {
       resolve(null);
@@ -2390,8 +2408,19 @@ function isValidSqliteBinary(bytes) {
   return true;
 }
 
-function isEncryptedDbBytes(bytes) {
-  if (!bytes || bytes.length < 33) return false;
+function isEncryptedDbBytes(data) {
+  if (!data) return false;
+  let bytes = null;
+  if (data instanceof Uint8Array) {
+    bytes = data;
+  } else if (data instanceof ArrayBuffer) {
+    bytes = new Uint8Array(data);
+  } else if (ArrayBuffer.isView(data)) {
+    bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  } else {
+    return false;
+  }
+  if (bytes.length < 33) return false;
   // Check SRGE2 (Header: MAGIC (5) + ITERATIONS (4) + SALT (16) + IV (12) = 37 bytes)
   let isV2 = true;
   for (let i = 0; i < CRYPTO_MAGIC_V2.length; i++) {
@@ -2407,8 +2436,18 @@ function isEncryptedDbBytes(bytes) {
   return isV1;
 }
 
-function parseEncryptedDbHeader(bytes) {
-  if (!bytes || !isEncryptedDbBytes(bytes)) return null;
+function parseEncryptedDbHeader(data) {
+  if (!data || !isEncryptedDbBytes(data)) return null;
+  let bytes = null;
+  if (data instanceof Uint8Array) {
+    bytes = data;
+  } else if (data instanceof ArrayBuffer) {
+    bytes = new Uint8Array(data);
+  } else if (ArrayBuffer.isView(data)) {
+    bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  } else {
+    return null;
+  }
 
   let isV2 = true;
   for (let i = 0; i < CRYPTO_MAGIC_V2.length; i++) {
@@ -2913,6 +2952,18 @@ function purgeLegacySessionAndDiskTokens() {
   localStorage.removeItem('srg_bio_salt');
   localStorage.removeItem('srg_recovery_key_display');
   localStorage.removeItem('srg_user_recovery_email');
+}
+
+// Purge legacy biometric disk tokens and plaintext recovery key from disk
+async function purgeLegacyBiometricDiskTokens() {
+  localStorage.removeItem('srg_bio_salt');
+  localStorage.removeItem('srg_recovery_key_display');
+  localStorage.removeItem('srg_user_recovery_email');
+  try {
+    const idb = await openSRGDatabase();
+    const tx = idb.transaction('files', 'readwrite');
+    tx.objectStore('files').delete('srg_bio_key_token');
+  } catch(e) {}
 }
 
 async function removeBiometricEncryptionKey() {
