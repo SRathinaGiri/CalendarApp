@@ -1,9 +1,9 @@
-# Calendar App (Offline PWA) v1.1.4
+# Calendar App (Offline PWA) v1.1.5
 
 A standalone, local-first Personal Calendar & Daily Organizer Progressive Web App (PWA) powered by client-side **SQLite (WASM)** and **IndexedDB** local storage with **AES-256-GCM hardware-accelerated encryption at rest**.
 
-> **Production PWA (v1.1.4)**  
-> Fully client-side, local-first calendar with ACID SQLite storage, Web Crypto AES-256-GCM encryption at rest, verified SHA-256 backup archives, and offline capabilities.
+> **Production PWA (v1.1.5)**  
+> Fully client-side, local-first calendar with ACID SQLite storage, Web Crypto AES-256-GCM encryption at rest, password-protected encrypted backups, verified SHA-256 backup archives, and offline capabilities.
 
 ---
 
@@ -19,12 +19,12 @@ A standalone, local-first Personal Calendar & Daily Organizer Progressive Web Ap
   - Zero-knowledge architecture: data is encrypted exclusively inside your device browser and never sent to any server.
 - **IndexedDB Persistence (`SRGCalendarDB`):** Automatically persists edits, schedules, daily notes, financial entries, and file attachments in browser storage.
 - **Atomic 1-Click Complete Backup & Restore (`.zip`):**
-  - **Full Export:** Creates an archive containing your SQLite database, an integrity manifest, and deduplicated ticket attachments (PDFs & images) verified with SHA-256 fingerprints.
-  - **Atomic Restore:** Pre-validates the archive and stages all attachments before activating the new database. Automatically rolls back to the previous database if restoration fails.
+  - **Full Export:** Creates an archive containing your SQLite database, an integrity manifest, and deduplicated ticket attachments (PDFs & images) verified with SHA-256 fingerprints. Supports optional **AES-256 PIN encryption** so exported archives can be safely stored on cloud drives (Google Drive, OneDrive, iCloud) or USB drives.
+  - **Atomic Restore:** Automatically detects whether the backup archive or `.db` file is encrypted or unencrypted. Encrypted backups prompt for their Security PIN, decrypt seamlessly, and re-encrypt on the local device. Pre-validates the archive and stages all attachments before activating the new database. Automatically rolls back to the previous database if restoration fails.
 - **Local Snapshots:** Save named encrypted database safety snapshots in browser storage anytime.
 - **PWA (Progressive Web App):**
   - Installable directly to home screen or desktop from Chrome, Edge, Safari, or Brave.
-  - Version-scoped Service Worker cache cleanup (`v1.1.4`).
+  - Version-scoped Service Worker cache cleanup (`v1.1.5`).
   - In-app install and check for updates buttons.
 - **Comprehensive Calendar Views:**
   - **Calendar View:** 7-column month grid. In portrait mode, uniform square day cells with center indicator badges and a bottom day schedule agenda panel maximize usability. Long-pressing any day initiates multi-date selection for batch scheduling with single-tap date addition/removal. In landscape mode, full titles, times, and notes are shown.

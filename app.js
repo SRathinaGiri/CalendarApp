@@ -112,7 +112,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.1.4';
+const APP_VERSION = 'v1.1.5';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -1197,10 +1197,16 @@ async function exportFullBackupZip() {
 
   const loadingToast = showToast('Creating full backup bundle (database + attachments)...', 'info', 0);
   try {
+    // Offer optional AES-256 encryption using active Security PIN
+    const shouldEncrypt = confirm('🔒 Encrypt backup database with your Security PIN (AES-256)?\n\nClick "OK" to encrypt (recommended for cloud storage or USB drives).\nClick "Cancel" for standard unencrypted SQLite.');
+
     const zip = new JSZip();
 
-    // 1. Export SQLite database binary
-    const dbBinary = db.export();
+    // 1. Export SQLite database binary (optionally encrypted)
+    let dbBinary = db.export();
+    if (shouldEncrypt && currentEncryptionKey) {
+      dbBinary = await encryptDatabaseBytes(dbBinary);
+    }
     zip.file('database.db', dbBinary);
 
     // 2. Query schedules/records counts
@@ -1347,8 +1353,10 @@ async function exportFullBackupZip() {
       app_version: APP_VERSION,
       backup_id: 'SRG_BACKUP_' + Date.now(),
       created_at: nowIso,
+      encrypted: !!shouldEncrypt,
       database: {
         filename: 'database.db',
+        encrypted: !!shouldEncrypt,
         schedules_count: schCount,
         transactions_count: txCount,
         notes_count: noteCount,
@@ -1362,7 +1370,9 @@ async function exportFullBackupZip() {
     // 5. Generate and download zip
     const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
     const nowStr = formatDateYMD(new Date());
-    const downloadFilename = `SRG_Calendar_FullBackup_${nowStr}.zip`;
+    const downloadFilename = shouldEncrypt 
+      ? `SRG_Calendar_FullBackup_Encrypted_${nowStr}.zip`
+      : `SRG_Calendar_FullBackup_${nowStr}.zip`;
 
     const url = URL.createObjectURL(zipBlob);
     const a = document.createElement('a');
@@ -1424,8 +1434,23 @@ async function importFullBackupZip(file) {
       throw new Error('No SQLite database file (.db) found in the backup archive.');
     }
 
-    // 2. Validate SQLite binary
-    const dbBinary = await dbEntry.async('uint8array');
+    // 2. Validate SQLite binary (decrypt if encrypted)
+    let dbBinary = await dbEntry.async('uint8array');
+    if (isEncryptedDbBytes(dbBinary)) {
+      const pin = prompt('🔒 The database in this backup archive is encrypted with AES-256.\n\nPlease enter the Security PIN used to encrypt it:');
+      if (!pin) {
+        if (loadingToast) dismissToast(loadingToast);
+        showToast('Restore cancelled: Security PIN is required for encrypted backup.', 'warning');
+        return;
+      }
+      try {
+        dbBinary = await decryptDatabaseBytes(dbBinary, pin);
+      } catch(decErr) {
+        if (loadingToast) dismissToast(loadingToast);
+        showToast('❌ Decryption failed: Incorrect Security PIN for this backup.', 'error', 5000);
+        return;
+      }
+    }
     const headerStr = String.fromCharCode(...dbBinary.slice(0, 16));
     if (!headerStr.startsWith('SQLite format 3')) {
       throw new Error('Database file in archive is not a valid SQLite database.');
@@ -6629,15 +6654,21 @@ async function purgeLocalDatabase() {
    11. BACKUP & EXPORT
    ========================================================================== */
 
-function exportSqliteFile() {
+async function exportSqliteFile() {
   if (!db) return;
-  const binaryArray = db.export();
+  const shouldEncrypt = confirm('🔒 Encrypt this database backup with your Security PIN (AES-256)?\n\nClick "OK" to encrypt (recommended for cloud storage or USB).\nClick "Cancel" for standard unencrypted SQLite .db file.');
+  let binaryArray = db.export();
+  let ext = 'db';
+  if (shouldEncrypt && currentEncryptionKey) {
+    binaryArray = await encryptDatabaseBytes(binaryArray);
+    ext = 'enc.db';
+  }
   const blob = new Blob([binaryArray], { type: 'application/x-sqlite3' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `SRG_Calendar_${formatDateYMD(new Date())}.db`;
+  a.download = `SRG_Calendar_${formatDateYMD(new Date())}.${ext}`;
   a.click();
-  showToast('Database backup downloaded as .db file!', 'success', 3500);
+  showToast(shouldEncrypt ? '🔒 Encrypted database backup downloaded!' : 'Database backup downloaded as .db file!', 'success', 3500);
 }
 
 function importSqliteFile(e) {
