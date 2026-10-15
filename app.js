@@ -112,7 +112,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.2.2';
+const APP_VERSION = 'v1.2.3';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -2738,6 +2738,12 @@ async function unlockAppWithBiometric(autoPrompt = false) {
       currentEncryptionKey = key;
       await persistKeyToSession(key);
 
+      // Auto-generate recovery vault for existing users upgrading to v1.2.2+
+      if (!localStorage.getItem('srg_recovery_vault')) {
+        const autoKey = generateRecoveryKey();
+        await saveRecoveryVault(key, autoKey);
+      }
+
       isAppUnlocked = true;
       const overlay = document.getElementById('appLockOverlay');
       if (overlay) overlay.classList.add('hidden');
@@ -2801,6 +2807,13 @@ async function checkAppSecurityLock() {
         ensureSchemaUpToDate();
       }
       currentEncryptionKey = sessionKey;
+
+      // Auto-generate recovery vault for existing users upgrading to v1.2.2+
+      if (!localStorage.getItem('srg_recovery_vault')) {
+        const autoKey = generateRecoveryKey();
+        await saveRecoveryVault(sessionKey, autoKey);
+      }
+
       isAppUnlocked = true;
       overlay.classList.add('hidden');
       updateBadge('Local SQLite Active');
@@ -2978,6 +2991,12 @@ async function unlockAppWithKey(enteredKey) {
 
     if (localStorage.getItem('srg_biometric_enabled') === 'true') {
       await saveBiometricEncryptionKey(key);
+    }
+
+    // Auto-generate recovery vault for existing users upgrading to v1.2.2+
+    if (!localStorage.getItem('srg_recovery_vault')) {
+      const autoKey = generateRecoveryKey();
+      await saveRecoveryVault(key, autoKey);
     }
 
     isAppUnlocked = true;
@@ -7657,10 +7676,40 @@ function setupUIEventListeners() {
   if (drawerRecoveryKeyBtn) {
     drawerRecoveryKeyBtn.addEventListener('click', async () => {
       closeSideMenu();
+      if (!isPinConfigured()) {
+        showToast('Please set up a Security PIN first to enable encryption and recovery.', 'warning', 4000);
+        return;
+      }
       let key = localStorage.getItem('srg_recovery_key_display');
-      if (!key && currentEncryptionKey) {
-        key = generateRecoveryKey();
-        await saveRecoveryVault(currentEncryptionKey, key);
+      if (!currentEncryptionKey) {
+        currentEncryptionKey = await restoreKeyFromSession();
+      }
+      if (!key) {
+        if (currentEncryptionKey) {
+          key = generateRecoveryKey();
+          await saveRecoveryVault(currentEncryptionKey, key);
+        } else {
+          // Key not in active session: ask user for their PIN to derive key & create recovery kit
+          const enteredPin = prompt('Enter your Security PIN to generate your Emergency Recovery Key:');
+          if (enteredPin && enteredPin.trim()) {
+            const salt = getStoredCryptoSalt();
+            if (salt) {
+              const derived = await deriveKeyFromPin(enteredPin.trim(), salt);
+              const valid = await verifyPinWithAuthToken(enteredPin.trim());
+              if (valid) {
+                currentEncryptionKey = derived;
+                await persistKeyToSession(derived);
+                key = generateRecoveryKey();
+                await saveRecoveryVault(derived, key);
+              } else {
+                showToast('Incorrect Security PIN. Could not generate recovery key.', 'error', 3500);
+                return;
+              }
+            }
+          } else {
+            return;
+          }
+        }
       }
       openRecoveryKitModal(key);
     });

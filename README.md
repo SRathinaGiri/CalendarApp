@@ -1,8 +1,8 @@
-# Calendar App (Offline PWA) v1.2.2
+# Calendar App (Offline PWA) v1.2.3
 
 A standalone, local-first Personal Calendar & Daily Organizer Progressive Web App (PWA) powered by client-side **SQLite (WASM)** and **IndexedDB** local storage with **AES-256-GCM hardware-accelerated encryption at rest for both database and file attachments**.
 
-> **Production PWA (v1.2.2)**  
+> **Production PWA (v1.2.3)**  
 > Fully client-side, local-first calendar with ACID SQLite storage, Web Crypto AES-256-GCM encryption at rest for database and attachments, Emergency Recovery Key kit with 1-click email/download options, forgot PIN reset loop, enforced 6+ character PIN/passphrase protection, SHA-256 verified backup archives, smart restore re-encryption, wrapped biometric unlock, and 100% offline capabilities.
 
 ---
@@ -29,7 +29,7 @@ A standalone, local-first Personal Calendar & Daily Organizer Progressive Web Ap
 - **Local Snapshots:** Save named encrypted database safety snapshots in browser storage anytime. When changing PIN, all past snapshots and attachments are atomically re-encrypted under the new key.
 - **PWA (Progressive Web App):**
   - Installable directly to home screen or desktop from Chrome, Edge, Safari, or Brave.
-  - Version-scoped Service Worker cache cleanup (`v1.2.2`).
+  - Version-scoped Service Worker cache cleanup (`v1.2.3`).
   - In-app install and check for updates buttons.
 - **Comprehensive Calendar Views:**
   - **Calendar View:** 7-column month grid. In portrait mode, uniform square day cells with center indicator badges and a bottom day schedule agenda panel maximize usability. Long-pressing any day initiates multi-date selection for batch scheduling with single-tap date addition/removal. In landscape mode, full titles, times, and notes are shown.
