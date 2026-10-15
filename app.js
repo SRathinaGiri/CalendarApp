@@ -112,7 +112,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.2.5';
+const APP_VERSION = 'v1.2.6';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -3148,52 +3148,56 @@ async function deriveRecoveryWrappingKey(normalizedKey, salt) {
   );
 }
 
+// Build encrypted recovery vault packed bytes in memory protecting raw master key
+async function buildRecoveryVaultPackedBytes(masterKey, recoveryKey) {
+  if (!masterKey || !recoveryKey) {
+    throw new Error('Master key and recovery key are required to construct recovery vault.');
+  }
+  const rawMasterBytes = await crypto.subtle.exportKey('raw', masterKey);
+  const normalized = normalizeRecoveryKey(recoveryKey);
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const wrapKey = await deriveRecoveryWrappingKey(normalized, salt);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+
+  const cipherBuf = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv: iv },
+    wrapKey,
+    rawMasterBytes
+  );
+  const ciphertext = new Uint8Array(cipherBuf);
+
+  // Layout: MAGIC (7) + SALT (16) + IV (12) + CIPHERTEXT (48)
+  const packed = new Uint8Array(RECOVERY_MAGIC.length + salt.length + iv.length + ciphertext.length);
+  packed.set(RECOVERY_MAGIC, 0);
+  packed.set(salt, RECOVERY_MAGIC.length);
+  packed.set(iv, RECOVERY_MAGIC.length + salt.length);
+  packed.set(ciphertext, RECOVERY_MAGIC.length + salt.length + iv.length);
+  return packed;
+}
+
 // Save encrypted recovery vault protecting raw master key
 async function saveRecoveryVault(masterKey, recoveryKey) {
-  if (!masterKey || !recoveryKey) {
-    throw new Error('Master key and recovery key are required to save recovery vault.');
-  }
+  const packed = await buildRecoveryVaultPackedBytes(masterKey, recoveryKey);
+
+  // Persist directly to primary storage in IndexedDB 'files' store first
+  const idb = await openSRGDatabase();
+  await new Promise((resolve, reject) => {
+    const tx = idb.transaction('files', 'readwrite');
+    tx.objectStore('files').put(packed, 'srg_recovery_vault');
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error || new Error('Failed to save recovery vault to IndexedDB'));
+    tx.onabort = () => reject(tx.error || new Error('Recovery vault transaction aborted'));
+  });
+
+  // Then update localStorage cache (gracefully ignoring quota limits since IndexedDB is primary)
   try {
-    const rawMasterBytes = await crypto.subtle.exportKey('raw', masterKey);
-    const normalized = normalizeRecoveryKey(recoveryKey);
-    const salt = crypto.getRandomValues(new Uint8Array(16));
-    const wrapKey = await deriveRecoveryWrappingKey(normalized, salt);
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-
-    const cipherBuf = await crypto.subtle.encrypt(
-      { name: 'AES-GCM', iv: iv },
-      wrapKey,
-      rawMasterBytes
-    );
-    const ciphertext = new Uint8Array(cipherBuf);
-
-    // Layout: MAGIC (7) + SALT (16) + IV (12) + CIPHERTEXT (48)
-    const packed = new Uint8Array(RECOVERY_MAGIC.length + salt.length + iv.length + ciphertext.length);
-    packed.set(RECOVERY_MAGIC, 0);
-    packed.set(salt, RECOVERY_MAGIC.length);
-    packed.set(iv, RECOVERY_MAGIC.length + salt.length);
-    packed.set(ciphertext, RECOVERY_MAGIC.length + salt.length + iv.length);
-
     const b64 = bufferToBase64(packed);
     localStorage.setItem('srg_recovery_vault', b64);
-    localStorage.removeItem('srg_recovery_key_display'); // NEVER store plaintext recovery key at rest
-
-    // Also persist in IndexedDB 'files' store for redundancy
-    try {
-      const idb = await openSRGDatabase();
-      await new Promise((resolve, reject) => {
-        const tx = idb.transaction('files', 'readwrite');
-        tx.objectStore('files').put(packed, 'srg_recovery_vault');
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-      });
-    } catch(idbErr) {
-      console.warn('Could not persist recovery vault to IndexedDB:', idbErr);
-    }
-  } catch(e) {
-    console.error('saveRecoveryVault failed:', e);
-    throw new Error('Failed to securely save recovery vault: ' + (e.message || e));
+  } catch(lsErr) {
+    console.warn('Could not cache recovery vault to localStorage (IndexedDB copy is primary):', lsErr);
   }
+  localStorage.removeItem('srg_recovery_key_display'); // NEVER store plaintext recovery key at rest
+  return packed;
 }
 
 // Get the stored packed recovery vault bytes
@@ -3458,18 +3462,22 @@ async function handleForgotPinResetSubmit(e) {
     const newSalt = crypto.getRandomValues(new Uint8Array(16));
     const newMasterKey = await deriveKeyFromPin(newPin, newSalt);
 
-    // 5. Atomically re-encrypt snapshots, attachments, and the database
-    await atomicReencryptAllData(recoveredMasterKey, newMasterKey, newSalt);
-
-    // 6. Generate a new Emergency Recovery Key and update the recovery vault
+    // 5. Generate a new Emergency Recovery Key and atomically re-encrypt snapshots, attachments, database, and recovery vault
     const newRecoveryKey = generateRecoveryKey();
-    await saveRecoveryVault(newMasterKey, newRecoveryKey);
+    const packedVault = await atomicReencryptAllData(recoveredMasterKey, newMasterKey, newSalt, newRecoveryKey);
 
-    // 7. Commit new security configuration
+    // 6. Commit new security configuration only after successful transaction commit
     storeCryptoSalt(newSalt);
     currentEncryptionKey = newMasterKey;
     await createAuthVerificationToken(newMasterKey);
     await persistKeyToSession(newMasterKey);
+
+    try {
+      localStorage.setItem('srg_recovery_vault', bufferToBase64(packedVault));
+    } catch(lsErr) {
+      console.warn('Could not cache recovery vault to localStorage (IndexedDB copy is primary):', lsErr);
+    }
+    localStorage.removeItem('srg_recovery_key_display');
 
     // 11. Unlock application
     isAppUnlocked = true;
@@ -3523,8 +3531,8 @@ function closeAboutModal() {
 /* ==========================================================================
    ATOMIC RE-ENCRYPTION UTILITY
    ========================================================================== */
-// Atomically stages, validates, and re-encrypts all snapshots, attachments, and active database
-async function atomicReencryptAllData(oldKey, newKey, newSalt) {
+// Atomically stages, validates, and re-encrypts all snapshots, attachments, active database, and recovery vault
+async function atomicReencryptAllData(oldKey, newKey, newSalt, recoveryKey = null) {
   if (!oldKey || !newKey || !newSalt) {
     throw new Error('Missing encryption parameters for atomic re-encryption');
   }
@@ -3585,7 +3593,7 @@ async function atomicReencryptAllData(oldKey, newKey, newSalt) {
         const cursor = e.target.result;
         if (cursor) {
           const k = String(cursor.key);
-          if (k !== 'active_sqlite' && k !== 'srg_bio_key_token') {
+          if (k !== 'active_sqlite' && k !== 'srg_bio_key_token' && k !== 'srg_recovery_vault') {
             entries.push({ key: k, value: cursor.value });
           }
           cursor.continue();
@@ -3642,7 +3650,13 @@ async function atomicReencryptAllData(oldKey, newKey, newSalt) {
     }
   }
 
-  // 4. Atomic Commit to IndexedDB spanning BOTH stores in a single transaction
+  // 4. Stage and verify replacement recovery vault if recoveryKey provided
+  let stagedVaultBytes = null;
+  if (recoveryKey) {
+    stagedVaultBytes = await buildRecoveryVaultPackedBytes(newKey, recoveryKey);
+  }
+
+  // 5. Atomic Commit to IndexedDB spanning BOTH stores in a single transaction
   await new Promise((resolve, reject) => {
     const tx = idb.transaction(['snapshots', 'files'], 'readwrite');
     const snapStore = tx.objectStore('snapshots');
@@ -3657,6 +3671,9 @@ async function atomicReencryptAllData(oldKey, newKey, newSalt) {
     if (stagedActiveDb) {
       fileStore.put(stagedActiveDb, 'active_sqlite');
     }
+    if (stagedVaultBytes) {
+      fileStore.put(stagedVaultBytes, 'srg_recovery_vault');
+    }
 
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error || new Error('Atomic re-encryption transaction failed'));
@@ -3666,6 +3683,8 @@ async function atomicReencryptAllData(oldKey, newKey, newSalt) {
   if (stagedActiveDb) {
     cachedEncryptedDbBytes = stagedActiveDb;
   }
+
+  return stagedVaultBytes;
 }
 
 /* ==========================================================================
@@ -3739,19 +3758,23 @@ async function handleChangePinSubmit(e) {
     const newSalt = crypto.getRandomValues(new Uint8Array(16));
     const newKey = await deriveKeyFromPin(newPin, newSalt);
 
-    // Perform atomic staged re-encryption of all data (snapshots, attachments, active database)
-    await atomicReencryptAllData(oldKey, newKey, newSalt);
+    // Generate replacement Emergency Recovery Key and perform atomic multi-store re-encryption
+    const newRecoveryKey = generateRecoveryKey();
+    const packedVault = await atomicReencryptAllData(oldKey, newKey, newSalt, newRecoveryKey);
 
-    // Update current active key, salt and auth token
+    // Update current active key, salt and auth token only after successful transaction commit
     storeCryptoSalt(newSalt);
     currentEncryptionKey = newKey;
 
     await createAuthVerificationToken(newKey);
     await persistKeyToSession(newKey);
 
-    // Generate replacement Emergency Recovery Key and update recovery vault
-    const newRecoveryKey = generateRecoveryKey();
-    await saveRecoveryVault(newKey, newRecoveryKey);
+    try {
+      localStorage.setItem('srg_recovery_vault', bufferToBase64(packedVault));
+    } catch(lsErr) {
+      console.warn('Could not cache recovery vault to localStorage (IndexedDB copy is primary):', lsErr);
+    }
+    localStorage.removeItem('srg_recovery_key_display');
 
     closeChangePinModal();
     showToast('✓ Security PIN changed! A new Emergency Recovery Key has been generated.', 'success', 5000);
