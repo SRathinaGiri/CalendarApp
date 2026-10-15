@@ -112,7 +112,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.3.1';
+const APP_VERSION = 'v1.3.2';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -2523,39 +2523,40 @@ function extractSaltFromEncryptedDbBytes(bytes) {
 }
 
 // Get stored crypto salt with multi-tier fallback:
-// 1. Authoritative: Encrypted database header in memory (cachedEncryptedDbBytes)
+// 1. Current active in-memory encryption salt (highest priority)
 // 2. localStorage cache
-// 3. Fallback to null
+// 3. Encrypted database header in memory (cachedEncryptedDbBytes)
+// 4. Fallback to null
 function getStoredCryptoSalt() {
-  if (cachedEncryptedDbBytes && isEncryptedDbBytes(cachedEncryptedDbBytes)) {
-    const salt = extractSaltFromEncryptedDbBytes(cachedEncryptedDbBytes);
-    if (salt) return salt;
+  if (currentEncryptionSalt && currentEncryptionSalt.length === 16) {
+    return currentEncryptionSalt;
   }
   const b64 = localStorage.getItem('srg_crypto_salt');
   if (b64) {
     try {
-      return base64ToBuffer(b64);
+      const u8 = base64ToBuffer(b64);
+      if (u8 && u8.length === 16) return u8;
     } catch(e) {}
+  }
+  if (cachedEncryptedDbBytes && isEncryptedDbBytes(cachedEncryptedDbBytes)) {
+    const salt = extractSaltFromEncryptedDbBytes(cachedEncryptedDbBytes);
+    if (salt) return salt;
   }
   return null;
 }
 
-// Asynchronous multi-tier salt retrieval (database header -> IndexedDB store -> localStorage)
+// Asynchronous multi-tier salt retrieval (active in-memory -> localStorage -> IndexedDB files -> database header)
 async function getEffectiveCryptoSalt(dbBytes = null) {
-  const bytes = dbBytes || cachedEncryptedDbBytes;
-  if (bytes && isEncryptedDbBytes(bytes)) {
-    const salt = extractSaltFromEncryptedDbBytes(bytes);
-    if (salt) return salt;
+  if (currentEncryptionSalt && currentEncryptionSalt.length === 16) {
+    return currentEncryptionSalt;
   }
-  try {
-    const idbBytes = await loadDbFromIndexedDB();
-    if (idbBytes && isEncryptedDbBytes(idbBytes)) {
-      cachedEncryptedDbBytes = idbBytes;
-      const salt = extractSaltFromEncryptedDbBytes(idbBytes);
-      if (salt) return salt;
-    }
-  } catch(e) {}
-
+  const b64 = localStorage.getItem('srg_crypto_salt');
+  if (b64) {
+    try {
+      const u8 = base64ToBuffer(b64);
+      if (u8 && u8.length === 16) return u8;
+    } catch(e) {}
+  }
   try {
     const idb = await openSRGDatabase();
     const tx = idb.transaction('files', 'readonly');
@@ -2565,9 +2566,15 @@ async function getEffectiveCryptoSalt(dbBytes = null) {
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => resolve(null);
     });
-    if (res instanceof Uint8Array) return res;
+    if (res instanceof Uint8Array && res.length === 16) return res;
+    if (res instanceof ArrayBuffer && res.byteLength === 16) return new Uint8Array(res);
   } catch(e) {}
 
+  const bytes = dbBytes || cachedEncryptedDbBytes;
+  if (bytes && isEncryptedDbBytes(bytes)) {
+    const salt = extractSaltFromEncryptedDbBytes(bytes);
+    if (salt) return salt;
+  }
   return getStoredCryptoSalt();
 }
 
@@ -2578,6 +2585,114 @@ function storeCryptoSalt(saltBytes) {
   } catch(e) {
     console.warn('Could not cache crypto salt to localStorage:', e);
   }
+}
+
+// Systematically gathers and deduplicates ALL distinct candidate salts and iteration counts
+// across every storage tier (header, localStorage, IndexedDB files, IndexedDB snapshots, and recovery vault)
+async function getAllCandidateCryptoConfigs(dbBytes = null) {
+  const bytes = dbBytes || cachedEncryptedDbBytes || (await loadDbFromIndexedDB());
+  const distinctSalts = new Map(); // hex -> { salt: Uint8Array, iterationsHint?: number, source: string }
+
+  function addCandidateSalt(saltInput, source, iterationsHint = null) {
+    if (!saltInput) return;
+    let u8 = null;
+    if (saltInput instanceof Uint8Array) u8 = saltInput;
+    else if (saltInput instanceof ArrayBuffer) u8 = new Uint8Array(saltInput);
+    else if (ArrayBuffer.isView(saltInput)) u8 = new Uint8Array(saltInput.buffer, saltInput.byteOffset, saltInput.byteLength);
+    if (!u8 || u8.length !== 16) return;
+    const hex = Array.from(u8).map(b => b.toString(16).padStart(2, '0')).join('');
+    if (!distinctSalts.has(hex)) {
+      distinctSalts.set(hex, { salt: u8, source, iterationsHint });
+    }
+  }
+
+  // 1. Current active in-memory encryption salt (if present)
+  if (currentEncryptionSalt) {
+    addCandidateSalt(currentEncryptionSalt, 'in_memory_currentEncryptionSalt', PBKDF2_ITERATIONS);
+  }
+
+  // 2. Salt from active database header (if encrypted)
+  if (bytes && isEncryptedDbBytes(bytes)) {
+    const parsed = parseEncryptedDbHeader(bytes);
+    if (parsed && parsed.salt) {
+      addCandidateSalt(parsed.salt, 'active_db_header', parsed.iterations);
+    }
+  }
+
+  // 3. Salt from localStorage 'srg_crypto_salt'
+  try {
+    const lsB64 = localStorage.getItem('srg_crypto_salt');
+    if (lsB64) {
+      const u8 = base64ToBuffer(lsB64);
+      if (u8 && u8.length === 16) addCandidateSalt(u8, 'localStorage');
+    }
+  } catch(e) {}
+
+  // 4. Salt from IndexedDB 'files' store 'srg_crypto_salt'
+  try {
+    const idb = await openSRGDatabase();
+    const tx = idb.transaction('files', 'readonly');
+    const store = tx.objectStore('files');
+    const req = store.get('srg_crypto_salt');
+    const idbSalt = await new Promise(r => {
+      req.onsuccess = () => r(req.result);
+      req.onerror = () => r(null);
+    });
+    if (idbSalt) addCandidateSalt(idbSalt, 'indexedDB_files');
+  } catch(e) {}
+
+  // 5. Salts from all snapshots in IndexedDB 'snapshots' store
+  try {
+    const idb = await openSRGDatabase();
+    const tx = idb.transaction('snapshots', 'readonly');
+    const sStore = tx.objectStore('snapshots');
+    const sReq = sStore.getAll();
+    const snaps = await new Promise(r => {
+      sReq.onsuccess = () => r(sReq.result);
+      sReq.onerror = () => r(null);
+    });
+    if (Array.isArray(snaps)) {
+      snaps.forEach((snap, idx) => {
+        if (snap && snap.data && isEncryptedDbBytes(snap.data)) {
+          const sSalt = extractSaltFromEncryptedDbBytes(snap.data);
+          if (sSalt) {
+            const parsed = parseEncryptedDbHeader(snap.data);
+            addCandidateSalt(sSalt, `snapshot_${snap.id || idx}`, parsed ? parsed.iterations : null);
+          }
+        }
+      });
+    }
+  } catch(e) {}
+
+  // 6. Salt from recovery vault if present
+  try {
+    const vaultBytes = await getStoredRecoveryVaultBytes();
+    if (vaultBytes && vaultBytes.length >= 7 + 16) {
+      const vSalt = vaultBytes.slice(7, 23);
+      if (vSalt.length === 16) addCandidateSalt(vSalt, 'recovery_vault');
+    }
+  } catch(e) {}
+
+  // Build ordered candidate configs: test each salt with PBKDF2_ITERATIONS (600k) and PBKDF2_LEGACY_ITERATIONS (100k)
+  const configs = [];
+  const seenConfig = new Set();
+
+  for (const [hex, item] of distinctSalts.entries()) {
+    const itersToTest = [];
+    if (item.iterationsHint) itersToTest.push(item.iterationsHint);
+    if (!itersToTest.includes(PBKDF2_ITERATIONS)) itersToTest.push(PBKDF2_ITERATIONS);
+    if (!itersToTest.includes(PBKDF2_LEGACY_ITERATIONS)) itersToTest.push(PBKDF2_LEGACY_ITERATIONS);
+
+    for (const iter of itersToTest) {
+      const keyStr = `${hex}_${iter}`;
+      if (!seenConfig.has(keyStr)) {
+        seenConfig.add(keyStr);
+        configs.push({ salt: item.salt, iterations: iter, source: item.source });
+      }
+    }
+  }
+
+  return configs;
 }
 
 async function deriveKeyFromPin(pin, salt, iterations = PBKDF2_ITERATIONS, extractable = false) {
@@ -2701,50 +2816,41 @@ async function getStoredAuthVerificationTokenBytes() {
 async function verifyPinWithAuthToken(pin) {
   if (!pin) return false;
   const dbBytes = cachedEncryptedDbBytes || await loadDbFromIndexedDB();
-  const parsed = dbBytes && isEncryptedDbBytes(dbBytes) ? parseEncryptedDbHeader(dbBytes) : null;
-  const storedSalt = await getEffectiveCryptoSalt(dbBytes);
-
-  const candidateConfigs = [];
-  if (parsed && parsed.salt) {
-    candidateConfigs.push({ salt: parsed.salt, iterations: parsed.iterations });
-  }
-  if (storedSalt) {
-    candidateConfigs.push({ salt: storedSalt, iterations: PBKDF2_ITERATIONS });
-    candidateConfigs.push({ salt: storedSalt, iterations: PBKDF2_LEGACY_ITERATIONS });
-  }
-  if (parsed && parsed.salt) {
-    if (parsed.iterations !== PBKDF2_ITERATIONS) candidateConfigs.push({ salt: parsed.salt, iterations: PBKDF2_ITERATIONS });
-    if (parsed.iterations !== PBKDF2_LEGACY_ITERATIONS) candidateConfigs.push({ salt: parsed.salt, iterations: PBKDF2_LEGACY_ITERATIONS });
-  }
-
+  const candidateConfigs = await getAllCandidateCryptoConfigs(dbBytes);
   const tokenBytes = await getStoredAuthVerificationTokenBytes();
 
-  for (const config of candidateConfigs) {
-    try {
-      const key = await deriveKeyFromPin(pin, config.salt, config.iterations, false);
-      // Primary check: try auth verification token
-      if (tokenBytes && tokenBytes.length >= 28) {
-        try {
-          const iv = tokenBytes.slice(0, 12);
-          const ciphertext = tokenBytes.slice(12);
-          const decrypted = await crypto.subtle.decrypt(
-            { name: 'AES-GCM', iv: iv },
-            key,
-            ciphertext
-          );
-          const str = new TextDecoder().decode(decrypted);
-          if (str === 'SRG_CALENDAR_AUTHENTICATED') return true;
-        } catch(tokenErr) {}
-      }
+  const trimmedPin = pin.trim();
+  const pinsToTry = [trimmedPin];
+  if (pin !== trimmedPin) pinsToTry.push(pin);
 
-      // Cryptographic ground truth: test-decrypt the database header directly
-      if (dbBytes && isEncryptedDbBytes(dbBytes)) {
-        try {
-          const testBytes = await decryptDatabaseBytes(dbBytes, key, false);
-          if (isValidSqliteBinary(testBytes)) return true;
-        } catch(dbErr) {}
-      }
-    } catch(e) {}
+  for (const p of pinsToTry) {
+    for (const config of candidateConfigs) {
+      try {
+        const key = await deriveKeyFromPin(p, config.salt, config.iterations, false);
+        // Primary check: try auth verification token
+        if (tokenBytes && tokenBytes.length >= 28) {
+          try {
+            const iv = tokenBytes.slice(0, 12);
+            const ciphertext = tokenBytes.slice(12);
+            const decrypted = await crypto.subtle.decrypt(
+              { name: 'AES-GCM', iv: iv },
+              key,
+              ciphertext
+            );
+            const str = new TextDecoder().decode(decrypted);
+            if (str === 'SRG_CALENDAR_AUTHENTICATED') return true;
+          } catch(tokenErr) {}
+        }
+
+        // Cryptographic ground truth: test-decrypt the database header directly
+        if (dbBytes && isEncryptedDbBytes(dbBytes)) {
+          try {
+            const testBytes = await decryptDatabaseBytes(dbBytes, key, false);
+            if (isValidSqliteBinary(testBytes)) return true;
+          } catch(dbErr) {}
+        }
+      } catch(e) {}
+    }
   }
   return false;
 }
@@ -3035,7 +3141,9 @@ async function registerBiometricCredential() {
     return false;
   }
   if (!currentEncryptionKey) {
-    showToast('Please unlock with your PIN first before configuring biometrics.', 'warning');
+    showToast('Please enter your Security PIN to unlock the calendar first.', 'info', 4000);
+    const keyInp = document.getElementById('appLockKeyInput');
+    if (keyInp) keyInp.focus();
     return false;
   }
 
@@ -3264,10 +3372,38 @@ async function unlockAppWithBiometric(autoPrompt = false) {
     rawMasterBytes.fill(0); // Zero memory
 
     const bytesToDecrypt = cachedEncryptedDbBytes || await loadDbFromIndexedDB();
+    let decryptedBytes = null;
     if (bytesToDecrypt) {
-      const decryptedBytes = await decryptDatabaseBytes(bytesToDecrypt, masterKey, true);
-      if (!isValidSqliteBinary(decryptedBytes)) {
-        throw new Error('Biometric unlock failed: decrypted data is not a valid SQLite database.');
+      try {
+        decryptedBytes = await decryptDatabaseBytes(bytesToDecrypt, masterKey, true);
+      } catch (dbErr) {
+        // Fallback: check local snapshots with masterKey
+        try {
+          const idb = await openSRGDatabase();
+          const tx = idb.transaction('snapshots', 'readonly');
+          const sStore = tx.objectStore('snapshots');
+          const req = sStore.getAll();
+          const snaps = await new Promise(r => { req.onsuccess = () => r(req.result || []); req.onerror = () => r([]); });
+          if (Array.isArray(snaps) && snaps.length > 0) {
+            snaps.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+            for (const snap of snaps) {
+              if (snap && snap.data) {
+                try {
+                  const testBytes = await decryptDatabaseBytes(snap.data, masterKey, true);
+                  if (isValidSqliteBinary(testBytes)) {
+                    decryptedBytes = testBytes;
+                    console.info(`✓ Biometric unlock recovered database from snapshot: ${snap.id}`);
+                    break;
+                  }
+                } catch(e) {}
+              }
+            }
+          }
+        } catch(snapErr) {}
+      }
+
+      if (!decryptedBytes || !isValidSqliteBinary(decryptedBytes)) {
+        throw new Error('Biometric key out of sync with database. Please unlock once with your Security PIN.');
       }
       db = new SQL.Database(decryptedBytes);
       ensureSchemaUpToDate();
@@ -3293,7 +3429,7 @@ async function unlockAppWithBiometric(autoPrompt = false) {
   } catch(err) {
     console.warn('Biometric verification error:', err);
     if (!autoPrompt && err.name !== 'NotAllowedError') {
-      showToast('Biometric verification cancelled or failed. Please enter PIN.', 'error', 3000);
+      showToast(err.message || 'Biometric verification cancelled or failed. Please enter PIN.', 'error', 4000);
     }
   }
 }
@@ -3456,6 +3592,7 @@ async function handleSetupPinSubmit(e) {
 
 async function unlockAppWithKey(enteredKey) {
   const trimmedKey = (enteredKey || '').trim();
+  const rawKey = enteredKey || '';
   const errEl = document.getElementById('appLockErrorMsg');
 
   const throttleMsg = checkPinThrottle();
@@ -3467,7 +3604,7 @@ async function unlockAppWithKey(enteredKey) {
     return;
   }
 
-  if (!trimmedKey) {
+  if (!trimmedKey && !rawKey) {
     if (errEl) {
       errEl.textContent = 'Please enter your Security PIN';
       errEl.classList.remove('hidden');
@@ -3488,37 +3625,75 @@ async function unlockAppWithKey(enteredKey) {
       throw new Error('Database not found');
     }
 
-    const parsed = isEncryptedDbBytes(bytesToDecrypt) ? parseEncryptedDbHeader(bytesToDecrypt) : null;
-    const storedSalt = await getEffectiveCryptoSalt(bytesToDecrypt);
-
-    // Build ordered list of candidate (salt, iterations) combinations
-    const candidateConfigs = [];
-    if (parsed && parsed.salt) {
-      candidateConfigs.push({ salt: parsed.salt, iterations: parsed.iterations });
-    }
-    if (storedSalt) {
-      candidateConfigs.push({ salt: storedSalt, iterations: PBKDF2_ITERATIONS });
-      candidateConfigs.push({ salt: storedSalt, iterations: PBKDF2_LEGACY_ITERATIONS });
-    }
-    if (parsed && parsed.salt) {
-      if (parsed.iterations !== PBKDF2_ITERATIONS) candidateConfigs.push({ salt: parsed.salt, iterations: PBKDF2_ITERATIONS });
-      if (parsed.iterations !== PBKDF2_LEGACY_ITERATIONS) candidateConfigs.push({ salt: parsed.salt, iterations: PBKDF2_LEGACY_ITERATIONS });
-    }
+    const candidateConfigs = await getAllCandidateCryptoConfigs(bytesToDecrypt);
+    const pinsToTry = [trimmedKey];
+    if (rawKey && rawKey !== trimmedKey) pinsToTry.push(rawKey);
 
     let decryptedBytes = null;
     let successfulKey = null;
+    let matchingPin = null;
 
-    for (const config of candidateConfigs) {
-      try {
-        const testKey = await deriveKeyFromPin(trimmedKey, config.salt, config.iterations, false);
-        const testBytes = await decryptDatabaseBytes(bytesToDecrypt, testKey, false);
-        if (isValidSqliteBinary(testBytes)) {
-          decryptedBytes = testBytes;
-          successfulKey = testKey;
-          break;
+    // 1. Primary: test candidate keys against active database bytes
+    for (const pin of pinsToTry) {
+      for (const config of candidateConfigs) {
+        try {
+          const testKey = await deriveKeyFromPin(pin, config.salt, config.iterations, false);
+          const testBytes = await decryptDatabaseBytes(bytesToDecrypt, testKey, false);
+          if (isValidSqliteBinary(testBytes)) {
+            decryptedBytes = testBytes;
+            successfulKey = testKey;
+            matchingPin = pin;
+            console.info(`✓ Successfully unlocked database (salt source: ${config.source}, iterations: ${config.iterations})`);
+            break;
+          }
+        } catch (candErr) {
+          // Try next candidate configuration
         }
-      } catch (candErr) {
-        // Try next candidate configuration
+      }
+      if (decryptedBytes) break;
+    }
+
+    // 2. Snapshot Fallback: If active database failed to decrypt, check all IndexedDB snapshots
+    if (!decryptedBytes || !isValidSqliteBinary(decryptedBytes)) {
+      try {
+        const idb = await openSRGDatabase();
+        const tx = idb.transaction('snapshots', 'readonly');
+        const sStore = tx.objectStore('snapshots');
+        const req = sStore.getAll();
+        const snaps = await new Promise(r => { req.onsuccess = () => r(req.result || []); req.onerror = () => r([]); });
+        if (Array.isArray(snaps) && snaps.length > 0) {
+          snaps.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+          for (const snap of snaps) {
+            if (!snap || !snap.data) continue;
+            // Case A: Unencrypted snapshot
+            if (!isEncryptedDbBytes(snap.data) && isValidSqliteBinary(snap.data)) {
+              decryptedBytes = snap.data;
+              matchingPin = trimmedKey;
+              console.info(`✓ Recovered database from unencrypted snapshot: ${snap.id}`);
+              break;
+            }
+            // Case B: Encrypted snapshot
+            for (const pin of pinsToTry) {
+              for (const config of candidateConfigs) {
+                try {
+                  const testKey = await deriveKeyFromPin(pin, config.salt, config.iterations, false);
+                  const testBytes = await decryptDatabaseBytes(snap.data, testKey, false);
+                  if (isValidSqliteBinary(testBytes)) {
+                    decryptedBytes = testBytes;
+                    successfulKey = testKey;
+                    matchingPin = pin;
+                    console.info(`✓ Recovered database from encrypted snapshot: ${snap.id}`);
+                    break;
+                  }
+                } catch(e) {}
+              }
+              if (decryptedBytes) break;
+            }
+            if (decryptedBytes) break;
+          }
+        }
+      } catch(snapErr) {
+        console.warn('Snapshot recovery fallback error:', snapErr);
       }
     }
 
@@ -3530,12 +3705,22 @@ async function unlockAppWithKey(enteredKey) {
     ensureSchemaUpToDate();
 
     // Re-encrypt database cleanly with fresh unified salt and V2 (600k iterations)
-    // so header salt and stored salt match 100% permanently
+    // so header salt and stored salt match 100% permanently across all tiers
+    const chosenPin = matchingPin || trimmedKey;
     const freshSalt = crypto.getRandomValues(new Uint8Array(16));
-    const freshKey = await deriveKeyFromPin(trimmedKey, freshSalt, PBKDF2_ITERATIONS, false);
+    const freshKey = await deriveKeyFromPin(chosenPin, freshSalt, PBKDF2_ITERATIONS, false);
     currentEncryptionKey = freshKey;
     currentEncryptionSalt = freshSalt;
     storeCryptoSalt(freshSalt);
+
+    // Write freshSalt to IndexedDB 'files' store 'srg_crypto_salt'
+    try {
+      const idb = await openSRGDatabase();
+      const tx = idb.transaction('files', 'readwrite');
+      tx.objectStore('files').put(freshSalt, 'srg_crypto_salt');
+      await new Promise(r => { tx.oncomplete = r; tx.onerror = r; });
+    } catch(e) {}
+
     cachedEncryptedDbBytes = null; // Clear old cached bytes so encryptDatabaseBytes uses currentEncryptionSalt!
     await saveDbToIndexedDB(false);
     await createAuthVerificationToken(freshKey, freshSalt);
@@ -3555,7 +3740,7 @@ async function unlockAppWithKey(enteredKey) {
     updateBadge('Local SQLite Active');
 
     showToast('✓ Calendar Authenticated & Decrypted', 'success', 3000);
-    migratePlaintextAttachmentsToEncrypted(key);
+    migratePlaintextAttachmentsToEncrypted(freshKey);
 
     // Prompt to enable biometrics if supported but not enrolled
     if (localStorage.getItem('srg_biometric_enabled') !== 'true') {
