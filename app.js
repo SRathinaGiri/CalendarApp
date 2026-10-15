@@ -112,7 +112,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.1.2';
+const APP_VERSION = 'v1.1.3';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -3255,7 +3255,76 @@ function createDayCell(dateStr, dayNum, isOtherMonth, schedules, dayOfWeekIdx, i
     cell.classList.add('portrait-selected');
   }
 
-  cell.addEventListener('click', () => {
+  // Long-press gesture handling for Portrait Mode multi-date selection
+  let longPressTimer = null;
+  let isLongPressTriggered = false;
+  let touchStartX = 0;
+  let touchStartY = 0;
+
+  function handleStartLongPress(e) {
+    if (!isPortraitMode()) return;
+    isLongPressTriggered = false;
+    if (e.touches && e.touches.length > 0) {
+      touchStartX = e.touches[0].clientX;
+      touchStartY = e.touches[0].clientY;
+    } else {
+      touchStartX = e.clientX;
+      touchStartY = e.clientY;
+    }
+    clearTimeout(longPressTimer);
+    longPressTimer = setTimeout(() => {
+      isLongPressTriggered = true;
+      if (navigator.vibrate) {
+        try { navigator.vibrate(40); } catch (_) {}
+      }
+      portraitSelectedDate = dateStr;
+      document.querySelectorAll('.calendar-grid .day-cell.portrait-selected').forEach(c => c.classList.remove('portrait-selected'));
+      cell.classList.add('portrait-selected');
+      renderPortraitCalendarDayAgenda(dateStr);
+      toggleDateSelection(dateStr);
+      setTimeout(() => { isLongPressTriggered = false; }, 800);
+    }, 500);
+  }
+
+  function handleCancelLongPress() {
+    clearTimeout(longPressTimer);
+  }
+
+  function handleMoveLongPress(e) {
+    if (!longPressTimer) return;
+    const clientX = e.touches && e.touches.length > 0 ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches && e.touches.length > 0 ? e.touches[0].clientY : e.clientY;
+    const diffX = Math.abs(clientX - touchStartX);
+    const diffY = Math.abs(clientY - touchStartY);
+    if (diffX > 10 || diffY > 10) {
+      clearTimeout(longPressTimer);
+    }
+  }
+
+  cell.addEventListener('touchstart', handleStartLongPress, { passive: true });
+  cell.addEventListener('touchmove', handleMoveLongPress, { passive: true });
+  cell.addEventListener('touchend', handleCancelLongPress);
+  cell.addEventListener('touchcancel', handleCancelLongPress);
+
+  cell.addEventListener('mousedown', (e) => {
+    if (e.button === 0) handleStartLongPress(e);
+  });
+  cell.addEventListener('mousemove', handleMoveLongPress);
+  cell.addEventListener('mouseup', handleCancelLongPress);
+  cell.addEventListener('mouseleave', handleCancelLongPress);
+
+  cell.addEventListener('contextmenu', (e) => {
+    if (isPortraitMode()) {
+      e.preventDefault();
+    }
+  });
+
+  cell.addEventListener('click', (e) => {
+    if (isLongPressTriggered) {
+      isLongPressTriggered = false;
+      return;
+    }
+
     portraitSelectedDate = dateStr;
     document.querySelectorAll('.calendar-grid .day-cell.portrait-selected').forEach(c => c.classList.remove('portrait-selected'));
     cell.classList.add('portrait-selected');
