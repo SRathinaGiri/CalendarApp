@@ -17,7 +17,7 @@ let portraitSelectedDate = null; // Currently highlighted day in portrait calend
 // App Theme, Security Lock, and Read-Only State
 let currentTheme = localStorage.getItem('srg_theme') || 'dark';
 let isReadOnly = false;
-let isAppUnlocked = sessionStorage.getItem('srg_app_unlocked') === 'true';
+let isAppUnlocked = false;
 
 // Current attachments for modal (array of { name, type, data: base64 })
 let currentModalAttachments = [];
@@ -112,7 +112,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.2.8';
+const APP_VERSION = 'v1.2.9';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -333,7 +333,7 @@ async function initializeFreshOrBundledDatabase() {
     const resp = await fetch('SRG_Calendar.db');
     if (resp.ok) {
       const buf = await resp.arrayBuffer();
-      if (buf && buf.byteLength > 0) {
+      if (buf && buf.byteLength > 0 && isValidSqliteBinary(buf)) {
         db = new SQL.Database(new Uint8Array(buf));
         ensureSchemaUpToDate();
         loadedFromBundle = true;
@@ -627,6 +627,7 @@ function saveDbToIndexedDB(updateTimestamp = true) {
       if (currentEncryptionKey) {
         bytesToStore = await encryptDatabaseBytes(rawBytes);
       }
+      cachedEncryptedDbBytes = bytesToStore;
       const idb = await openSRGDatabase();
       const tx = idb.transaction('files', 'readwrite');
       const store = tx.objectStore('files');
@@ -741,6 +742,10 @@ async function restoreLocalDbSnapshot(snapId) {
     if (isEncryptedDbBytes(snapBytes)) {
       if (!currentEncryptionKey) throw new Error('Unlock database with your PIN first.');
       snapBytes = await decryptDatabaseBytes(snapBytes, currentEncryptionKey);
+    }
+
+    if (!isValidSqliteBinary(snapBytes)) {
+      throw new Error('Snapshot data is not a valid SQLite database.');
     }
 
     db = new SQL.Database(snapBytes);
@@ -1604,8 +1609,7 @@ async function importFullBackupZip(file) {
       }
     }
 
-    const headerStr = String.fromCharCode(...dbBinary.slice(0, 16));
-    if (!headerStr.startsWith('SQLite format 3')) {
+    if (!isValidSqliteBinary(dbBinary)) {
       throw new Error('Database file in archive is not a valid SQLite database.');
     }
 
@@ -1690,6 +1694,9 @@ async function importFullBackupZip(file) {
     }
 
     // Prepare and verify restored database binary
+    if (!isValidSqliteBinary(dbBinary)) {
+      throw new Error('Database binary in backup is invalid or corrupted.');
+    }
     const restoredDbInstance = new SQL.Database(dbBinary);
     const prevDbHolder = db;
     db = restoredDbInstance;
@@ -1730,7 +1737,6 @@ async function importFullBackupZip(file) {
       storeCryptoSalt(backupSalt);
       await createAuthVerificationToken(backupKey);
       localStorage.setItem('srg_app_pin_configured', 'true');
-      await persistKeyToSession(backupKey);
       isAppUnlocked = true;
       const overlay = document.getElementById('appLockOverlay');
       if (overlay) overlay.classList.add('hidden');
@@ -1749,7 +1755,7 @@ async function importFullBackupZip(file) {
     if (loadingToast) dismissToast(loadingToast);
     console.error('Error importing full backup zip:', err);
     // If active database was mutated, safely revert to previous database binary!
-    if (previousDbBinary) {
+    if (previousDbBinary && isValidSqliteBinary(previousDbBinary)) {
       try {
         db = new SQL.Database(previousDbBinary);
         await saveDbToIndexedDB(false);
@@ -2047,18 +2053,22 @@ async function importAttachmentsZipFile(file) {
    ========================================================================== */
 
 function loadMasterDataFromDb() {
-  if (!db) return;
+  if (!db || typeof db.exec !== 'function') return;
 
-  const catRows = db.exec('SELECT * FROM tag_categories ORDER BY sort_order ASC');
-  tagMasterCategories = catRows.length > 0 ? rowsToObjects(catRows[0]) : [];
+  try {
+    const catRows = db.exec('SELECT * FROM tag_categories ORDER BY sort_order ASC');
+    tagMasterCategories = catRows.length > 0 ? rowsToObjects(catRows[0]) : [];
 
-  const tagRows = db.exec('SELECT * FROM tags ORDER BY name ASC');
-  tagMasterTags = tagRows.length > 0 ? rowsToObjects(tagRows[0]) : [];
+    const tagRows = db.exec('SELECT * FROM tags ORDER BY name ASC');
+    tagMasterTags = tagRows.length > 0 ? rowsToObjects(tagRows[0]) : [];
 
-  const fldRows = db.exec('SELECT * FROM tag_field_definitions');
-  tagMasterFields = fldRows.length > 0 ? rowsToObjects(fldRows[0]) : [];
+    const fldRows = db.exec('SELECT * FROM tag_field_definitions');
+    tagMasterFields = fldRows.length > 0 ? rowsToObjects(fldRows[0]) : [];
 
-  renderAgendaTagFilterDropdown();
+    renderAgendaTagFilterDropdown();
+  } catch (err) {
+    console.error('Failed to load master data from database:', err);
+  }
 }
 
 let selectedAgendaTagIds = new Set();
@@ -2356,6 +2366,29 @@ const ATTACHMENT_CRYPTO_MAGIC = new Uint8Array([0x53, 0x52, 0x47, 0x41, 0x54, 0x
 const PBKDF2_ITERATIONS = 600000; // OWASP recommendation for PBKDF2-HMAC-SHA256
 const PBKDF2_LEGACY_ITERATIONS = 100000;
 let currentEncryptionKey = null;
+
+const SQLITE_MAGIC = new Uint8Array([
+  0x53, 0x51, 0x4c, 0x69, 0x74, 0x65, 0x20, 0x66, 0x6f, 0x72, 0x6d, 0x61, 0x74, 0x20, 0x33, 0x00
+]); // "SQLite format 3\0"
+
+function isValidSqliteBinary(bytes) {
+  if (!bytes) return false;
+  let u8 = null;
+  if (bytes instanceof Uint8Array) {
+    u8 = bytes;
+  } else if (bytes instanceof ArrayBuffer) {
+    u8 = new Uint8Array(bytes);
+  } else if (ArrayBuffer.isView(bytes)) {
+    u8 = new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  } else {
+    return false;
+  }
+  if (u8.length < SQLITE_MAGIC.length) return false;
+  for (let i = 0; i < SQLITE_MAGIC.length; i++) {
+    if (u8[i] !== SQLITE_MAGIC[i]) return false;
+  }
+  return true;
+}
 
 function isEncryptedDbBytes(bytes) {
   if (!bytes || bytes.length < 33) return false;
@@ -2730,25 +2763,6 @@ async function decryptDatabaseBytes(encryptedBytes, pinOrKey, setActiveKey = fal
   if (setActiveKey) {
     currentEncryptionKey = key;
     storeCryptoSalt(salt);
-  }
-
-  // If this database was encrypted under legacy V1 (SRGE1, 100k iterations),
-  // seamlessly upgrade it to V2 (SRGE2, 600k iterations)
-  if (version === 1 && typeof pinOrKey === 'string') {
-    setTimeout(async () => {
-      try {
-        console.info('Upgrading database encryption from SRGE1 (100k) to SRGE2 (600k iterations)...');
-        const newSalt = crypto.getRandomValues(new Uint8Array(16));
-        const newKey = await deriveKeyFromPin(pinOrKey, newSalt, PBKDF2_ITERATIONS, false);
-        currentEncryptionKey = newKey;
-        storeCryptoSalt(newSalt);
-        await saveDbToIndexedDB(false);
-        await createAuthVerificationToken(newKey, newSalt);
-        console.info('✓ Successfully upgraded database encryption to SRGE2 (600k iterations)!');
-      } catch(upErr) {
-        console.warn('Background encryption upgrade notice:', upErr);
-      }
-    }, 1000);
   }
 
   return new Uint8Array(decryptedBuffer);
@@ -3191,6 +3205,9 @@ async function unlockAppWithBiometric(autoPrompt = false) {
     const bytesToDecrypt = cachedEncryptedDbBytes || await loadDbFromIndexedDB();
     if (bytesToDecrypt) {
       const decryptedBytes = await decryptDatabaseBytes(bytesToDecrypt, masterKey, true);
+      if (!isValidSqliteBinary(decryptedBytes)) {
+        throw new Error('Biometric unlock failed: decrypted data is not a valid SQLite database.');
+      }
       db = new SQL.Database(decryptedBytes);
       ensureSchemaUpToDate();
     }
@@ -3323,7 +3340,7 @@ async function handleSetupPinSubmit(e) {
 
     // Initialize or migrate database
     if (!db) {
-      if (cachedEncryptedDbBytes && !isEncryptedDbBytes(cachedEncryptedDbBytes)) {
+      if (cachedEncryptedDbBytes && !isEncryptedDbBytes(cachedEncryptedDbBytes) && isValidSqliteBinary(cachedEncryptedDbBytes)) {
         // Migrate legacy unencrypted database
         db = new SQL.Database(cachedEncryptedDbBytes);
       } else {
@@ -3420,12 +3437,31 @@ async function unlockAppWithKey(enteredKey) {
     // Derive strictly non-extractable runtime key
     const key = salt ? await deriveKeyFromPin(trimmedKey, salt, iterations, false) : null;
     const decryptedBytes = await decryptDatabaseBytes(bytesToDecrypt, key || trimmedKey, true);
+    if (!isValidSqliteBinary(decryptedBytes)) {
+      throw new Error('Incorrect Security PIN or corrupted database.');
+    }
     db = new SQL.Database(decryptedBytes);
     ensureSchemaUpToDate();
 
     currentEncryptionKey = key;
     if (salt) {
       try { storeCryptoSalt(salt); } catch(e) {}
+    }
+
+    // If database was encrypted under legacy V1 (SRGE1, 100k iterations), upgrade it to V2 (SRGE2, 600k iterations)
+    if (parsed && parsed.version === 1) {
+      try {
+        console.info('Upgrading database encryption from SRGE1 (100k) to SRGE2 (600k iterations)...');
+        const newSalt = crypto.getRandomValues(new Uint8Array(16));
+        const newKey = await deriveKeyFromPin(trimmedKey, newSalt, PBKDF2_ITERATIONS, false);
+        currentEncryptionKey = newKey;
+        storeCryptoSalt(newSalt);
+        await saveDbToIndexedDB(false);
+        await createAuthVerificationToken(newKey, newSalt);
+        console.info('✓ Successfully upgraded database encryption to SRGE2 (600k iterations)!');
+      } catch (upErr) {
+        console.warn('Encryption upgrade notice:', upErr);
+      }
     }
 
     isAppUnlocked = true;
@@ -3902,6 +3938,9 @@ async function handleForgotPinResetSubmit(e) {
 
     // 3. Decrypt the database using the recovered master key
     const decryptedBytes = await decryptDatabaseBytes(encryptedBytes, recoveredMasterKey, false);
+    if (!isValidSqliteBinary(decryptedBytes)) {
+      throw new Error('Database recovery failed: decrypted data is not a valid SQLite database.');
+    }
     db = new SQL.Database(decryptedBytes);
     ensureSchemaUpToDate();
 
@@ -8077,8 +8116,7 @@ function importSqliteFile(e) {
         u8 = await decryptDatabaseBytes(u8, backupKey, false);
       }
 
-      const headerStr = String.fromCharCode(...u8.slice(0, 16));
-      if (!headerStr.startsWith('SQLite format 3')) {
+      if (!isValidSqliteBinary(u8)) {
         throw new Error('Selected file is not a valid SQLite database.');
       }
 
@@ -8099,7 +8137,6 @@ function importSqliteFile(e) {
         storeCryptoSalt(backupSalt);
         await createAuthVerificationToken(backupKey);
         localStorage.setItem('srg_app_pin_configured', 'true');
-        await persistKeyToSession(backupKey);
         await saveDbToIndexedDB();
         isAppUnlocked = true;
         const overlay = document.getElementById('appLockOverlay');
@@ -8244,9 +8281,11 @@ function setupUIEventListeners() {
         showToast('❌ Incorrect Security PIN. Access denied.', 'error', 3500);
         return;
       }
-      const derived = await deriveKeyFromPin(enteredPin.trim(), salt);
+      const bytesToInspect = cachedEncryptedDbBytes || await loadDbFromIndexedDB();
+      const parsed = bytesToInspect && isEncryptedDbBytes(bytesToInspect) ? parseEncryptedDbHeader(bytesToInspect) : null;
+      const iterations = parsed ? parsed.iterations : PBKDF2_ITERATIONS;
+      const derived = await deriveKeyFromPin(enteredPin.trim(), salt, iterations, false);
       currentEncryptionKey = derived;
-      await persistKeyToSession(derived);
       try {
         const freshKey = generateRecoveryKey();
         await saveRecoveryVault(derived, freshKey);
@@ -8808,9 +8847,7 @@ function setupUIEventListeners() {
       reader.onload = async () => {
         try {
           const u8 = new Uint8Array(reader.result);
-          // Check SQLite format 3 header
-          const headerStr = String.fromCharCode(...u8.slice(0, 16));
-          if (!headerStr.startsWith('SQLite format 3')) {
+          if (!isValidSqliteBinary(u8)) {
             throw new Error('Selected file is not a valid SQLite database.');
           }
 
