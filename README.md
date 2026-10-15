@@ -93,10 +93,11 @@ The web app is deployed directly at:
 
 ## 🔐 App Security & Privacy
 
-- **Convenience Screen Lock:** Calendar App features an overlay screen lock supporting WebAuthn biometrics and a PIN (default: `1234`).
-- **Data At Rest:** Calendar data is stored locally in SQLite WASM and browser IndexedDB unencrypted. This provides rapid query execution and offline independence, but anyone with full access to the device file system or profile can inspect the data. For sensitive data, pair with full-disk operating system encryption (Android Knox/Device Encryption, iOS Data Protection, Windows BitLocker, macOS FileVault).
-- **Change PIN:** Open the side drawer -> tap **"Change Security PIN"**.
-- **Biometric Setup:** Click the lock icon or open the side drawer -> tap **"Biometric / Fingerprint Unlock"**.
+- **Hardware-Accelerated AES-256-GCM Encryption:** All SQLite database records, daily notes, transactions, and snapshots stored in browser IndexedDB are encrypted at rest using AES-256-GCM via the browser's native Web Crypto API.
+- **User-Defined Security PIN:** First launch prompts you to create a private 4-to-8 digit PIN. Keys are derived via PBKDF2 (100,000 iterations, SHA-256) with unique cryptographic salts.
+- **Biometric Unlock:** Fast Fingerprint and Face ID unlock via WebAuthn platform authenticators on supported mobile and desktop browsers.
+- **Change PIN:** Open the side drawer -> tap **"Change Security PIN"** to derive a new key with a fresh salt and re-encrypt the active database on disk.
+- **Zero-Knowledge Privacy:** Your PIN and database are encrypted strictly inside your browser. No data or keys are ever transmitted to any external server.
 
 ---
 
