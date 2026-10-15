@@ -112,7 +112,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.3.0';
+const APP_VERSION = 'v1.3.1';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -2384,6 +2384,7 @@ const ATTACHMENT_CRYPTO_MAGIC = new Uint8Array([0x53, 0x52, 0x47, 0x41, 0x54, 0x
 const PBKDF2_ITERATIONS = 600000; // OWASP recommendation for PBKDF2-HMAC-SHA256
 const PBKDF2_LEGACY_ITERATIONS = 100000;
 let currentEncryptionKey = null;
+let currentEncryptionSalt = null;
 
 const SQLITE_MAGIC = new Uint8Array([
   0x53, 0x51, 0x4c, 0x69, 0x74, 0x65, 0x20, 0x66, 0x6f, 0x72, 0x6d, 0x61, 0x74, 0x20, 0x33, 0x00
@@ -2701,41 +2702,49 @@ async function verifyPinWithAuthToken(pin) {
   if (!pin) return false;
   const dbBytes = cachedEncryptedDbBytes || await loadDbFromIndexedDB();
   const parsed = dbBytes && isEncryptedDbBytes(dbBytes) ? parseEncryptedDbHeader(dbBytes) : null;
-  const salt = parsed ? parsed.salt : await getEffectiveCryptoSalt(dbBytes);
-  const iterations = parsed ? parsed.iterations : PBKDF2_ITERATIONS;
+  const storedSalt = await getEffectiveCryptoSalt(dbBytes);
 
-  if (!salt) return false;
+  const candidateConfigs = [];
+  if (parsed && parsed.salt) {
+    candidateConfigs.push({ salt: parsed.salt, iterations: parsed.iterations });
+  }
+  if (storedSalt) {
+    candidateConfigs.push({ salt: storedSalt, iterations: PBKDF2_ITERATIONS });
+    candidateConfigs.push({ salt: storedSalt, iterations: PBKDF2_LEGACY_ITERATIONS });
+  }
+  if (parsed && parsed.salt) {
+    if (parsed.iterations !== PBKDF2_ITERATIONS) candidateConfigs.push({ salt: parsed.salt, iterations: PBKDF2_ITERATIONS });
+    if (parsed.iterations !== PBKDF2_LEGACY_ITERATIONS) candidateConfigs.push({ salt: parsed.salt, iterations: PBKDF2_LEGACY_ITERATIONS });
+  }
 
-  try {
-    const key = await deriveKeyFromPin(pin, salt, iterations, false);
+  const tokenBytes = await getStoredAuthVerificationTokenBytes();
 
-    // Primary check: try auth verification token
-    const tokenBytes = await getStoredAuthVerificationTokenBytes();
-    if (tokenBytes && tokenBytes.length >= 28) {
-      try {
-        const iv = tokenBytes.slice(0, 12);
-        const ciphertext = tokenBytes.slice(12);
-        const decrypted = await crypto.subtle.decrypt(
-          { name: 'AES-GCM', iv: iv },
-          key,
-          ciphertext
-        );
-        const str = new TextDecoder().decode(decrypted);
-        if (str === 'SRG_CALENDAR_AUTHENTICATED') return true;
-      } catch(tokenErr) {}
-    }
-
-    // Cryptographic ground truth: test-decrypt the database header directly
-    if (dbBytes && isEncryptedDbBytes(dbBytes)) {
-      try {
-        await decryptDatabaseBytes(dbBytes, key, false);
-        return true;
-      } catch(dbErr) {
-        return false;
+  for (const config of candidateConfigs) {
+    try {
+      const key = await deriveKeyFromPin(pin, config.salt, config.iterations, false);
+      // Primary check: try auth verification token
+      if (tokenBytes && tokenBytes.length >= 28) {
+        try {
+          const iv = tokenBytes.slice(0, 12);
+          const ciphertext = tokenBytes.slice(12);
+          const decrypted = await crypto.subtle.decrypt(
+            { name: 'AES-GCM', iv: iv },
+            key,
+            ciphertext
+          );
+          const str = new TextDecoder().decode(decrypted);
+          if (str === 'SRG_CALENDAR_AUTHENTICATED') return true;
+        } catch(tokenErr) {}
       }
-    }
-  } catch(e) {
-    return false;
+
+      // Cryptographic ground truth: test-decrypt the database header directly
+      if (dbBytes && isEncryptedDbBytes(dbBytes)) {
+        try {
+          const testBytes = await decryptDatabaseBytes(dbBytes, key, false);
+          if (isValidSqliteBinary(testBytes)) return true;
+        } catch(dbErr) {}
+      }
+    } catch(e) {}
   }
   return false;
 }
@@ -2765,9 +2774,10 @@ async function encryptDatabaseBytes(rawBytes) {
   if (!currentEncryptionKey) {
     throw new Error('No encryption key active');
   }
-  let salt = getStoredCryptoSalt();
+  let salt = currentEncryptionSalt || getStoredCryptoSalt();
   if (!salt) {
     salt = crypto.getRandomValues(new Uint8Array(16));
+    currentEncryptionSalt = salt;
     storeCryptoSalt(salt);
   }
   return await encryptWithKeyAndSalt(rawBytes, currentEncryptionKey, salt, PBKDF2_ITERATIONS);
@@ -3380,6 +3390,7 @@ async function handleSetupPinSubmit(e) {
 
     // Import strictly non-extractable runtime key and wipe raw bytes
     currentEncryptionKey = await importRuntimeAesGcmKey(rawMasterBytes);
+    currentEncryptionSalt = salt;
     rawMasterBytes.fill(0); // Zero memory
 
     await createAuthVerificationToken(currentEncryptionKey, salt);
@@ -3478,42 +3489,56 @@ async function unlockAppWithKey(enteredKey) {
     }
 
     const parsed = isEncryptedDbBytes(bytesToDecrypt) ? parseEncryptedDbHeader(bytesToDecrypt) : null;
-    let salt = parsed ? parsed.salt : await getEffectiveCryptoSalt(bytesToDecrypt);
-    const iterations = parsed ? parsed.iterations : PBKDF2_ITERATIONS;
+    const storedSalt = await getEffectiveCryptoSalt(bytesToDecrypt);
 
-    if (!salt && isEncryptedDbBytes(bytesToDecrypt)) {
-      throw new Error('Security configuration missing or database header corrupted.');
+    // Build ordered list of candidate (salt, iterations) combinations
+    const candidateConfigs = [];
+    if (parsed && parsed.salt) {
+      candidateConfigs.push({ salt: parsed.salt, iterations: parsed.iterations });
+    }
+    if (storedSalt) {
+      candidateConfigs.push({ salt: storedSalt, iterations: PBKDF2_ITERATIONS });
+      candidateConfigs.push({ salt: storedSalt, iterations: PBKDF2_LEGACY_ITERATIONS });
+    }
+    if (parsed && parsed.salt) {
+      if (parsed.iterations !== PBKDF2_ITERATIONS) candidateConfigs.push({ salt: parsed.salt, iterations: PBKDF2_ITERATIONS });
+      if (parsed.iterations !== PBKDF2_LEGACY_ITERATIONS) candidateConfigs.push({ salt: parsed.salt, iterations: PBKDF2_LEGACY_ITERATIONS });
     }
 
-    // Derive strictly non-extractable runtime key
-    const key = salt ? await deriveKeyFromPin(trimmedKey, salt, iterations, false) : null;
-    const decryptedBytes = await decryptDatabaseBytes(bytesToDecrypt, key || trimmedKey, true);
-    if (!isValidSqliteBinary(decryptedBytes)) {
+    let decryptedBytes = null;
+    let successfulKey = null;
+
+    for (const config of candidateConfigs) {
+      try {
+        const testKey = await deriveKeyFromPin(trimmedKey, config.salt, config.iterations, false);
+        const testBytes = await decryptDatabaseBytes(bytesToDecrypt, testKey, false);
+        if (isValidSqliteBinary(testBytes)) {
+          decryptedBytes = testBytes;
+          successfulKey = testKey;
+          break;
+        }
+      } catch (candErr) {
+        // Try next candidate configuration
+      }
+    }
+
+    if (!decryptedBytes || !isValidSqliteBinary(decryptedBytes)) {
       throw new Error('Incorrect Security PIN or corrupted database.');
     }
+
     db = new SQL.Database(decryptedBytes);
     ensureSchemaUpToDate();
 
-    currentEncryptionKey = key;
-    if (salt) {
-      try { storeCryptoSalt(salt); } catch(e) {}
-    }
-
-    // If database was encrypted under legacy V1 (SRGE1, 100k iterations), upgrade it to V2 (SRGE2, 600k iterations)
-    if (parsed && parsed.version === 1) {
-      try {
-        console.info('Upgrading database encryption from SRGE1 (100k) to SRGE2 (600k iterations)...');
-        const newSalt = crypto.getRandomValues(new Uint8Array(16));
-        const newKey = await deriveKeyFromPin(trimmedKey, newSalt, PBKDF2_ITERATIONS, false);
-        currentEncryptionKey = newKey;
-        storeCryptoSalt(newSalt);
-        await saveDbToIndexedDB(false);
-        await createAuthVerificationToken(newKey, newSalt);
-        console.info('✓ Successfully upgraded database encryption to SRGE2 (600k iterations)!');
-      } catch (upErr) {
-        console.warn('Encryption upgrade notice:', upErr);
-      }
-    }
+    // Re-encrypt database cleanly with fresh unified salt and V2 (600k iterations)
+    // so header salt and stored salt match 100% permanently
+    const freshSalt = crypto.getRandomValues(new Uint8Array(16));
+    const freshKey = await deriveKeyFromPin(trimmedKey, freshSalt, PBKDF2_ITERATIONS, false);
+    currentEncryptionKey = freshKey;
+    currentEncryptionSalt = freshSalt;
+    storeCryptoSalt(freshSalt);
+    cachedEncryptedDbBytes = null; // Clear old cached bytes so encryptDatabaseBytes uses currentEncryptionSalt!
+    await saveDbToIndexedDB(false);
+    await createAuthVerificationToken(freshKey, freshSalt);
 
     isAppUnlocked = true;
     recordSuccessfulPinAttempt();
@@ -3571,6 +3596,7 @@ async function lockAppSecurity() {
   sessionStorage.removeItem('srg_app_unlocked');
   sessionStorage.removeItem('srg_session_key'); // Unconditionally wipe!
   currentEncryptionKey = null;
+  currentEncryptionSalt = null;
 
   if (autoLockTimer) {
     clearTimeout(autoLockTimer);
@@ -4015,6 +4041,7 @@ async function handleForgotPinResetSubmit(e) {
 
     // 6. Commit new security configuration in memory
     currentEncryptionKey = newMasterKey;
+    currentEncryptionSalt = newSalt;
     resetAutoLockTimer();
     purgeLegacySessionAndDiskTokens();
 
@@ -4343,6 +4370,7 @@ async function handleChangePinSubmit(e) {
 
     // Update in-memory active key (non-extractable)
     currentEncryptionKey = newKey;
+    currentEncryptionSalt = newSalt;
     resetAutoLockTimer();
     purgeLegacySessionAndDiskTokens();
 
