@@ -1,9 +1,9 @@
-# Calendar App (Offline PWA) v1.1.5
+# Calendar App (Offline PWA) v1.2.0
 
-A standalone, local-first Personal Calendar & Daily Organizer Progressive Web App (PWA) powered by client-side **SQLite (WASM)** and **IndexedDB** local storage with **AES-256-GCM hardware-accelerated encryption at rest**.
+A standalone, local-first Personal Calendar & Daily Organizer Progressive Web App (PWA) powered by client-side **SQLite (WASM)** and **IndexedDB** local storage with **AES-256-GCM hardware-accelerated encryption at rest for both database and file attachments**.
 
-> **Production PWA (v1.1.5)**  
-> Fully client-side, local-first calendar with ACID SQLite storage, Web Crypto AES-256-GCM encryption at rest, password-protected encrypted backups, verified SHA-256 backup archives, and offline capabilities.
+> **Production PWA (v1.2.0)**  
+> Fully client-side, local-first calendar with ACID SQLite storage, Web Crypto AES-256-GCM encryption at rest for database and attachments, enforced 6+ character PIN/passphrase protection, SHA-256 verified backup archives, smart restore re-encryption, and 100% offline capabilities.
 
 ---
 
@@ -11,20 +11,20 @@ A standalone, local-first Personal Calendar & Daily Organizer Progressive Web Ap
 
 - **Local-First & Offline Architecture:** Calendar data and attachments are stored exclusively on your device in IndexedDB. All assets including SQLite WASM (`sql.js`), PDF.js, and workers are bundled locally so core features work 100% offline once installed or cached.
 - **Embedded SQLite WASM Engine (`sql.js`):** Embedded relational database providing SQL queries, atomic transaction guarantees on schedule saves, and direct `.db` file exports.
-- **Hardware-Accelerated AES-256-GCM Database Encryption at Rest:**
-  - Transparently encrypts the SQLite database and snapshots stored in browser IndexedDB with authenticated **AES-256-GCM**.
-  - Keys derived via **PBKDF2** (100,000 iterations, SHA-256) with cryptographic salts from the user's private PIN.
+- **Hardware-Accelerated AES-256-GCM Database & Attachment Encryption at Rest:**
+  - Transparently encrypts the SQLite database, all historical snapshots, and all ticket attachments stored in browser IndexedDB with authenticated **AES-256-GCM**.
+  - Keys derived via **PBKDF2** (100,000 iterations, SHA-256) with cryptographic salts from the user's private PIN / Passphrase (minimum 6 characters, up to 64 characters).
   - Interactive first-time PIN setup prompts the user to choose their own Security PIN (no hardcoded defaults).
-  - Fast **Fingerprint & Face ID** biometric unlock on supported mobile and desktop devices via WebAuthn.
+  - Hardened **Fingerprint & Face ID** biometric quick-unlock via WebAuthn platform authenticators without storing raw master keys on disk.
   - Zero-knowledge architecture: data is encrypted exclusively inside your device browser and never sent to any server.
 - **IndexedDB Persistence (`SRGCalendarDB`):** Automatically persists edits, schedules, daily notes, financial entries, and file attachments in browser storage.
 - **Atomic 1-Click Complete Backup & Restore (`.zip`):**
-  - **Full Export:** Creates an archive containing your SQLite database, an integrity manifest, and deduplicated ticket attachments (PDFs & images) verified with SHA-256 fingerprints. Supports optional **AES-256 PIN encryption** so exported archives can be safely stored on cloud drives (Google Drive, OneDrive, iCloud) or USB drives.
-  - **Atomic Restore:** Automatically detects whether the backup archive or `.db` file is encrypted or unencrypted. Encrypted backups prompt for their Security PIN, decrypt seamlessly, and re-encrypt on the local device. Pre-validates the archive and stages all attachments before activating the new database. Automatically rolls back to the previous database if restoration fails.
-- **Local Snapshots:** Save named encrypted database safety snapshots in browser storage anytime.
+  - **Full Export:** Creates an archive containing your SQLite database, an integrity manifest with per-file SHA-256 hashes, and deduplicated ticket attachments (PDFs & images). Supports optional **AES-256 PIN encryption** for both database and all attachments so exported archives can be safely stored on cloud drives (Google Drive, OneDrive, iCloud) or USB drives.
+  - **Atomic Restore & Smart Re-Encryption:** Verifies SHA-256 file hashes before committing changes. Automatically detects whether the backup archive or `.db` file is encrypted or unencrypted. When restoring on a device with an existing PIN, decrypts using the backup PIN and immediately re-encrypts using this device's current PIN so keys and tokens stay in sync. Pre-validates the archive and stages all attachments in memory before activating the new database. Automatically rolls back to the previous database if restoration fails.
+- **Local Snapshots:** Save named encrypted database safety snapshots in browser storage anytime. When changing PIN, all past snapshots and attachments are atomically re-encrypted under the new key.
 - **PWA (Progressive Web App):**
   - Installable directly to home screen or desktop from Chrome, Edge, Safari, or Brave.
-  - Version-scoped Service Worker cache cleanup (`v1.1.5`).
+  - Version-scoped Service Worker cache cleanup (`v1.2.0`).
   - In-app install and check for updates buttons.
 - **Comprehensive Calendar Views:**
   - **Calendar View:** 7-column month grid. In portrait mode, uniform square day cells with center indicator badges and a bottom day schedule agenda panel maximize usability. Long-pressing any day initiates multi-date selection for batch scheduling with single-tap date addition/removal. In landscape mode, full titles, times, and notes are shown.
@@ -93,11 +93,11 @@ The web app is deployed directly at:
 
 ## 🔐 App Security & Privacy
 
-- **Hardware-Accelerated AES-256-GCM Encryption:** All SQLite database records, daily notes, transactions, and snapshots stored in browser IndexedDB are encrypted at rest using AES-256-GCM via the browser's native Web Crypto API.
-- **User-Defined Security PIN:** First launch prompts you to create a private 4-to-8 digit PIN. Keys are derived via PBKDF2 (100,000 iterations, SHA-256) with unique cryptographic salts.
-- **Biometric Unlock:** Fast Fingerprint and Face ID unlock via WebAuthn platform authenticators on supported mobile and desktop browsers.
-- **Change PIN:** Open the side drawer -> tap **"Change Security PIN"** to derive a new key with a fresh salt and re-encrypt the active database on disk.
-- **Zero-Knowledge Privacy:** Your PIN and database are encrypted strictly inside your browser. No data or keys are ever transmitted to any external server.
+- **Hardware-Accelerated AES-256-GCM Encryption:** All SQLite database records, daily notes, transactions, snapshots, and file attachments stored in browser IndexedDB are encrypted at rest using AES-256-GCM via the browser's native Web Crypto API.
+- **User-Defined Security PIN / Passphrase:** First launch prompts you to create a private PIN or Passphrase (minimum 6 characters, up to 64 characters). Keys are derived via PBKDF2 (100,000 iterations, SHA-256) with unique cryptographic salts.
+- **Hardened Biometric Unlock:** Secure Fingerprint and Face ID quick-unlock via WebAuthn platform authenticators during active browser sessions without exposing or storing raw master keys on disk.
+- **Atomic Change PIN:** Open the side drawer -> tap **"Change Security PIN"** to derive a new key with a fresh salt, re-encrypt the active database, re-encrypt all historical snapshots, and re-encrypt all stored attachments atomically.
+- **Zero-Knowledge Privacy:** Your PIN, database, and attachments are encrypted strictly inside your browser. No data or keys are ever transmitted to any external server.
 
 ---
 

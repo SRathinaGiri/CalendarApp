@@ -112,7 +112,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.1.5';
+const APP_VERSION = 'v1.2.0';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -800,59 +800,57 @@ function extractCanonicalAttachmentId(filename) {
   return filename;
 }
 
-function saveAttachmentToIndexedDB(attId, dataBase64) {
-  return new Promise(async (resolve, reject) => {
-    if (!attId || !dataBase64) return resolve(false);
-    try {
-      const idb = await openSRGDatabase();
-      const tx = idb.transaction('files', 'readwrite');
-      const store = tx.objectStore('files');
-      const canonicalKey = attId.startsWith('att_') ? attId : ('att_' + attId);
-      const req = store.put(dataBase64, canonicalKey);
-
-      req.onerror = () => {
-        reject(req.error || new Error('Failed to put attachment to IndexedDB store'));
-      };
-      tx.oncomplete = () => resolve(true);
-      tx.onerror = () => {
-        reject(tx.error || new Error('IndexedDB transaction failed while saving attachment'));
-      };
-      tx.onabort = () => {
-        reject(tx.error || new Error('IndexedDB transaction aborted while saving attachment'));
-      };
-    } catch(e) {
-      reject(e);
+async function saveAttachmentToIndexedDB(attId, dataBase64) {
+  if (!attId || !dataBase64) return false;
+  try {
+    let payload = dataBase64;
+    if (currentEncryptionKey && typeof dataBase64 === 'string') {
+      payload = await encryptAttachmentData(dataBase64, currentEncryptionKey);
     }
-  });
+    const idb = await openSRGDatabase();
+    const tx = idb.transaction('files', 'readwrite');
+    const store = tx.objectStore('files');
+    const canonicalKey = attId.startsWith('att_') ? attId : ('att_' + attId);
+    store.put(payload, canonicalKey);
+
+    return await new Promise((resolve, reject) => {
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => reject(tx.error || new Error('Failed to save attachment to IndexedDB'));
+      tx.onabort = () => reject(tx.error || new Error('Transaction aborted'));
+    });
+  } catch(e) {
+    console.warn('saveAttachmentToIndexedDB error:', e);
+    return false;
+  }
 }
 
-function loadAttachmentFromIndexedDB(attId) {
-  return new Promise(async (resolve) => {
-    if (!attId) return resolve(null);
-    try {
-      const idb = await openSRGDatabase();
-      const tx = idb.transaction('files', 'readonly');
-      const store = tx.objectStore('files');
+async function loadAttachmentFromIndexedDB(attId) {
+  if (!attId) return null;
+  try {
+    const idb = await openSRGDatabase();
+    const tx = idb.transaction('files', 'readonly');
+    const store = tx.objectStore('files');
 
-      const canonicalKey = attId.startsWith('att_') ? attId : ('att_' + attId);
-      const rawKey = attId.startsWith('att_') ? attId.slice(4) : attId;
+    const canonicalKey = attId.startsWith('att_') ? attId : ('att_' + attId);
+    const rawKey = attId.startsWith('att_') ? attId.slice(4) : attId;
 
+    const rawResult = await new Promise((resolve) => {
       const req1 = store.get(canonicalKey);
       req1.onsuccess = () => {
-        if (req1.result) return resolve(req1.result);
-
+        if (req1.result !== undefined && req1.result !== null) return resolve(req1.result);
         const req2 = store.get(rawKey);
-        req2.onsuccess = () => {
-          if (req2.result) return resolve(req2.result);
-          resolve(null);
-        };
+        req2.onsuccess = () => resolve(req2.result !== undefined ? req2.result : null);
         req2.onerror = () => resolve(null);
       };
       req1.onerror = () => resolve(null);
-    } catch(e) {
-      resolve(null);
-    }
-  });
+    });
+
+    if (!rawResult) return null;
+    return await decryptAttachmentData(rawResult, currentEncryptionKey);
+  } catch(e) {
+    console.warn('loadAttachmentFromIndexedDB error:', e);
+    return null;
+  }
 }
 
 async function uploadAttachmentFileToServer(attId, filename, dataBase64) {
@@ -952,7 +950,9 @@ async function getContentFingerprint(val) {
     } else if (val instanceof ArrayBuffer) {
       buffer = val;
     } else if (val instanceof Uint8Array) {
-      buffer = val.buffer;
+      buffer = (val.byteOffset === 0 && val.byteLength === val.buffer.byteLength)
+        ? val.buffer
+        : val.buffer.slice(val.byteOffset, val.byteOffset + val.byteLength);
     } else {
       buffer = new TextEncoder().encode(String(val));
     }
@@ -1198,7 +1198,7 @@ async function exportFullBackupZip() {
   const loadingToast = showToast('Creating full backup bundle (database + attachments)...', 'info', 0);
   try {
     // Offer optional AES-256 encryption using active Security PIN
-    const shouldEncrypt = confirm('🔒 Encrypt backup database with your Security PIN (AES-256)?\n\nClick "OK" to encrypt (recommended for cloud storage or USB drives).\nClick "Cancel" for standard unencrypted SQLite.');
+    const shouldEncrypt = confirm('🔒 Encrypt backup database and all attachments with your Security PIN (AES-256)?\n\nClick "OK" to encrypt (recommended for cloud storage or USB drives).\nClick "Cancel" for standard unencrypted SQLite.');
 
     const zip = new JSZip();
 
@@ -1207,6 +1207,7 @@ async function exportFullBackupZip() {
     if (shouldEncrypt && currentEncryptionKey) {
       dbBinary = await encryptDatabaseBytes(dbBinary);
     }
+    const dbSha256 = await getContentFingerprint(dbBinary);
     zip.file('database.db', dbBinary);
 
     // 2. Query schedules/records counts
@@ -1261,22 +1262,32 @@ async function exportFullBackupZip() {
           seenZipNames.add(zipName);
           fingerprintToFileMap.set(fp, zipName);
 
-          const commaIdx = typeof data === 'string' ? data.indexOf(',') : -1;
-          const b64 = commaIdx > -1 ? data.slice(commaIdx + 1) : data;
-          attFolder.file(zipName, b64, { base64: true });
+          let filePayload = null;
+          let fileSha = '';
+          if (shouldEncrypt && currentEncryptionKey) {
+            filePayload = await encryptAttachmentData(data, currentEncryptionKey);
+            fileSha = await getContentFingerprint(filePayload);
+            attFolder.file(zipName, filePayload);
+          } else {
+            const commaIdx = typeof data === 'string' ? data.indexOf(',') : -1;
+            const b64 = commaIdx > -1 ? data.slice(commaIdx + 1) : data;
+            const rawBytes = base64ToBuffer(b64);
+            fileSha = await getContentFingerprint(rawBytes);
+            attFolder.file(zipName, b64, { base64: true });
+            filePayload = rawBytes;
+          }
+
+          manifestAttachments.push({
+            id: att.id,
+            filename: zipName,
+            name: att.name || baseName,
+            path: `attachments/${zipName}`,
+            mime: mime,
+            size: filePayload.byteLength || 0,
+            sha256: fileSha,
+            encrypted: !!shouldEncrypt
+          });
         }
-
-        const commaIdx = typeof data === 'string' ? data.indexOf(',') : -1;
-        const b64 = commaIdx > -1 ? data.slice(commaIdx + 1) : data;
-
-        manifestAttachments.push({
-          id: att.id,
-          filename: zipName,
-          name: att.name || baseName,
-          path: `attachments/${zipName}`,
-          mime: mime,
-          size: typeof b64 === 'string' ? Math.round(b64.length * 0.75) : (data.byteLength || 0)
-        });
       }
     }
 
@@ -1305,17 +1316,18 @@ async function exportFullBackupZip() {
     });
 
     for (const item of dbFiles) {
-      const fp = await getContentFingerprint(item.val);
+      let plainData = item.val;
+      if (isEncryptedAttachmentBytes(plainData)) {
+        plainData = await decryptAttachmentData(plainData, currentEncryptionKey);
+      }
+      const fp = await getContentFingerprint(plainData);
       if (!fingerprintToFileMap.has(fp)) {
         const rawId = item.key.slice(4);
         let ext = 'bin';
         let mime = 'application/octet-stream';
-        let b64 = '';
 
-        if (typeof item.val === 'string' && item.val.startsWith('data:')) {
-          const commaIdx = item.val.indexOf(',');
-          b64 = commaIdx > -1 ? item.val.slice(commaIdx + 1) : item.val;
-          const matchMime = item.val.match(/data:([^;]+);/);
+        if (typeof plainData === 'string' && plainData.startsWith('data:')) {
+          const matchMime = plainData.match(/data:([^;]+);/);
           if (matchMime) {
             mime = matchMime[1];
             if (mime.includes('jpeg')) ext = 'jpg';
@@ -1329,10 +1341,19 @@ async function exportFullBackupZip() {
           seenZipNames.add(zipFileName);
           fingerprintToFileMap.set(fp, zipFileName);
 
-          if (b64) {
-            attFolder.file(zipFileName, b64, { base64: true });
-          } else if (item.val instanceof ArrayBuffer || item.val instanceof Uint8Array) {
-            attFolder.file(zipFileName, item.val);
+          let filePayload = null;
+          let fileSha = '';
+          if (shouldEncrypt && currentEncryptionKey) {
+            filePayload = await encryptAttachmentData(plainData, currentEncryptionKey);
+            fileSha = await getContentFingerprint(filePayload);
+            attFolder.file(zipFileName, filePayload);
+          } else {
+            const commaIdx = typeof plainData === 'string' ? plainData.indexOf(',') : -1;
+            const b64 = commaIdx > -1 ? plainData.slice(commaIdx + 1) : plainData;
+            const rawBytes = typeof b64 === 'string' ? base64ToBuffer(b64) : plainData;
+            fileSha = await getContentFingerprint(rawBytes);
+            attFolder.file(zipFileName, rawBytes);
+            filePayload = rawBytes;
           }
 
           manifestAttachments.push({
@@ -1340,7 +1361,9 @@ async function exportFullBackupZip() {
             filename: zipFileName,
             path: `attachments/${zipFileName}`,
             mime: mime,
-            size: b64 ? Math.round(b64.length * 0.75) : (item.val.byteLength || 0)
+            size: filePayload.byteLength || 0,
+            sha256: fileSha,
+            encrypted: !!shouldEncrypt
           });
         }
       }
@@ -1356,6 +1379,7 @@ async function exportFullBackupZip() {
       encrypted: !!shouldEncrypt,
       database: {
         filename: 'database.db',
+        sha256: dbSha256,
         encrypted: !!shouldEncrypt,
         schedules_count: schCount,
         transactions_count: txCount,
@@ -1434,46 +1458,19 @@ async function importFullBackupZip(file) {
       throw new Error('No SQLite database file (.db) found in the backup archive.');
     }
 
-    // 2. Validate SQLite binary (decrypt if encrypted)
-    let dbBinary = await dbEntry.async('uint8array');
-    if (isEncryptedDbBytes(dbBinary)) {
-      const pin = prompt('🔒 The database in this backup archive is encrypted with AES-256.\n\nPlease enter the Security PIN used to encrypt it:');
-      if (!pin) {
-        if (loadingToast) dismissToast(loadingToast);
-        showToast('Restore cancelled: Security PIN is required for encrypted backup.', 'warning');
-        return;
-      }
-      try {
-        dbBinary = await decryptDatabaseBytes(dbBinary, pin);
-      } catch(decErr) {
-        if (loadingToast) dismissToast(loadingToast);
-        showToast('❌ Decryption failed: Incorrect Security PIN for this backup.', 'error', 5000);
-        return;
-      }
-    }
-    const headerStr = String.fromCharCode(...dbBinary.slice(0, 16));
-    if (!headerStr.startsWith('SQLite format 3')) {
-      throw new Error('Database file in archive is not a valid SQLite database.');
-    }
-
-    // 3. Parse manifest.json if present
+    // 2. Parse manifest.json if present for SHA-256 integrity verification
     let manifestMap = new Map();
+    let manifestData = null;
     const manifestEntry = zip.file('manifest.json');
     if (manifestEntry) {
       try {
         const manifestText = await manifestEntry.async('string');
-        const manifest = JSON.parse(manifestText);
-        if (Array.isArray(manifest.attachments)) {
-          manifest.attachments.forEach(att => {
-            if (att.filename && att.id) {
-              manifestMap.set(att.filename.toLowerCase(), att.id);
-            }
-            if (att.name && att.id) {
-              manifestMap.set(att.name.toLowerCase(), att.id);
-            }
-            if (att.path && att.id) {
-              manifestMap.set(att.path.toLowerCase(), att.id);
-            }
+        manifestData = JSON.parse(manifestText);
+        if (Array.isArray(manifestData.attachments)) {
+          manifestData.attachments.forEach(att => {
+            if (att.filename) manifestMap.set(att.filename.toLowerCase(), att);
+            if (att.name) manifestMap.set(att.name.toLowerCase(), att);
+            if (att.path) manifestMap.set(att.path.toLowerCase(), att);
           });
         }
       } catch (e) {
@@ -1481,7 +1478,43 @@ async function importFullBackupZip(file) {
       }
     }
 
-    // 4. Stage and extract all attachments into memory FIRST
+    // 3. Validate SQLite binary & SHA-256 integrity
+    let dbBinary = await dbEntry.async('uint8array');
+    if (manifestData && manifestData.database && manifestData.database.sha256) {
+      const calcDbSha = await getContentFingerprint(dbBinary);
+      if (calcDbSha !== manifestData.database.sha256) {
+        throw new Error('Database SHA-256 integrity verification failed! The archive may be corrupted or modified.');
+      }
+    }
+
+    let backupKey = null;
+    let backupSalt = null;
+
+    if (isEncryptedDbBytes(dbBinary)) {
+      const saltStart = CRYPTO_MAGIC.length;
+      backupSalt = dbBinary.slice(saltStart, saltStart + 16);
+      const pin = prompt('🔒 The backup database is encrypted with AES-256.\n\nPlease enter the Security PIN used to encrypt this backup:');
+      if (!pin) {
+        if (loadingToast) dismissToast(loadingToast);
+        showToast('Restore cancelled: Security PIN is required for encrypted backup.', 'warning');
+        return;
+      }
+      try {
+        backupKey = await deriveKeyFromPin(pin, backupSalt);
+        dbBinary = await decryptDatabaseBytes(dbBinary, backupKey, false);
+      } catch(decErr) {
+        if (loadingToast) dismissToast(loadingToast);
+        showToast('❌ Decryption failed: Incorrect Security PIN for this backup.', 'error', 5000);
+        return;
+      }
+    }
+
+    const headerStr = String.fromCharCode(...dbBinary.slice(0, 16));
+    if (!headerStr.startsWith('SQLite format 3')) {
+      throw new Error('Database file in archive is not a valid SQLite database.');
+    }
+
+    // 4. Stage and extract all attachments into memory FIRST with SHA-256 verification
     const stagedAttachments = [];
     const attFiles = Object.keys(zip.files).filter(k => {
       if (zip.files[k].dir || k.startsWith('__MACOSX') || k === 'manifest.json' || k.toLowerCase().endsWith('.db')) {
@@ -1495,21 +1528,40 @@ async function importFullBackupZip(file) {
       const filename = relPath.split('/').pop().trim();
       if (!filename || filename === '.htaccess' || !isAllowedAttachmentFile(filename)) continue;
 
-      const ext = filename.split('.').pop().toLowerCase();
-      let mime = 'application/octet-stream';
-      if (['jpg', 'jpeg'].includes(ext)) mime = 'image/jpeg';
-      else if (ext === 'png') mime = 'image/png';
-      else if (ext === 'gif') mime = 'image/gif';
-      else if (ext === 'webp') mime = 'image/webp';
-      else if (ext === 'pdf') mime = 'application/pdf';
+      const fileBytes = await zipEntry.async('uint8array');
+      if (fileBytes.byteLength > 40 * 1024 * 1024) continue;
 
-      const base64Content = await zipEntry.async('base64');
-      if (base64Content.length > 40 * 1024 * 1024) continue;
+      const manifestInfo = manifestMap.get(filename.toLowerCase()) || manifestMap.get(relPath.toLowerCase());
+      if (manifestInfo && manifestInfo.sha256) {
+        const calcSha = await getContentFingerprint(fileBytes);
+        if (calcSha !== manifestInfo.sha256) {
+          throw new Error(`SHA-256 integrity verification failed for attachment "${filename}". Restore aborted to protect data.`);
+        }
+      }
 
-      const dataUrl = `data:${mime};base64,${base64Content}`;
+      let dataUrl = null;
+      if (isEncryptedAttachmentBytes(fileBytes)) {
+        if (!backupKey) {
+          const pin = prompt(`🔒 Attachment "${filename}" is encrypted. Enter Security PIN:`);
+          if (!pin) throw new Error('PIN required to decrypt attachments.');
+          const salt = getStoredCryptoSalt() || crypto.getRandomValues(new Uint8Array(16));
+          backupKey = await deriveKeyFromPin(pin, salt);
+        }
+        dataUrl = await decryptAttachmentData(fileBytes, backupKey);
+      } else {
+        const ext = filename.split('.').pop().toLowerCase();
+        let mime = 'application/octet-stream';
+        if (['jpg', 'jpeg'].includes(ext)) mime = 'image/jpeg';
+        else if (ext === 'png') mime = 'image/png';
+        else if (ext === 'gif') mime = 'image/gif';
+        else if (ext === 'webp') mime = 'image/webp';
+        else if (ext === 'pdf') mime = 'application/pdf';
 
-      let canonicalId = manifestMap.get(filename.toLowerCase()) ||
-                        manifestMap.get(relPath.toLowerCase()) ||
+        const base64Content = await zipEntry.async('base64');
+        dataUrl = `data:${mime};base64,${base64Content}`;
+      }
+
+      let canonicalId = (manifestInfo && manifestInfo.id) ||
                         extractCanonicalAttachmentId(filename) ||
                         filename;
 
@@ -1523,7 +1575,7 @@ async function importFullBackupZip(file) {
       console.warn('Safety snapshot error:', e);
     }
 
-    // 5. Commit attachments to IndexedDB with confirmed completion
+    // 5. Commit attachments to IndexedDB (transparently encrypted with device's active key)
     let importedAttachmentsCount = 0;
     for (const item of stagedAttachments) {
       await saveAttachmentToIndexedDB(item.canonicalId, item.dataUrl);
@@ -1533,10 +1585,28 @@ async function importFullBackupZip(file) {
       importedAttachmentsCount++;
     }
 
-    // 6. Only activate restored database once all attachments have succeeded!
+    // 6. Activate restored database & synchronize key state with current device
     db = new SQL.Database(dbBinary);
     ensureSchemaUpToDate();
-    await saveDbToIndexedDB();
+
+    if (currentEncryptionKey && isPinConfigured()) {
+      // Device already has active PIN: re-encrypt restored database with this device's active key
+      await saveDbToIndexedDB();
+    } else if (backupKey && backupSalt) {
+      // Fresh device restoring encrypted backup: adopt backup PIN as device's security credentials
+      currentEncryptionKey = backupKey;
+      storeCryptoSalt(backupSalt);
+      await createAuthVerificationToken(backupKey);
+      localStorage.setItem('srg_app_pin_configured', 'true');
+      await persistKeyToSession(backupKey);
+      await saveDbToIndexedDB();
+      isAppUnlocked = true;
+      const overlay = document.getElementById('appLockOverlay');
+      if (overlay) overlay.classList.add('hidden');
+    } else {
+      await saveDbToIndexedDB();
+    }
+
     loadMasterDataFromDb();
     populateTitlesDatalist();
 
@@ -1545,7 +1615,7 @@ async function importFullBackupZip(file) {
     closeServerSyncModal();
 
     if (loadingToast) dismissToast(loadingToast);
-    showToast(`✓ Full backup restored successfully! Database loaded and ${importedAttachmentsCount} attachments restored.`, 'success', 5000);
+    showToast(`✓ Full backup restored successfully! Database loaded and ${importedAttachmentsCount} attachments verified and restored.`, 'success', 5000);
   } catch (err) {
     if (loadingToast) dismissToast(loadingToast);
     console.error('Error importing full backup zip:', err);
@@ -1659,21 +1729,26 @@ async function exportAttachmentsZipFile() {
     });
 
     for (const item of dbFiles) {
-      const fp = await getContentFingerprint(item.val);
+      let plainData = item.val;
+      if (isEncryptedAttachmentBytes(plainData)) {
+        plainData = await decryptAttachmentData(plainData, currentEncryptionKey);
+      }
+      const fp = await getContentFingerprint(plainData);
       if (!fingerprintToFileMap.has(fp)) {
         const rawKey = item.key.slice(4);
         let ext = 'bin';
         let mime = 'application/octet-stream';
         let b64 = '';
 
-        if (typeof item.val === 'string' && item.val.startsWith('data:')) {
-          const commaIdx = item.val.indexOf(',');
-          b64 = commaIdx > -1 ? item.val.slice(commaIdx + 1) : item.val;
-          const matchMime = item.val.match(/data:([^;]+);/);
+        if (typeof plainData === 'string' && plainData.startsWith('data:')) {
+          const commaIdx = plainData.indexOf(',');
+          b64 = commaIdx > -1 ? plainData.slice(commaIdx + 1) : plainData;
+          const matchMime = plainData.match(/data:([^;]+);/);
           if (matchMime) {
             mime = matchMime[1];
             if (mime.includes('jpeg')) ext = 'jpg';
             else if (mime.includes('png')) ext = 'png';
+            else if (mime.includes('pdf')) ext = 'pdf';
           }
         }
 
@@ -1685,8 +1760,8 @@ async function exportAttachmentsZipFile() {
           if (b64) {
             zip.file(zipFileName, b64, { base64: true });
             fileCount++;
-          } else if (item.val instanceof ArrayBuffer || item.val instanceof Uint8Array) {
-            zip.file(zipFileName, item.val);
+          } else if (plainData instanceof ArrayBuffer || plainData instanceof Uint8Array) {
+            zip.file(zipFileName, plainData);
             fileCount++;
           }
 
@@ -1694,7 +1769,7 @@ async function exportAttachmentsZipFile() {
             id: rawKey,
             filename: zipFileName,
             mime: mime,
-            size: b64 ? Math.round(b64.length * 0.75) : (item.val.byteLength || 0)
+            size: b64 ? Math.round(b64.length * 0.75) : (plainData.byteLength || 0)
           });
         }
       }
@@ -2123,10 +2198,11 @@ function toggleAppTheme() {
 }
 
 /* ==========================================================================
-   WEB CRYPTO (AES-256-GCM + PBKDF2) DATABASE ENCRYPTION AT REST
+   WEB CRYPTO (AES-256-GCM + PBKDF2) DATABASE & ATTACHMENT ENCRYPTION AT REST
    ========================================================================== */
 
 const CRYPTO_MAGIC = new Uint8Array([0x53, 0x52, 0x47, 0x45, 0x31]); // "SRGE1"
+const ATTACHMENT_CRYPTO_MAGIC = new Uint8Array([0x53, 0x52, 0x47, 0x41, 0x54, 0x54, 0x31]); // "SRGATT1"
 const PBKDF2_ITERATIONS = 100000;
 let currentEncryptionKey = null;
 
@@ -2134,6 +2210,21 @@ function isEncryptedDbBytes(bytes) {
   if (!bytes || bytes.length < 33) return false;
   for (let i = 0; i < CRYPTO_MAGIC.length; i++) {
     if (bytes[i] !== CRYPTO_MAGIC[i]) return false;
+  }
+  return true;
+}
+
+function isEncryptedAttachmentBytes(data) {
+  if (!data) return false;
+  let bytes = null;
+  if (data instanceof Uint8Array) {
+    bytes = data;
+  } else if (data instanceof ArrayBuffer) {
+    bytes = new Uint8Array(data);
+  }
+  if (!bytes || bytes.length < ATTACHMENT_CRYPTO_MAGIC.length + 12 + 16) return false;
+  for (let i = 0; i < ATTACHMENT_CRYPTO_MAGIC.length; i++) {
+    if (bytes[i] !== ATTACHMENT_CRYPTO_MAGIC[i]) return false;
   }
   return true;
 }
@@ -2227,21 +2318,12 @@ async function verifyPinWithAuthToken(pin) {
   }
 }
 
-async function encryptDatabaseBytes(rawBytes) {
-  if (!currentEncryptionKey) {
-    throw new Error('No encryption key active');
-  }
-
-  let salt = getStoredCryptoSalt();
-  if (!salt) {
-    salt = crypto.getRandomValues(new Uint8Array(16));
-    storeCryptoSalt(salt);
-  }
-
+async function encryptWithKeyAndSalt(rawBytes, key, salt) {
+  if (!key) throw new Error('No encryption key provided');
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ciphertextBuffer = await crypto.subtle.encrypt(
     { name: 'AES-GCM', iv: iv },
-    currentEncryptionKey,
+    key,
     rawBytes
   );
   const ciphertext = new Uint8Array(ciphertextBuffer);
@@ -2252,11 +2334,22 @@ async function encryptDatabaseBytes(rawBytes) {
   packed.set(salt, CRYPTO_MAGIC.length);
   packed.set(iv, CRYPTO_MAGIC.length + salt.length);
   packed.set(ciphertext, CRYPTO_MAGIC.length + salt.length + iv.length);
-
   return packed;
 }
 
-async function decryptDatabaseBytes(encryptedBytes, pinOrKey) {
+async function encryptDatabaseBytes(rawBytes) {
+  if (!currentEncryptionKey) {
+    throw new Error('No encryption key active');
+  }
+  let salt = getStoredCryptoSalt();
+  if (!salt) {
+    salt = crypto.getRandomValues(new Uint8Array(16));
+    storeCryptoSalt(salt);
+  }
+  return await encryptWithKeyAndSalt(rawBytes, currentEncryptionKey, salt);
+}
+
+async function decryptDatabaseBytes(encryptedBytes, pinOrKey, setActiveKey = false) {
   if (!isEncryptedDbBytes(encryptedBytes)) {
     return encryptedBytes;
   }
@@ -2284,10 +2377,67 @@ async function decryptDatabaseBytes(encryptedBytes, pinOrKey) {
     ciphertext
   );
 
-  currentEncryptionKey = key;
-  storeCryptoSalt(salt);
+  if (setActiveKey) {
+    currentEncryptionKey = key;
+    storeCryptoSalt(salt);
+  }
 
   return new Uint8Array(decryptedBuffer);
+}
+
+async function encryptAttachmentData(plainDataUrl, key = currentEncryptionKey) {
+  if (!key || typeof plainDataUrl !== 'string') return plainDataUrl;
+  const enc = new TextEncoder();
+  const rawBytes = enc.encode(plainDataUrl);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertextBuffer = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv: iv },
+    key,
+    rawBytes
+  );
+  const ciphertext = new Uint8Array(ciphertextBuffer);
+  const packed = new Uint8Array(ATTACHMENT_CRYPTO_MAGIC.length + iv.length + ciphertext.length);
+  packed.set(ATTACHMENT_CRYPTO_MAGIC, 0);
+  packed.set(iv, ATTACHMENT_CRYPTO_MAGIC.length);
+  packed.set(ciphertext, ATTACHMENT_CRYPTO_MAGIC.length + iv.length);
+  return packed;
+}
+
+async function decryptAttachmentData(storedVal, key = currentEncryptionKey) {
+  if (!storedVal) return storedVal;
+  // If stored as plaintext string starting with data:
+  if (typeof storedVal === 'string') {
+    if (storedVal.startsWith('data:') || !key) return storedVal;
+    try {
+      const buf = base64ToBuffer(storedVal);
+      if (isEncryptedAttachmentBytes(buf)) {
+        return await decryptAttachmentData(buf, key);
+      }
+    } catch(e) {}
+    return storedVal;
+  }
+  let bytes = storedVal instanceof Uint8Array ? storedVal : new Uint8Array(storedVal);
+  if (!isEncryptedAttachmentBytes(bytes)) {
+    try {
+      const dec = new TextDecoder().decode(bytes);
+      if (dec.startsWith('data:')) return dec;
+    } catch(e) {}
+    return storedVal;
+  }
+  if (!key) {
+    console.warn('Cannot decrypt attachment: No active encryption key');
+    return null;
+  }
+  const ivStart = ATTACHMENT_CRYPTO_MAGIC.length;
+  const cipherStart = ivStart + 12;
+  const iv = bytes.slice(ivStart, cipherStart);
+  const ciphertext = bytes.slice(cipherStart);
+  const decryptedBuffer = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: iv },
+    key,
+    ciphertext
+  );
+  return new TextDecoder().decode(decryptedBuffer);
 }
 
 async function persistKeyToSession(key) {
@@ -2316,45 +2466,31 @@ async function restoreKeyFromSession() {
 }
 
 async function saveBiometricEncryptionKey(key) {
-  try {
-    const raw = await crypto.subtle.exportKey('raw', key);
-    const idb = await openSRGDatabase();
-    const tx = idb.transaction('files', 'readwrite');
-    tx.objectStore('files').put(raw, 'srg_bio_key_token');
-  } catch(e) {
-    console.warn('Failed to save biometric encryption key:', e);
-  }
+  // Never write raw AES key to persistent IndexedDB (preserves at-rest encryption).
+  // Actively remove any legacy stored key token if present.
+  await removeBiometricEncryptionKey();
 }
 
 async function loadBiometricEncryptionKey() {
+  // Biometric authentication accesses active session key if present in this browser session
+  const bioSessionKey = sessionStorage.getItem('srg_bio_session_token') || sessionStorage.getItem('srg_session_key');
+  if (!bioSessionKey) return null;
   try {
-    const idb = await openSRGDatabase();
-    return new Promise((resolve) => {
-      const tx = idb.transaction('files', 'readonly');
-      const req = tx.objectStore('files').get('srg_bio_key_token');
-      req.onsuccess = async () => {
-        if (!req.result) return resolve(null);
-        try {
-          const key = await crypto.subtle.importKey(
-            'raw',
-            req.result,
-            { name: 'AES-GCM' },
-            true,
-            ['encrypt', 'decrypt']
-          );
-          resolve(key);
-        } catch(err) {
-          resolve(null);
-        }
-      };
-      req.onerror = () => resolve(null);
-    });
+    const raw = base64ToBuffer(bioSessionKey);
+    return await crypto.subtle.importKey(
+      'raw',
+      raw,
+      { name: 'AES-GCM' },
+      true,
+      ['encrypt', 'decrypt']
+    );
   } catch(e) {
     return null;
   }
 }
 
 async function removeBiometricEncryptionKey() {
+  sessionStorage.removeItem('srg_bio_session_token');
   try {
     const idb = await openSRGDatabase();
     const tx = idb.transaction('files', 'readwrite');
@@ -2469,6 +2605,17 @@ async function unlockAppWithBiometric(autoPrompt = false) {
     return;
   }
 
+  // Check if biometric session token exists (active browser session)
+  const bioKey = await loadBiometricEncryptionKey();
+  if (!bioKey) {
+    if (!autoPrompt) {
+      showToast('PIN required on fresh browser start. Biometric quick-unlock remains active once unlocked in this session.', 'info', 4500);
+      const keyInp = document.getElementById('appLockKeyInput');
+      if (keyInp) keyInp.focus();
+    }
+    return;
+  }
+
   try {
     const rawId = Uint8Array.from(atob(credIdBase64), c => c.charCodeAt(0));
     const challenge = new Uint8Array(16);
@@ -2487,14 +2634,10 @@ async function unlockAppWithBiometric(autoPrompt = false) {
     });
 
     if (assertion) {
-      const key = await loadBiometricEncryptionKey();
-      if (!key) {
-        throw new Error('Biometric key not available. Please enter your PIN.');
-      }
-
+      const key = bioKey;
       const bytesToDecrypt = cachedEncryptedDbBytes || await loadDbFromIndexedDB();
       if (bytesToDecrypt) {
-        const decryptedBytes = await decryptDatabaseBytes(bytesToDecrypt, key);
+        const decryptedBytes = await decryptDatabaseBytes(bytesToDecrypt, key, true);
         db = new SQL.Database(decryptedBytes);
         ensureSchemaUpToDate();
       }
@@ -2540,6 +2683,9 @@ async function checkAppSecurityLock() {
   const overlay = document.getElementById('appLockOverlay');
   if (!overlay) return;
 
+  // Clean up any legacy plaintext key token from IndexedDB
+  removeBiometricEncryptionKey();
+
   const setupWrap = document.getElementById('appLockSetupContainer');
   const unlockWrap = document.getElementById('appLockUnlockContainer');
 
@@ -2560,7 +2706,7 @@ async function checkAppSecurityLock() {
     try {
       const bytesToDecrypt = cachedEncryptedDbBytes || await loadDbFromIndexedDB();
       if (bytesToDecrypt) {
-        const decryptedBytes = await decryptDatabaseBytes(bytesToDecrypt, sessionKey);
+        const decryptedBytes = await decryptDatabaseBytes(bytesToDecrypt, sessionKey, true);
         db = new SQL.Database(decryptedBytes);
         ensureSchemaUpToDate();
       }
@@ -2599,9 +2745,9 @@ async function handleSetupPinSubmit(e) {
   const pin2 = (document.getElementById('setupConfirmPinInput')?.value || '').trim();
   const errEl = document.getElementById('setupPinErrorMsg');
 
-  if (!pin1 || pin1.length < 4 || pin1.length > 8) {
+  if (!pin1 || pin1.length < 6 || pin1.length > 64) {
     if (errEl) {
-      errEl.textContent = 'Security PIN must be between 4 and 8 digits.';
+      errEl.textContent = 'Security PIN / Passphrase must be at least 6 characters.';
       errEl.classList.remove('hidden');
     }
     return;
@@ -2717,7 +2863,7 @@ async function unlockAppWithKey(enteredKey) {
       throw new Error('Database not found');
     }
 
-    const decryptedBytes = await decryptDatabaseBytes(bytesToDecrypt, key);
+    const decryptedBytes = await decryptDatabaseBytes(bytesToDecrypt, key, true);
     db = new SQL.Database(decryptedBytes);
     ensureSchemaUpToDate();
 
@@ -2770,6 +2916,14 @@ async function unlockAppWithKey(enteredKey) {
 
 async function lockAppSecurity() {
   isAppUnlocked = false;
+  if (localStorage.getItem('srg_biometric_enabled') === 'true' && currentEncryptionKey) {
+    try {
+      const raw = await crypto.subtle.exportKey('raw', currentEncryptionKey);
+      sessionStorage.setItem('srg_bio_session_token', bufferToBase64(raw));
+    } catch(e) {}
+  } else {
+    sessionStorage.removeItem('srg_bio_session_token');
+  }
   sessionStorage.removeItem('srg_app_unlocked');
   sessionStorage.removeItem('srg_session_key');
   currentEncryptionKey = null;
@@ -2865,9 +3019,9 @@ async function handleChangePinSubmit(e) {
     }
     return;
   }
-  if (!newPin || newPin.length < 4 || newPin.length > 8) {
+  if (!newPin || newPin.length < 6 || newPin.length > 64) {
     if (errEl) {
-      errEl.textContent = 'New PIN must be between 4 and 8 digits.';
+      errEl.textContent = 'New PIN / Passphrase must be at least 6 characters.';
       errEl.classList.remove('hidden');
     }
     return;
@@ -2888,9 +3042,83 @@ async function handleChangePinSubmit(e) {
   }
 
   try {
+    const oldKey = currentEncryptionKey || (await deriveKeyFromPin(currentPin, getStoredCryptoSalt()));
     const newSalt = crypto.getRandomValues(new Uint8Array(16));
-    storeCryptoSalt(newSalt);
     const newKey = await deriveKeyFromPin(newPin, newSalt);
+
+    const idb = await openSRGDatabase();
+
+    // 1. Re-encrypt all historical database snapshots in IndexedDB
+    try {
+      const snapTx = idb.transaction('snapshots', 'readwrite');
+      const snapStore = snapTx.objectStore('snapshots');
+      const snapReq = snapStore.getAll();
+      await new Promise((resolve) => {
+        snapReq.onsuccess = async () => {
+          const list = snapReq.result || [];
+          for (const snap of list) {
+            if (snap && snap.data) {
+              let snapBytes = new Uint8Array(snap.data);
+              if (isEncryptedDbBytes(snapBytes)) {
+                try {
+                  const decrypted = await decryptDatabaseBytes(snapBytes, oldKey, false);
+                  const reEncrypted = await encryptWithKeyAndSalt(decrypted, newKey, newSalt);
+                  snap.data = reEncrypted;
+                  snap.size = reEncrypted.byteLength;
+                  snapStore.put(snap);
+                } catch(e) {
+                  console.warn('Could not re-encrypt snapshot:', snap.id, e);
+                }
+              }
+            }
+          }
+          resolve();
+        };
+        snapReq.onerror = () => resolve();
+      });
+      await new Promise(r => { snapTx.oncomplete = r; snapTx.onerror = r; });
+    } catch(snapErr) {
+      console.warn('Snapshot re-encryption error:', snapErr);
+    }
+
+    // 2. Re-encrypt all stored attachments in IndexedDB
+    try {
+      const fileTx = idb.transaction('files', 'readwrite');
+      const fileStore = fileTx.objectStore('files');
+      const cursorReq = fileStore.openCursor();
+      await new Promise((resolve) => {
+        cursorReq.onsuccess = async (e) => {
+          const cursor = e.target.result;
+          if (cursor) {
+            const k = String(cursor.key);
+            if (k.startsWith('att_')) {
+              const val = cursor.value;
+              if (isEncryptedAttachmentBytes(val)) {
+                try {
+                  const plain = await decryptAttachmentData(val, oldKey);
+                  if (plain) {
+                    const reEnc = await encryptAttachmentData(plain, newKey);
+                    cursor.update(reEnc);
+                  }
+                } catch(err) {
+                  console.warn('Could not re-encrypt attachment:', k, err);
+                }
+              }
+            }
+            cursor.continue();
+          } else {
+            resolve();
+          }
+        };
+        cursorReq.onerror = () => resolve();
+      });
+      await new Promise(r => { fileTx.oncomplete = r; fileTx.onerror = r; });
+    } catch(fileErr) {
+      console.warn('Attachment re-encryption error:', fileErr);
+    }
+
+    // 3. Update current active key, salt and auth token
+    storeCryptoSalt(newSalt);
     currentEncryptionKey = newKey;
 
     await createAuthVerificationToken(newKey);
@@ -2905,7 +3133,7 @@ async function handleChangePinSubmit(e) {
     }
 
     closeChangePinModal();
-    showToast('✓ Security PIN changed & Database re-encrypted!', 'success');
+    showToast('✓ Security PIN changed! Database, snapshots & attachments re-encrypted.', 'success', 5000);
   } catch (err) {
     console.error('Error changing PIN:', err);
     if (errEl) {
@@ -6679,21 +6907,57 @@ function importSqliteFile(e) {
   reader.onload = async () => {
     let u8 = new Uint8Array(reader.result);
     try {
+      let backupKey = null;
+      let backupSalt = null;
+
       if (isEncryptedDbBytes(u8)) {
-        const pin = prompt('This backup file is encrypted. Please enter its Security PIN:');
+        const saltStart = CRYPTO_MAGIC.length;
+        backupSalt = u8.slice(saltStart, saltStart + 16);
+        const pin = prompt('🔒 This backup file is encrypted with AES-256.\n\nPlease enter the Security PIN used to create it:');
         if (!pin) {
           showToast('Import cancelled: PIN required for encrypted backup.', 'warning');
           return;
         }
-        u8 = await decryptDatabaseBytes(u8, pin);
+        backupKey = await deriveKeyFromPin(pin, backupSalt);
+        u8 = await decryptDatabaseBytes(u8, backupKey, false);
       }
+
+      const headerStr = String.fromCharCode(...u8.slice(0, 16));
+      if (!headerStr.startsWith('SQLite format 3')) {
+        throw new Error('Selected file is not a valid SQLite database.');
+      }
+
+      // Safety snapshot of current database before restoring
+      try {
+        await saveLocalDbSnapshot('Pre-Restore SQLite Safety Backup');
+      } catch(e) {}
+
       db = new SQL.Database(u8);
       ensureSchemaUpToDate();
-      await saveDbToIndexedDB();
+
+      if (currentEncryptionKey && isPinConfigured()) {
+        // Device already has active PIN: re-encrypt restored database with device's active key
+        await saveDbToIndexedDB();
+      } else if (backupKey && backupSalt) {
+        // Fresh device setup: adopt backup PIN
+        currentEncryptionKey = backupKey;
+        storeCryptoSalt(backupSalt);
+        await createAuthVerificationToken(backupKey);
+        localStorage.setItem('srg_app_pin_configured', 'true');
+        await persistKeyToSession(backupKey);
+        await saveDbToIndexedDB();
+        isAppUnlocked = true;
+        const overlay = document.getElementById('appLockOverlay');
+        if (overlay) overlay.classList.add('hidden');
+      } else {
+        await saveDbToIndexedDB();
+      }
+
       loadMasterDataFromDb();
       populateTitlesDatalist();
       renderCurrentView();
-      showToast('SQLite database restored successfully!', 'success', 4000);
+      await updateStorageStatsUI();
+      showToast('✓ SQLite database restored successfully (secured with active PIN)!', 'success', 4000);
     } catch (err) {
       showToast('Error parsing SQLite backup file: ' + err.message, 'error', 5000);
     }

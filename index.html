@@ -41,7 +41,7 @@
               <div class="brand-logo">
                 <i class="fa-solid fa-calendar-days"></i>
               </div>
-              <span class="brand-name">Calendar App <small id="appVersionBadge" style="font-size:0.7rem; font-weight:600; color:#38bdf8; background:rgba(56,189,248,0.15); padding:1px 5px; border-radius:4px; margin-left:3px;">v1.1.5</small></span>
+              <span class="brand-name">Calendar App <small id="appVersionBadge" style="font-size:0.7rem; font-weight:600; color:#38bdf8; background:rgba(56,189,248,0.15); padding:1px 5px; border-radius:4px; margin-left:3px;">v1.2.0</small></span>
             </div>
           </div>
 
@@ -131,7 +131,7 @@
           </div>
           <div class="brand-text">
             <span class="brand-name">Calendar App</span>
-            <span class="brand-badge" id="drawerVersionBadge">v1.1.5 &bull; Encrypted Offline PWA</span>
+            <span class="brand-badge" id="drawerVersionBadge">v1.2.0 &bull; Encrypted Offline PWA</span>
           </div>
         </div>
         <button id="closeSideMenuBtn" class="btn-icon" title="Close Menu"><i class="fa-solid fa-xmark"></i></button>
@@ -148,7 +148,7 @@
               <div class="drawer-card-title" id="drawerInstallUpdateTitle">Install / Update App</div>
               <div class="drawer-card-desc" id="drawerInstallUpdateDesc">Install or check for updates</div>
             </div>
-            <span id="drawerInstallUpdateBadge" class="drawer-badge">v1.1.5</span>
+            <span id="drawerInstallUpdateBadge" class="drawer-badge">v1.2.0</span>
           </button>
         </div>
 
@@ -854,8 +854,11 @@
               </div>
               <span style="font-size: 0.7rem; font-weight: 600; background: rgba(16, 185, 129, 0.2); color: #10b981; padding: 2px 6px; border-radius: 4px;">Recommended</span>
             </div>
-            <div style="font-size: 0.76rem; color: var(--text-muted); margin-bottom: 10px; line-height: 1.4;">
+            <div style="font-size: 0.76rem; color: var(--text-muted); margin-bottom: 8px; line-height: 1.4;">
               Atomic archive (.zip) containing your SQLite database, manifest, and all ticket attachments.
+            </div>
+            <div style="font-size: 0.73rem; background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 6px; padding: 7px 10px; margin-bottom: 12px; color: var(--text-main); line-height: 1.45;">
+              <i class="fa-solid fa-circle-info" style="color: #38bdf8;"></i> <strong>PIN Security Note:</strong> Backups are encrypted using your active Security PIN. If restoring on a device with a different PIN, enter the backup's original PIN when prompted—the calendar will be decrypted with the old PIN and immediately re-saved using this device's current PIN so you never lose access.
             </div>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
               <button id="downloadFullBackupBtn" class="btn-primary" style="justify-content: center; background: #10b981; padding: 10px; font-size: 0.84rem; font-weight: 600;">
@@ -1038,12 +1041,12 @@
               <input type="password" id="currentPinInput" required placeholder="Enter current PIN" autocomplete="current-password" style="width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: var(--radius-md); border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-main); font-family: inherit;">
             </div>
             <div class="form-group">
-              <label for="newPinInput" style="font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 6px;">New PIN (Minimum 4 characters) *</label>
-              <input type="password" id="newPinInput" required minlength="4" placeholder="Enter new PIN" autocomplete="new-password" style="width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: var(--radius-md); border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-main); font-family: inherit;">
+              <label for="newPinInput" style="font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 6px;">New PIN / Passphrase (Minimum 6 characters) *</label>
+              <input type="password" id="newPinInput" required minlength="6" maxlength="64" placeholder="Enter new PIN (min 6 characters)" autocomplete="new-password" style="width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: var(--radius-md); border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-main); font-family: inherit;">
             </div>
             <div class="form-group">
-              <label for="confirmPinInput" style="font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 6px;">Confirm New PIN *</label>
-              <input type="password" id="confirmPinInput" required minlength="4" placeholder="Re-enter new PIN" autocomplete="new-password" style="width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: var(--radius-md); border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-main); font-family: inherit;">
+              <label for="confirmPinInput" style="font-size: 0.85rem; color: var(--text-muted); display: block; margin-bottom: 6px;">Confirm New PIN / Passphrase *</label>
+              <input type="password" id="confirmPinInput" required minlength="6" maxlength="64" placeholder="Re-enter new PIN" autocomplete="new-password" style="width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: var(--radius-md); border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-main); font-family: inherit;">
             </div>
             <div id="changePinErrorMsg" style="color: #fb7185; font-size: 0.85rem; line-height: 1.3;" class="hidden"></div>
             <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 6px;">
@@ -1068,7 +1071,7 @@
           </div>
           <h2 style="font-size: 1.45rem; font-weight: 700; margin-bottom: 4px; color: var(--text-main);">Calendar App</h2>
           <div style="display: inline-block; font-size: 0.8rem; font-weight: 600; color: #38bdf8; background: rgba(56,189,248,0.12); padding: 3px 10px; border-radius: 12px; margin-bottom: 16px; border: 1px solid rgba(56,189,248,0.3);">
-            Version <span id="aboutModalVersion">v1.1.5 (PWA)</span>
+            Version <span id="aboutModalVersion">v1.2.0 (PWA)</span>
           </div>
 
           <div style="background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 14px 16px; text-align: left; font-size: 0.88rem; line-height: 1.55; margin-bottom: 16px;">
@@ -1117,18 +1120,18 @@
           <div style="width: 58px; height: 58px; background: linear-gradient(135deg, #10b981, #059669); border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 1.7rem; color: #fff; margin-bottom: 14px; box-shadow: 0 4px 15px rgba(16, 185, 129, 0.4);">
             <i class="fa-solid fa-lock"></i>
           </div>
-          <h3 id="appLockSetupTitle" style="font-size: 1.25rem; margin-bottom: 6px;">Set Up Security PIN</h3>
+          <h3 id="appLockSetupTitle" style="font-size: 1.25rem; margin-bottom: 6px;">Set Up Security PIN / Passphrase</h3>
           <p id="appLockSetupDesc" style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 18px; line-height: 1.45;">
-            Choose a 4-to-8 digit PIN to encrypt and secure your calendar database locally with hardware-accelerated AES-256 encryption.
+            Choose a secure PIN or Passphrase (minimum 6 characters) to encrypt your calendar database and attachments locally with hardware-accelerated AES-256-GCM encryption.
           </p>
           <form id="appSetupPinForm" style="display: flex; flex-direction: column; gap: 12px;">
             <div class="form-group" style="text-align: left;">
-              <label for="setupNewPinInput" style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px; display: block;">Create Security PIN (Min 4 digits) *</label>
-              <input type="password" id="setupNewPinInput" inputmode="numeric" placeholder="Enter 4-8 digit PIN" required minlength="4" maxlength="8" autocomplete="new-password" style="width: 100%; box-sizing: border-box; padding: 12px; font-size: 1rem; text-align: center; border-radius: var(--radius-md); border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-main); font-family: inherit;">
+              <label for="setupNewPinInput" style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px; display: block;">Create Security PIN / Passphrase (Min 6 characters) *</label>
+              <input type="password" id="setupNewPinInput" placeholder="Enter min 6 characters" required minlength="6" maxlength="64" autocomplete="new-password" style="width: 100%; box-sizing: border-box; padding: 12px; font-size: 1rem; text-align: center; border-radius: var(--radius-md); border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-main); font-family: inherit;">
             </div>
             <div class="form-group" style="text-align: left;">
-              <label for="setupConfirmPinInput" style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px; display: block;">Confirm Security PIN *</label>
-              <input type="password" id="setupConfirmPinInput" inputmode="numeric" placeholder="Re-enter your PIN" required minlength="4" maxlength="8" autocomplete="new-password" style="width: 100%; box-sizing: border-box; padding: 12px; font-size: 1rem; text-align: center; border-radius: var(--radius-md); border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-main); font-family: inherit;">
+              <label for="setupConfirmPinInput" style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px; display: block;">Confirm Security PIN / Passphrase *</label>
+              <input type="password" id="setupConfirmPinInput" placeholder="Re-enter your PIN" required minlength="6" maxlength="64" autocomplete="new-password" style="width: 100%; box-sizing: border-box; padding: 12px; font-size: 1rem; text-align: center; border-radius: var(--radius-md); border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-main); font-family: inherit;">
             </div>
             <div id="setupPinErrorMsg" style="color: #fb7185; font-size: 0.85rem;" class="hidden"></div>
             <button type="submit" id="submitSetupPinBtn" class="btn-primary" style="width: 100%; justify-content: center; padding: 12px; font-size: 0.96rem; margin-top: 4px;">
