@@ -112,7 +112,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.2.4';
+const APP_VERSION = 'v1.2.5';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -862,48 +862,78 @@ async function migratePlaintextAttachmentsToEncrypted(key = currentEncryptionKey
   if (!key) return 0;
   try {
     const idb = await openSRGDatabase();
-    const tx = idb.transaction('files', 'readwrite');
-    const store = tx.objectStore('files');
-    const cursorReq = store.openCursor();
-    let migratedCount = 0;
-    await new Promise((resolve) => {
-      cursorReq.onsuccess = async (e) => {
-        const cursor = e.target.result;
-        if (cursor) {
-          const k = String(cursor.key);
-          if (k.startsWith('att_') || k.startsWith('ticket_') || k.includes('.')) {
-            const val = cursor.value;
-            if (!isEncryptedAttachmentBytes(val)) {
-              let plainText = null;
-              if (typeof val === 'string' && val.startsWith('data:')) {
-                plainText = val;
-              } else if (val instanceof Uint8Array || val instanceof ArrayBuffer) {
-                try {
-                  const dec = new TextDecoder().decode(val);
-                  if (dec.startsWith('data:')) plainText = dec;
-                } catch(err) {}
-              }
-              if (plainText) {
-                try {
-                  const enc = await encryptAttachmentData(plainText, key);
-                  cursor.update(enc);
-                  migratedCount++;
-                } catch(err) {}
-              }
+
+    // 1. Read all candidates in a readonly transaction
+    const candidateRecords = await new Promise((resolve, reject) => {
+      try {
+        const tx = idb.transaction('files', 'readonly');
+        const store = tx.objectStore('files');
+        const cursorReq = store.openCursor();
+        const records = [];
+        cursorReq.onsuccess = (e) => {
+          const cursor = e.target.result;
+          if (cursor) {
+            const k = String(cursor.key);
+            if (k.startsWith('att_') || k.startsWith('ticket_') || k.includes('.')) {
+              records.push({ key: k, value: cursor.value });
             }
+            cursor.continue();
+          } else {
+            resolve(records);
           }
-          cursor.continue();
-        } else {
-          resolve();
-        }
-      };
-      cursorReq.onerror = () => resolve();
+        };
+        cursorReq.onerror = () => reject(cursorReq.error);
+      } catch (err) {
+        reject(err);
+      }
     });
-    await new Promise(r => { tx.oncomplete = r; tx.onerror = r; });
-    if (migratedCount > 0) {
-      console.log(`Migrated ${migratedCount} legacy attachments to AES-256-GCM encryption at rest.`);
+
+    // 2. Asynchronously encrypt and verify in memory outside any transaction
+    const stagedUpdates = [];
+    for (const record of candidateRecords) {
+      const val = record.value;
+      if (!isEncryptedAttachmentBytes(val)) {
+        let plainText = null;
+        if (typeof val === 'string' && val.startsWith('data:')) {
+          plainText = val;
+        } else if (val instanceof Uint8Array || val instanceof ArrayBuffer) {
+          try {
+            const dec = new TextDecoder().decode(val);
+            if (dec.startsWith('data:')) plainText = dec;
+          } catch(err) {}
+        }
+        if (plainText) {
+          try {
+            const enc = await encryptAttachmentData(plainText, key);
+            const verified = await decryptAttachmentData(enc, key);
+            if (verified === plainText) {
+              stagedUpdates.push({ key: record.key, value: enc });
+            } else {
+              console.warn(`Migration verification failed for attachment ${record.key}`);
+            }
+          } catch (encErr) {
+            console.warn(`Failed to encrypt attachment ${record.key} during migration:`, encErr);
+          }
+        }
+      }
     }
-    return migratedCount;
+
+    if (stagedUpdates.length === 0) return 0;
+
+    // 3. Batch commit all prepared encrypted records in one readwrite transaction
+    await new Promise((resolve, reject) => {
+      const tx = idb.transaction('files', 'readwrite');
+      const store = tx.objectStore('files');
+      for (const item of stagedUpdates) {
+        store.put(item.value, item.key);
+      }
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Migration batch commit failed'));
+      tx.onabort = () => reject(tx.error || new Error('Migration batch transaction aborted'));
+    });
+
+    console.log(`Migrated ${stagedUpdates.length} legacy attachments to AES-256-GCM encryption at rest.`);
+    return stagedUpdates.length;
   } catch(e) {
     console.warn('migratePlaintextAttachmentsToEncrypted error:', e);
     return 0;
@@ -1632,36 +1662,70 @@ async function importFullBackupZip(file) {
       console.warn('Safety snapshot error:', e);
     }
 
-    // 5. Commit attachments to IndexedDB (transparently encrypted with device's active key)
+    // 5. Stage, encrypt, and batch-commit attachments and database in ONE atomic transaction
+    const effectiveKey = (currentEncryptionKey && isPinConfigured()) ? currentEncryptionKey : (backupKey || null);
+    const filesToCommit = [];
     let importedAttachmentsCount = 0;
+
     for (const item of stagedAttachments) {
-      await saveAttachmentToIndexedDB(item.canonicalId, item.dataUrl);
+      let payload = item.dataUrl;
+      if (effectiveKey) {
+        payload = await encryptAttachmentData(item.dataUrl, effectiveKey);
+      }
+      const canonicalKey = item.canonicalId.startsWith('att_') ? item.canonicalId : ('att_' + item.canonicalId);
+      filesToCommit.push({ key: canonicalKey, value: payload });
       if (item.filename && item.filename !== item.canonicalId) {
-        await saveAttachmentToIndexedDB(item.filename, item.dataUrl);
+        const fnameKey = item.filename.startsWith('att_') ? item.filename : ('att_' + item.filename);
+        filesToCommit.push({ key: fnameKey, value: payload });
       }
       importedAttachmentsCount++;
     }
 
-    // 6. Activate restored database & synchronize key state with current device
-    db = new SQL.Database(dbBinary);
+    // Prepare and verify restored database binary
+    const restoredDbInstance = new SQL.Database(dbBinary);
+    const prevDbHolder = db;
+    db = restoredDbInstance;
     ensureSchemaUpToDate();
+    const rawBytes = db.export();
 
-    if (currentEncryptionKey && isPinConfigured()) {
-      // Device already has active PIN: re-encrypt restored database with this device's active key
-      await saveDbToIndexedDB();
-    } else if (backupKey && backupSalt) {
+    let dbBytesToStore = rawBytes;
+    if (effectiveKey) {
+      const activeSalt = getStoredCryptoSalt() || backupSalt || crypto.getRandomValues(new Uint8Array(16));
+      dbBytesToStore = await encryptWithKeyAndSalt(rawBytes, effectiveKey, activeSalt);
+      const verifyDec = await decryptDatabaseBytes(dbBytesToStore, effectiveKey, false);
+      if (verifyDec.byteLength !== rawBytes.byteLength) {
+        throw new Error('Database encryption verification failed before committing restore.');
+      }
+    }
+    filesToCommit.push({ key: 'active_sqlite', value: dbBytesToStore });
+
+    // Execute atomic commit on 'files' store: all attachments + database committed together
+    const idb = await openSRGDatabase();
+    await new Promise((resolve, reject) => {
+      const tx = idb.transaction('files', 'readwrite');
+      const store = tx.objectStore('files');
+      for (const entry of filesToCommit) {
+        store.put(entry.value, entry.key);
+      }
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Failed to commit restored backup to IndexedDB'));
+      tx.onabort = () => reject(tx.error || new Error('Restore transaction aborted'));
+    });
+
+    // 6. Transaction committed successfully: synchronize state
+    cachedEncryptedDbBytes = dbBytesToStore;
+    localStorage.setItem('srg_db_last_modified', Date.now().toString());
+
+    if (!(currentEncryptionKey && isPinConfigured()) && backupKey && backupSalt) {
       // Fresh device restoring encrypted backup: adopt backup PIN as device's security credentials
       currentEncryptionKey = backupKey;
       storeCryptoSalt(backupSalt);
       await createAuthVerificationToken(backupKey);
       localStorage.setItem('srg_app_pin_configured', 'true');
       await persistKeyToSession(backupKey);
-      await saveDbToIndexedDB();
       isAppUnlocked = true;
       const overlay = document.getElementById('appLockOverlay');
       if (overlay) overlay.classList.add('hidden');
-    } else {
-      await saveDbToIndexedDB();
     }
 
     loadMasterDataFromDb();
@@ -1912,6 +1976,7 @@ async function importAttachmentsZipFile(file) {
       } catch(e) {}
     }
 
+    const stagedEntries = [];
     for (const relPath of fileEntries) {
       const zipEntry = zip.files[relPath];
       const filename = relPath.split('/').pop().trim();
@@ -1935,8 +2000,26 @@ async function importAttachmentsZipFile(file) {
 
       if (!canonicalId) canonicalId = filename;
 
-      await saveAttachmentToIndexedDB(canonicalId, dataUrl);
-      importedCount++;
+      let payload = dataUrl;
+      if (currentEncryptionKey) {
+        payload = await encryptAttachmentData(dataUrl, currentEncryptionKey);
+      }
+      const canonicalKey = canonicalId.startsWith('att_') ? canonicalId : ('att_' + canonicalId);
+      stagedEntries.push({ key: canonicalKey, value: payload });
+    }
+
+    if (stagedEntries.length > 0) {
+      const idb = await openSRGDatabase();
+      await new Promise((resolve, reject) => {
+        const tx = idb.transaction('files', 'readwrite');
+        const store = tx.objectStore('files');
+        for (const entry of stagedEntries) {
+          store.put(entry.value, entry.key);
+        }
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error || new Error('Failed to commit attachments'));
+      });
+      importedCount = stagedEntries.length;
     }
 
     if (loadingToast) dismissToast(loadingToast);
@@ -3067,7 +3150,9 @@ async function deriveRecoveryWrappingKey(normalizedKey, salt) {
 
 // Save encrypted recovery vault protecting raw master key
 async function saveRecoveryVault(masterKey, recoveryKey) {
-  if (!masterKey || !recoveryKey) return;
+  if (!masterKey || !recoveryKey) {
+    throw new Error('Master key and recovery key are required to save recovery vault.');
+  }
   try {
     const rawMasterBytes = await crypto.subtle.exportKey('raw', masterKey);
     const normalized = normalizeRecoveryKey(recoveryKey);
@@ -3096,13 +3181,18 @@ async function saveRecoveryVault(masterKey, recoveryKey) {
     // Also persist in IndexedDB 'files' store for redundancy
     try {
       const idb = await openSRGDatabase();
-      const tx = idb.transaction('files', 'readwrite');
-      tx.objectStore('files').put(packed, 'srg_recovery_vault');
+      await new Promise((resolve, reject) => {
+        const tx = idb.transaction('files', 'readwrite');
+        tx.objectStore('files').put(packed, 'srg_recovery_vault');
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
     } catch(idbErr) {
       console.warn('Could not persist recovery vault to IndexedDB:', idbErr);
     }
   } catch(e) {
     console.error('saveRecoveryVault failed:', e);
+    throw new Error('Failed to securely save recovery vault: ' + (e.message || e));
   }
 }
 
@@ -3552,30 +3642,25 @@ async function atomicReencryptAllData(oldKey, newKey, newSalt) {
     }
   }
 
-  // 4. Commit all staged items to IndexedDB
-  if (stagedSnapshots.length > 0) {
-    await new Promise((resolve, reject) => {
-      const tx = idb.transaction('snapshots', 'readwrite');
-      const store = tx.objectStore('snapshots');
-      for (const snap of stagedSnapshots) {
-        store.put(snap);
-      }
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
-  }
-
+  // 4. Atomic Commit to IndexedDB spanning BOTH stores in a single transaction
   await new Promise((resolve, reject) => {
-    const tx = idb.transaction('files', 'readwrite');
-    const store = tx.objectStore('files');
+    const tx = idb.transaction(['snapshots', 'files'], 'readwrite');
+    const snapStore = tx.objectStore('snapshots');
+    const fileStore = tx.objectStore('files');
+
+    for (const snap of stagedSnapshots) {
+      snapStore.put(snap);
+    }
     for (const att of stagedAttachments) {
-      store.put(att.value, att.key);
+      fileStore.put(att.value, att.key);
     }
     if (stagedActiveDb) {
-      store.put(stagedActiveDb, 'active_sqlite');
+      fileStore.put(stagedActiveDb, 'active_sqlite');
     }
+
     tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
+    tx.onerror = () => reject(tx.error || new Error('Atomic re-encryption transaction failed'));
+    tx.onabort = () => reject(tx.error || new Error('Atomic re-encryption transaction aborted'));
   });
 
   if (stagedActiveDb) {
@@ -7637,9 +7722,14 @@ function setupUIEventListeners() {
       const derived = await deriveKeyFromPin(enteredPin.trim(), salt);
       currentEncryptionKey = derived;
       await persistKeyToSession(derived);
-      const freshKey = generateRecoveryKey();
-      await saveRecoveryVault(derived, freshKey);
-      openRecoveryKitModal(freshKey);
+      try {
+        const freshKey = generateRecoveryKey();
+        await saveRecoveryVault(derived, freshKey);
+        openRecoveryKitModal(freshKey);
+      } catch (vaultErr) {
+        console.error('Failed to save recovery vault:', vaultErr);
+        showToast('❌ Failed to save recovery vault: ' + vaultErr.message, 'error', 4500);
+      }
     });
   }
   const drawerBiometricBtn = document.getElementById('drawerBiometricBtn');
