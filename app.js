@@ -112,7 +112,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.2.6';
+const APP_VERSION = 'v1.2.7';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -2387,13 +2387,70 @@ function base64ToBuffer(b64) {
   return bytes;
 }
 
+// Extract salt directly from database bytes header (MAGIC (5) + SALT (16) + ...)
+function extractSaltFromEncryptedDbBytes(bytes) {
+  if (!bytes || !isEncryptedDbBytes(bytes)) return null;
+  const saltStart = CRYPTO_MAGIC.length;
+  const ivStart = saltStart + 16;
+  return bytes.slice(saltStart, ivStart);
+}
+
+// Get stored crypto salt with multi-tier fallback:
+// 1. Authoritative: Encrypted database header in memory (cachedEncryptedDbBytes)
+// 2. localStorage cache
+// 3. Fallback to null
 function getStoredCryptoSalt() {
+  if (cachedEncryptedDbBytes && isEncryptedDbBytes(cachedEncryptedDbBytes)) {
+    const salt = extractSaltFromEncryptedDbBytes(cachedEncryptedDbBytes);
+    if (salt) return salt;
+  }
   const b64 = localStorage.getItem('srg_crypto_salt');
-  return b64 ? base64ToBuffer(b64) : null;
+  if (b64) {
+    try {
+      return base64ToBuffer(b64);
+    } catch(e) {}
+  }
+  return null;
+}
+
+// Asynchronous multi-tier salt retrieval (database header -> IndexedDB store -> localStorage)
+async function getEffectiveCryptoSalt(dbBytes = null) {
+  const bytes = dbBytes || cachedEncryptedDbBytes;
+  if (bytes && isEncryptedDbBytes(bytes)) {
+    const salt = extractSaltFromEncryptedDbBytes(bytes);
+    if (salt) return salt;
+  }
+  try {
+    const idbBytes = await loadDbFromIndexedDB();
+    if (idbBytes && isEncryptedDbBytes(idbBytes)) {
+      cachedEncryptedDbBytes = idbBytes;
+      const salt = extractSaltFromEncryptedDbBytes(idbBytes);
+      if (salt) return salt;
+    }
+  } catch(e) {}
+
+  try {
+    const idb = await openSRGDatabase();
+    const tx = idb.transaction('files', 'readonly');
+    const store = tx.objectStore('files');
+    const req = store.get('srg_crypto_salt');
+    const res = await new Promise((resolve) => {
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    });
+    if (res instanceof Uint8Array) return res;
+  } catch(e) {}
+
+  return getStoredCryptoSalt();
 }
 
 function storeCryptoSalt(saltBytes) {
-  localStorage.setItem('srg_crypto_salt', bufferToBase64(saltBytes));
+  if (!saltBytes) return;
+  try {
+    localStorage.setItem('srg_crypto_salt', bufferToBase64(saltBytes));
+  } catch(e) {
+    console.warn('Could not cache crypto salt to localStorage:', e);
+  }
 }
 
 async function deriveKeyFromPin(pin, salt) {
@@ -2419,43 +2476,110 @@ async function deriveKeyFromPin(pin, salt) {
   );
 }
 
-async function createAuthVerificationToken(key) {
+async function buildAuthVerificationTokenPackedBytes(key) {
+  const enc = new TextEncoder();
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const tokenCipher = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv: iv },
+    key,
+    enc.encode('SRG_CALENDAR_AUTHENTICATED')
+  );
+  const packed = new Uint8Array(iv.length + tokenCipher.byteLength);
+  packed.set(iv, 0);
+  packed.set(new Uint8Array(tokenCipher), iv.length);
+  return packed;
+}
+
+async function createAuthVerificationToken(key, saltBytes = null) {
   try {
-    const enc = new TextEncoder();
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const tokenCipher = await crypto.subtle.encrypt(
-      { name: 'AES-GCM', iv: iv },
-      key,
-      enc.encode('SRG_CALENDAR_AUTHENTICATED')
-    );
-    const packed = new Uint8Array(iv.length + tokenCipher.byteLength);
-    packed.set(iv, 0);
-    packed.set(new Uint8Array(tokenCipher), iv.length);
-    localStorage.setItem('srg_crypto_auth_token', bufferToBase64(packed));
+    const packed = await buildAuthVerificationTokenPackedBytes(key);
+    const saltToStore = saltBytes || getStoredCryptoSalt();
+    try {
+      const idb = await openSRGDatabase();
+      await new Promise((resolve, reject) => {
+        const tx = idb.transaction('files', 'readwrite');
+        const store = tx.objectStore('files');
+        store.put(packed, 'srg_crypto_auth_token');
+        if (saltToStore) {
+          store.put(saltToStore, 'srg_crypto_salt');
+        }
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    } catch(e) {}
+    try {
+      localStorage.setItem('srg_crypto_auth_token', bufferToBase64(packed));
+    } catch(e) {}
+    return packed;
   } catch(e) {
     console.warn('Failed to save auth verification token:', e);
+    return null;
   }
 }
 
-async function verifyPinWithAuthToken(pin) {
-  const salt = getStoredCryptoSalt();
-  const tokenB64 = localStorage.getItem('srg_crypto_auth_token');
-  if (!salt || !tokenB64) return false;
+async function getStoredAuthVerificationTokenBytes() {
+  const b64 = localStorage.getItem('srg_crypto_auth_token');
+  if (b64) {
+    try {
+      return base64ToBuffer(b64);
+    } catch(e) {}
+  }
   try {
-    const tokenBytes = base64ToBuffer(tokenB64);
-    const iv = tokenBytes.slice(0, 12);
-    const ciphertext = tokenBytes.slice(12);
+    const idb = await openSRGDatabase();
+    const tx = idb.transaction('files', 'readonly');
+    const store = tx.objectStore('files');
+    const req = store.get('srg_crypto_auth_token');
+    const res = await new Promise((resolve) => {
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    });
+    if (res instanceof Uint8Array) return res;
+    if (res instanceof ArrayBuffer) return new Uint8Array(res);
+  } catch(e) {}
+  return null;
+}
+
+async function verifyPinWithAuthToken(pin) {
+  if (!pin) return false;
+  const dbBytes = cachedEncryptedDbBytes || await loadDbFromIndexedDB();
+  const salt = (dbBytes && isEncryptedDbBytes(dbBytes))
+    ? extractSaltFromEncryptedDbBytes(dbBytes)
+    : await getEffectiveCryptoSalt(dbBytes);
+
+  if (!salt) return false;
+
+  try {
     const key = await deriveKeyFromPin(pin, salt);
-    const decrypted = await crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv: iv },
-      key,
-      ciphertext
-    );
-    const str = new TextDecoder().decode(decrypted);
-    return str === 'SRG_CALENDAR_AUTHENTICATED';
+
+    // Primary check: try auth verification token
+    const tokenBytes = await getStoredAuthVerificationTokenBytes();
+    if (tokenBytes && tokenBytes.length >= 28) {
+      try {
+        const iv = tokenBytes.slice(0, 12);
+        const ciphertext = tokenBytes.slice(12);
+        const decrypted = await crypto.subtle.decrypt(
+          { name: 'AES-GCM', iv: iv },
+          key,
+          ciphertext
+        );
+        const str = new TextDecoder().decode(decrypted);
+        if (str === 'SRG_CALENDAR_AUTHENTICATED') return true;
+      } catch(tokenErr) {}
+    }
+
+    // Cryptographic ground truth: test-decrypt the database header directly
+    if (dbBytes && isEncryptedDbBytes(dbBytes)) {
+      try {
+        await decryptDatabaseBytes(dbBytes, key, false);
+        return true;
+      } catch(dbErr) {
+        return false;
+      }
+    }
   } catch(e) {
     return false;
   }
+  return false;
 }
 
 async function encryptWithKeyAndSalt(rawBytes, key, salt) {
@@ -2628,7 +2752,9 @@ async function removeBiometricEncryptionKey() {
 }
 
 function isPinConfigured() {
-  return localStorage.getItem('srg_app_pin_configured') === 'true';
+  if (localStorage.getItem('srg_app_pin_configured') === 'true') return true;
+  if (cachedEncryptedDbBytes && isEncryptedDbBytes(cachedEncryptedDbBytes)) return true;
+  return false;
 }
 
 /* ==========================================================================
@@ -2901,7 +3027,7 @@ async function handleSetupPinSubmit(e) {
     const key = await deriveKeyFromPin(pin1, salt);
     currentEncryptionKey = key;
 
-    await createAuthVerificationToken(key);
+    await createAuthVerificationToken(key, salt);
     await persistKeyToSession(key);
 
     // Save optional recovery email if provided
@@ -2984,15 +3110,6 @@ async function unlockAppWithKey(enteredKey) {
     return;
   }
 
-  const salt = getStoredCryptoSalt();
-  if (!salt) {
-    if (errEl) {
-      errEl.textContent = 'Security configuration missing. Please reload.';
-      errEl.classList.remove('hidden');
-    }
-    return;
-  }
-
   const submitBtn = document.querySelector('#appUnlockForm button[type="submit"]');
   const originalText = submitBtn ? submitBtn.innerHTML : '';
   if (submitBtn) {
@@ -3001,17 +3118,33 @@ async function unlockAppWithKey(enteredKey) {
   }
 
   try {
-    const key = await deriveKeyFromPin(trimmedKey, salt);
     const bytesToDecrypt = cachedEncryptedDbBytes || await loadDbFromIndexedDB();
     if (!bytesToDecrypt) {
       throw new Error('Database not found');
     }
 
-    const decryptedBytes = await decryptDatabaseBytes(bytesToDecrypt, key, true);
+    // Authoritative salt derived directly from encrypted database header
+    let salt = null;
+    if (isEncryptedDbBytes(bytesToDecrypt)) {
+      salt = extractSaltFromEncryptedDbBytes(bytesToDecrypt);
+    }
+    if (!salt) {
+      salt = await getEffectiveCryptoSalt(bytesToDecrypt);
+    }
+
+    if (!salt && isEncryptedDbBytes(bytesToDecrypt)) {
+      throw new Error('Security configuration missing or database header corrupted.');
+    }
+
+    const key = salt ? await deriveKeyFromPin(trimmedKey, salt) : null;
+    const decryptedBytes = await decryptDatabaseBytes(bytesToDecrypt, key || trimmedKey, true);
     db = new SQL.Database(decryptedBytes);
     ensureSchemaUpToDate();
 
     currentEncryptionKey = key;
+    if (salt) {
+      try { storeCryptoSalt(salt); } catch(e) {}
+    }
     await persistKeyToSession(key);
 
     isAppUnlocked = true;
@@ -3464,16 +3597,27 @@ async function handleForgotPinResetSubmit(e) {
 
     // 5. Generate a new Emergency Recovery Key and atomically re-encrypt snapshots, attachments, database, and recovery vault
     const newRecoveryKey = generateRecoveryKey();
-    const packedVault = await atomicReencryptAllData(recoveredMasterKey, newMasterKey, newSalt, newRecoveryKey);
+    const reencryptResult = await atomicReencryptAllData(recoveredMasterKey, newMasterKey, newSalt, newRecoveryKey);
+    const packedVault = reencryptResult ? reencryptResult.stagedVaultBytes : null;
+    const packedAuthToken = reencryptResult ? reencryptResult.stagedAuthTokenBytes : null;
 
-    // 6. Commit new security configuration only after successful transaction commit
-    storeCryptoSalt(newSalt);
+    // 6. Commit new security configuration in memory and update session
     currentEncryptionKey = newMasterKey;
-    await createAuthVerificationToken(newMasterKey);
     await persistKeyToSession(newMasterKey);
 
+    // Update localStorage secondary caches safely (IndexedDB is already committed atomically)
     try {
-      localStorage.setItem('srg_recovery_vault', bufferToBase64(packedVault));
+      storeCryptoSalt(newSalt);
+    } catch(e) {}
+    try {
+      if (packedAuthToken) {
+        localStorage.setItem('srg_crypto_auth_token', bufferToBase64(packedAuthToken));
+      }
+    } catch(e) {}
+    try {
+      if (packedVault) {
+        localStorage.setItem('srg_recovery_vault', bufferToBase64(packedVault));
+      }
     } catch(lsErr) {
       console.warn('Could not cache recovery vault to localStorage (IndexedDB copy is primary):', lsErr);
     }
@@ -3593,7 +3737,7 @@ async function atomicReencryptAllData(oldKey, newKey, newSalt, recoveryKey = nul
         const cursor = e.target.result;
         if (cursor) {
           const k = String(cursor.key);
-          if (k !== 'active_sqlite' && k !== 'srg_bio_key_token' && k !== 'srg_recovery_vault') {
+          if (k !== 'active_sqlite' && k !== 'srg_bio_key_token' && k !== 'srg_recovery_vault' && k !== 'srg_crypto_salt' && k !== 'srg_crypto_auth_token') {
             entries.push({ key: k, value: cursor.value });
           }
           cursor.continue();
@@ -3656,7 +3800,10 @@ async function atomicReencryptAllData(oldKey, newKey, newSalt, recoveryKey = nul
     stagedVaultBytes = await buildRecoveryVaultPackedBytes(newKey, recoveryKey);
   }
 
-  // 5. Atomic Commit to IndexedDB spanning BOTH stores in a single transaction
+  // 5. Stage auth verification token for new key
+  const stagedAuthTokenBytes = await buildAuthVerificationTokenPackedBytes(newKey);
+
+  // 6. Atomic Commit to IndexedDB spanning BOTH stores in a single transaction
   await new Promise((resolve, reject) => {
     const tx = idb.transaction(['snapshots', 'files'], 'readwrite');
     const snapStore = tx.objectStore('snapshots');
@@ -3674,6 +3821,8 @@ async function atomicReencryptAllData(oldKey, newKey, newSalt, recoveryKey = nul
     if (stagedVaultBytes) {
       fileStore.put(stagedVaultBytes, 'srg_recovery_vault');
     }
+    fileStore.put(newSalt, 'srg_crypto_salt');
+    fileStore.put(stagedAuthTokenBytes, 'srg_crypto_auth_token');
 
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error || new Error('Atomic re-encryption transaction failed'));
@@ -3684,7 +3833,10 @@ async function atomicReencryptAllData(oldKey, newKey, newSalt, recoveryKey = nul
     cachedEncryptedDbBytes = stagedActiveDb;
   }
 
-  return stagedVaultBytes;
+  return {
+    stagedVaultBytes,
+    stagedAuthTokenBytes
+  };
 }
 
 /* ==========================================================================
@@ -3760,17 +3912,27 @@ async function handleChangePinSubmit(e) {
 
     // Generate replacement Emergency Recovery Key and perform atomic multi-store re-encryption
     const newRecoveryKey = generateRecoveryKey();
-    const packedVault = await atomicReencryptAllData(oldKey, newKey, newSalt, newRecoveryKey);
+    const reencryptResult = await atomicReencryptAllData(oldKey, newKey, newSalt, newRecoveryKey);
+    const packedVault = reencryptResult ? reencryptResult.stagedVaultBytes : null;
+    const packedAuthToken = reencryptResult ? reencryptResult.stagedAuthTokenBytes : null;
 
-    // Update current active key, salt and auth token only after successful transaction commit
-    storeCryptoSalt(newSalt);
+    // Update in-memory active key
     currentEncryptionKey = newKey;
-
-    await createAuthVerificationToken(newKey);
     await persistKeyToSession(newKey);
 
+    // Update localStorage secondary caches safely (IndexedDB is already committed atomically)
     try {
-      localStorage.setItem('srg_recovery_vault', bufferToBase64(packedVault));
+      storeCryptoSalt(newSalt);
+    } catch(e) {}
+    try {
+      if (packedAuthToken) {
+        localStorage.setItem('srg_crypto_auth_token', bufferToBase64(packedAuthToken));
+      }
+    } catch(e) {}
+    try {
+      if (packedVault) {
+        localStorage.setItem('srg_recovery_vault', bufferToBase64(packedVault));
+      }
     } catch(lsErr) {
       console.warn('Could not cache recovery vault to localStorage (IndexedDB copy is primary):', lsErr);
     }
