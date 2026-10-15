@@ -1,9 +1,9 @@
-# Calendar App (Offline PWA) v1.2.0
+# Calendar App (Offline PWA) v1.2.1
 
 A standalone, local-first Personal Calendar & Daily Organizer Progressive Web App (PWA) powered by client-side **SQLite (WASM)** and **IndexedDB** local storage with **AES-256-GCM hardware-accelerated encryption at rest for both database and file attachments**.
 
-> **Production PWA (v1.2.0)**  
-> Fully client-side, local-first calendar with ACID SQLite storage, Web Crypto AES-256-GCM encryption at rest for database and attachments, enforced 6+ character PIN/passphrase protection, SHA-256 verified backup archives, smart restore re-encryption, and 100% offline capabilities.
+> **Production PWA (v1.2.1)**  
+> Fully client-side, local-first calendar with ACID SQLite storage, Web Crypto AES-256-GCM encryption at rest for database and attachments, enforced 6+ character PIN/passphrase protection, SHA-256 verified backup archives, smart restore re-encryption, wrapped biometric unlock, and 100% offline capabilities.
 
 ---
 
@@ -15,7 +15,7 @@ A standalone, local-first Personal Calendar & Daily Organizer Progressive Web Ap
   - Transparently encrypts the SQLite database, all historical snapshots, and all ticket attachments stored in browser IndexedDB with authenticated **AES-256-GCM**.
   - Keys derived via **PBKDF2** (100,000 iterations, SHA-256) with cryptographic salts from the user's private PIN / Passphrase (minimum 6 characters, up to 64 characters).
   - Interactive first-time PIN setup prompts the user to choose their own Security PIN (no hardcoded defaults).
-  - Hardened **Fingerprint & Face ID** biometric quick-unlock via WebAuthn platform authenticators without storing raw master keys on disk.
+  - Secure **Fingerprint & Face ID** biometric quick-unlock via WebAuthn platform authenticators with wrapped key protection.
   - Zero-knowledge architecture: data is encrypted exclusively inside your device browser and never sent to any server.
 - **IndexedDB Persistence (`SRGCalendarDB`):** Automatically persists edits, schedules, daily notes, financial entries, and file attachments in browser storage.
 - **Atomic 1-Click Complete Backup & Restore (`.zip`):**
@@ -24,7 +24,7 @@ A standalone, local-first Personal Calendar & Daily Organizer Progressive Web Ap
 - **Local Snapshots:** Save named encrypted database safety snapshots in browser storage anytime. When changing PIN, all past snapshots and attachments are atomically re-encrypted under the new key.
 - **PWA (Progressive Web App):**
   - Installable directly to home screen or desktop from Chrome, Edge, Safari, or Brave.
-  - Version-scoped Service Worker cache cleanup (`v1.2.0`).
+  - Version-scoped Service Worker cache cleanup (`v1.2.1`).
   - In-app install and check for updates buttons.
 - **Comprehensive Calendar Views:**
   - **Calendar View:** 7-column month grid. In portrait mode, uniform square day cells with center indicator badges and a bottom day schedule agenda panel maximize usability. Long-pressing any day initiates multi-date selection for batch scheduling with single-tap date addition/removal. In landscape mode, full titles, times, and notes are shown.

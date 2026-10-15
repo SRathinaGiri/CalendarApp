@@ -112,7 +112,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.2.0';
+const APP_VERSION = 'v1.2.1';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -2465,26 +2465,123 @@ async function restoreKeyFromSession() {
   }
 }
 
+async function getBiometricWrappingKey(credIdBase64) {
+  let bioSalt = localStorage.getItem('srg_bio_salt');
+  if (!bioSalt) {
+    const saltBytes = crypto.getRandomValues(new Uint8Array(16));
+    bioSalt = bufferToBase64(saltBytes);
+    localStorage.setItem('srg_bio_salt', bioSalt);
+  }
+  const saltBuf = base64ToBuffer(bioSalt);
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(credIdBase64 || 'srg_bio_cred'),
+    'PBKDF2',
+    false,
+    ['deriveKey']
+  );
+  return await crypto.subtle.deriveKey(
+    {
+      name: 'PBKDF2',
+      salt: saltBuf,
+      iterations: 50000,
+      hash: 'SHA-256'
+    },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+}
+
 async function saveBiometricEncryptionKey(key) {
-  // Never write raw AES key to persistent IndexedDB (preserves at-rest encryption).
-  // Actively remove any legacy stored key token if present.
-  await removeBiometricEncryptionKey();
+  if (!key) return;
+  try {
+    const credIdBase64 = localStorage.getItem('srg_biometric_cred_id');
+    const wrapKey = await getBiometricWrappingKey(credIdBase64);
+    const rawKey = await crypto.subtle.exportKey('raw', key);
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const encryptedKeyBuffer = await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv: iv },
+      wrapKey,
+      rawKey
+    );
+    const encryptedKey = new Uint8Array(encryptedKeyBuffer);
+
+    // Store wrapped key: [MAGIC (7 bytes: "SRGBIO1")] + [IV (12 bytes)] + [CIPHERTEXT]
+    const BIO_MAGIC = new Uint8Array([0x53, 0x52, 0x47, 0x42, 0x49, 0x4F, 0x31]); // "SRGBIO1"
+    const packed = new Uint8Array(BIO_MAGIC.length + iv.length + encryptedKey.length);
+    packed.set(BIO_MAGIC, 0);
+    packed.set(iv, BIO_MAGIC.length);
+    packed.set(encryptedKey, BIO_MAGIC.length + iv.length);
+
+    const idb = await openSRGDatabase();
+    const tx = idb.transaction('files', 'readwrite');
+    tx.objectStore('files').put(packed, 'srg_bio_key_token');
+    await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = rej; });
+  } catch(e) {
+    console.warn('Failed to save biometric encryption key:', e);
+  }
 }
 
 async function loadBiometricEncryptionKey() {
-  // Biometric authentication accesses active session key if present in this browser session
-  const bioSessionKey = sessionStorage.getItem('srg_bio_session_token') || sessionStorage.getItem('srg_session_key');
-  if (!bioSessionKey) return null;
   try {
-    const raw = base64ToBuffer(bioSessionKey);
-    return await crypto.subtle.importKey(
-      'raw',
-      raw,
-      { name: 'AES-GCM' },
-      true,
-      ['encrypt', 'decrypt']
-    );
+    const idb = await openSRGDatabase();
+    const packed = await new Promise((resolve) => {
+      const tx = idb.transaction('files', 'readonly');
+      const req = tx.objectStore('files').get('srg_bio_key_token');
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => resolve(null);
+    });
+
+    if (!packed) return null;
+
+    const BIO_MAGIC = new Uint8Array([0x53, 0x52, 0x47, 0x42, 0x49, 0x4F, 0x31]); // "SRGBIO1"
+    const bytes = packed instanceof Uint8Array ? packed : new Uint8Array(packed);
+
+    let isWrapped = bytes.length > BIO_MAGIC.length + 12 + 16;
+    if (isWrapped) {
+      for (let i = 0; i < BIO_MAGIC.length; i++) {
+        if (bytes[i] !== BIO_MAGIC[i]) {
+          isWrapped = false;
+          break;
+        }
+      }
+    }
+
+    if (isWrapped) {
+      const credIdBase64 = localStorage.getItem('srg_biometric_cred_id');
+      const wrapKey = await getBiometricWrappingKey(credIdBase64);
+      const iv = bytes.slice(BIO_MAGIC.length, BIO_MAGIC.length + 12);
+      const ciphertext = bytes.slice(BIO_MAGIC.length + 12);
+      const decryptedRaw = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: iv },
+        wrapKey,
+        ciphertext
+      );
+      return await crypto.subtle.importKey(
+        'raw',
+        decryptedRaw,
+        { name: 'AES-GCM' },
+        true,
+        ['encrypt', 'decrypt']
+      );
+    } else if (bytes.length === 32) {
+      // Legacy raw 32-byte key: import and automatically migrate to wrapped format
+      const imported = await crypto.subtle.importKey(
+        'raw',
+        bytes,
+        { name: 'AES-GCM' },
+        true,
+        ['encrypt', 'decrypt']
+      );
+      await saveBiometricEncryptionKey(imported);
+      return imported;
+    }
+    return null;
   } catch(e) {
+    console.warn('loadBiometricEncryptionKey error:', e);
     return null;
   }
 }
@@ -2605,17 +2702,6 @@ async function unlockAppWithBiometric(autoPrompt = false) {
     return;
   }
 
-  // Check if biometric session token exists (active browser session)
-  const bioKey = await loadBiometricEncryptionKey();
-  if (!bioKey) {
-    if (!autoPrompt) {
-      showToast('PIN required on fresh browser start. Biometric quick-unlock remains active once unlocked in this session.', 'info', 4500);
-      const keyInp = document.getElementById('appLockKeyInput');
-      if (keyInp) keyInp.focus();
-    }
-    return;
-  }
-
   try {
     const rawId = Uint8Array.from(atob(credIdBase64), c => c.charCodeAt(0));
     const challenge = new Uint8Array(16);
@@ -2634,7 +2720,14 @@ async function unlockAppWithBiometric(autoPrompt = false) {
     });
 
     if (assertion) {
-      const key = bioKey;
+      const key = await loadBiometricEncryptionKey();
+      if (!key) {
+        showToast('Please enter your 6-digit PIN once to re-sync biometric unlock.', 'info', 4500);
+        const keyInp = document.getElementById('appLockKeyInput');
+        if (keyInp) keyInp.focus();
+        return;
+      }
+
       const bytesToDecrypt = cachedEncryptedDbBytes || await loadDbFromIndexedDB();
       if (bytesToDecrypt) {
         const decryptedBytes = await decryptDatabaseBytes(bytesToDecrypt, key, true);
@@ -2682,9 +2775,6 @@ async function toggleBiometricSetting() {
 async function checkAppSecurityLock() {
   const overlay = document.getElementById('appLockOverlay');
   if (!overlay) return;
-
-  // Clean up any legacy plaintext key token from IndexedDB
-  removeBiometricEncryptionKey();
 
   const setupWrap = document.getElementById('appLockSetupContainer');
   const unlockWrap = document.getElementById('appLockUnlockContainer');
@@ -2870,6 +2960,10 @@ async function unlockAppWithKey(enteredKey) {
     currentEncryptionKey = key;
     await persistKeyToSession(key);
 
+    if (localStorage.getItem('srg_biometric_enabled') === 'true') {
+      await saveBiometricEncryptionKey(key);
+    }
+
     isAppUnlocked = true;
     const overlay = document.getElementById('appLockOverlay');
     if (overlay) overlay.classList.add('hidden');
@@ -2916,14 +3010,6 @@ async function unlockAppWithKey(enteredKey) {
 
 async function lockAppSecurity() {
   isAppUnlocked = false;
-  if (localStorage.getItem('srg_biometric_enabled') === 'true' && currentEncryptionKey) {
-    try {
-      const raw = await crypto.subtle.exportKey('raw', currentEncryptionKey);
-      sessionStorage.setItem('srg_bio_session_token', bufferToBase64(raw));
-    } catch(e) {}
-  } else {
-    sessionStorage.removeItem('srg_bio_session_token');
-  }
   sessionStorage.removeItem('srg_app_unlocked');
   sessionStorage.removeItem('srg_session_key');
   currentEncryptionKey = null;
