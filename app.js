@@ -274,7 +274,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   initAutoLockListeners();
   setupUIEventListeners();
   updateInstallButtonState();
-  updateReminderUI();
   await initSqliteDatabase();
   await checkAppSecurityLock();
   if (isAppUnlocked && db) {
@@ -285,11 +284,6 @@ document.addEventListener('DOMContentLoaded', async () => {
       migratePlaintextAttachmentsToEncrypted(currentEncryptionKey);
     }
   }
-
-  // Periodic reminder checking for events & travel
-  checkUpcomingEventReminders();
-  setInterval(checkUpcomingEventReminders, 45000);
-  window.addEventListener('focus', checkUpcomingEventReminders);
 
   // Re-render calendar view on orientation / window resize change between portrait & landscape
   const mql = window.matchMedia('(orientation: portrait), (max-width: 600px)');
@@ -6119,10 +6113,6 @@ function openScheduleModal(existingSchedule = null) {
     document.getElementById('schedFromTime').value = existingSchedule.from_time || '09:30';
     document.getElementById('schedToTime').value = existingSchedule.to_time || '13:30';
     document.getElementById('schedNotes').value = existingSchedule.notes || '';
-    const remSelect = document.getElementById('schedReminderMin');
-    if (remSelect) {
-      remSelect.value = (existingSchedule.reminder_min !== undefined && existingSchedule.reminder_min !== null) ? String(existingSchedule.reminder_min) : '15';
-    }
 
     // Load attachments
     try {
@@ -6169,8 +6159,6 @@ function openScheduleModal(existingSchedule = null) {
     document.getElementById('schedFromTime').value = '09:30';
     document.getElementById('schedToTime').value = '13:30';
     document.getElementById('schedNotes').value = '';
-    const remSelect = document.getElementById('schedReminderMin');
-    if (remSelect) remSelect.value = '15';
 
     datesToApply = selectedDates.size > 0 ? Array.from(selectedDates).sort() : [formatDateYMD(new Date())];
     
@@ -7072,8 +7060,6 @@ async function handleScheduleFormSubmit(e) {
   };
   const notes = document.getElementById('schedNotes').value.trim();
   const applyAsGroup = document.getElementById('applyAsGroupCheckbox').checked;
-  const remSelectEl = document.getElementById('schedReminderMin');
-  const reminderMin = remSelectEl ? parseInt(remSelectEl.value, 10) : 15;
 
   // Auto-derive delivery mode & location directly from selected tags
   let deliveryMode = 'offline';
@@ -7308,7 +7294,7 @@ async function handleScheduleFormSubmit(e) {
       notes: notes,
       attachments: attachmentsJson,
       travel_info: travelInfoJson,
-      reminder_min: isNaN(reminderMin) ? 15 : reminderMin,
+      reminder_min: -1,
       status: deriveScheduleStatus(scheduleDate, toTime),
       created_at: existingCreatedAt,
       updated_at: nowIso,
@@ -7335,7 +7321,7 @@ async function handleScheduleFormSubmit(e) {
           notes: notes,
           attachments: attachmentsJson,
           travel_info: travelInfoJson,
-          reminder_min: isNaN(reminderMin) ? 15 : reminderMin,
+          reminder_min: -1,
           status: deriveScheduleStatus(schDate, toTime),
           created_at: schCreated,
           updated_at: nowIso,
@@ -7360,7 +7346,7 @@ async function handleScheduleFormSubmit(e) {
         notes: notes,
         attachments: attachmentsJson,
         travel_info: travelInfoJson,
-        reminder_min: isNaN(reminderMin) ? 15 : reminderMin,
+        reminder_min: -1,
         status: deriveScheduleStatus(dStr, toTime),
         created_at: nowIso,
         updated_at: nowIso,
@@ -7400,7 +7386,7 @@ async function handleScheduleFormSubmit(e) {
       notes: oNotes,
       attachments: oAttachments,
       travel_info: travelInfoJson,
-      reminder_min: (reminderMin === -1) ? -1 : 30,
+      reminder_min: -1,
       status: deriveScheduleStatus(oDate, oDepTime),
       created_at: nowIso,
       updated_at: nowIso,
@@ -7466,7 +7452,7 @@ async function handleScheduleFormSubmit(e) {
       notes: rNotes,
       attachments: rAttachments,
       travel_info: travelInfoJson,
-      reminder_min: (reminderMin === -1) ? -1 : 30,
+      reminder_min: -1,
       status: deriveScheduleStatus(rDate, rDepToTime),
       created_at: nowIso,
       updated_at: nowIso,
@@ -8225,12 +8211,6 @@ function setupUIEventListeners() {
   }
 
   // Drawer Settings & Security
-  const drawerRemindersBtn = document.getElementById('drawerRemindersBtn');
-  if (drawerRemindersBtn) {
-    drawerRemindersBtn.addEventListener('click', () => {
-      toggleReminderNotifications();
-    });
-  }
   const drawerThemeBtn = document.getElementById('drawerThemeBtn');
   if (drawerThemeBtn) {
     drawerThemeBtn.addEventListener('click', () => {
@@ -10573,197 +10553,4 @@ function renderMonthlyCalendarReport(container, fromDate, toDate) {
   if (btnGrid) btnGrid.addEventListener('click', () => printMonthCalendar('grid'));
   const btnTable = document.getElementById('reportPrintTableBtn');
   if (btnTable) btnTable.addEventListener('click', () => printMonthCalendar('table'));
-}
-
-/* ==========================================================================
-   OFFLINE AUDIO CHIME & WEB NOTIFICATIONS ENGINE
-   ========================================================================== */
-
-function playNotificationChime() {
-  try {
-    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    if (!AudioContextClass) return;
-    const ctx = new AudioContextClass();
-    if (ctx.state === 'suspended') {
-      ctx.resume();
-    }
-    const now = ctx.currentTime;
-    
-    // Tone 1: D5 (587.33 Hz)
-    const osc1 = ctx.createOscillator();
-    const gain1 = ctx.createGain();
-    osc1.type = 'sine';
-    osc1.frequency.setValueAtTime(587.33, now);
-    gain1.gain.setValueAtTime(0.15, now);
-    gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
-    osc1.connect(gain1);
-    gain1.connect(ctx.destination);
-    osc1.start(now);
-    osc1.stop(now + 0.18);
-
-    // Tone 2: A5 (880.00 Hz)
-    const osc2 = ctx.createOscillator();
-    const gain2 = ctx.createGain();
-    osc2.type = 'sine';
-    osc2.frequency.setValueAtTime(880.00, now + 0.12);
-    gain2.gain.setValueAtTime(0.2, now + 0.12);
-    gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
-    osc2.connect(gain2);
-    gain2.connect(ctx.destination);
-    osc2.start(now + 0.12);
-    osc2.stop(now + 0.45);
-  } catch (err) {
-    console.warn('Audio chime notice:', err);
-  }
-}
-
-function sendCalendarNotification(title, options = {}) {
-  playNotificationChime();
-  showToast(`🔔 ${title}${options.body ? ': ' + options.body : ''}`, 'info', 6000);
-
-  if (!('Notification' in window)) return;
-  if (Notification.permission !== 'granted') return;
-
-  const notifOptions = {
-    icon: 'icons/icon-192.png',
-    badge: 'icons/icon-192.png',
-    vibrate: [200, 100, 200],
-    ...options
-  };
-
-  try {
-    if (navigator.serviceWorker && navigator.serviceWorker.controller) {
-      navigator.serviceWorker.ready.then(reg => {
-        reg.showNotification(title, notifOptions);
-      }).catch(() => {
-        new Notification(title, notifOptions);
-      });
-    } else {
-      new Notification(title, notifOptions);
-    }
-  } catch (e) {
-    console.warn('Notification dispatch error:', e);
-  }
-}
-
-async function toggleReminderNotifications() {
-  if (!('Notification' in window)) {
-    alert('Browser notifications are not supported on this browser.');
-    return;
-  }
-
-  if (Notification.permission === 'default') {
-    const res = await Notification.requestPermission();
-    if (res === 'granted') {
-      localStorage.setItem('srg_reminders_enabled', 'true');
-      updateReminderUI();
-      sendCalendarNotification('Notifications Enabled', {
-        body: 'You will receive reminders for scheduled events and travel departures.'
-      });
-    } else {
-      updateReminderUI();
-      alert('Notification permission was not granted. You can enable notifications anytime in your browser site settings.');
-    }
-  } else if (Notification.permission === 'granted') {
-    const current = localStorage.getItem('srg_reminders_enabled') !== 'false';
-    const next = !current;
-    localStorage.setItem('srg_reminders_enabled', next ? 'true' : 'false');
-    updateReminderUI();
-    showToast(next ? '🔔 Event Reminders enabled' : '🔕 Event Reminders muted', 'info');
-  } else if (Notification.permission === 'denied') {
-    alert('Notifications are blocked by your browser settings. To receive event alerts, please allow notifications for this site in your browser permissions.');
-  }
-}
-
-function updateReminderUI() {
-  const textEl = document.getElementById('drawerRemindersText');
-  if (!textEl) return;
-  if (!('Notification' in window)) {
-    textEl.textContent = 'Event Reminders: Not Supported';
-    return;
-  }
-  if (Notification.permission === 'denied') {
-    textEl.textContent = 'Event Reminders: Blocked 🔕';
-  } else if (Notification.permission === 'granted') {
-    const isEnabled = localStorage.getItem('srg_reminders_enabled') !== 'false';
-    textEl.textContent = isEnabled ? 'Event Reminders: Active 🔔' : 'Event Reminders: Paused 🔕';
-  } else {
-    textEl.textContent = 'Enable Event Reminders 🔔';
-  }
-}
-
-function checkUpcomingEventReminders() {
-  if (!db) return;
-  const isEnabled = localStorage.getItem('srg_reminders_enabled') !== 'false';
-  if (!isEnabled) return;
-
-  const now = new Date();
-  const todayStr = formatDateYMD(now);
-  const tomorrowDate = new Date(now);
-  tomorrowDate.setDate(tomorrowDate.getDate() + 1);
-  const tomorrowStr = formatDateYMD(tomorrowDate);
-
-  const schedulesMap = getSchedulesMap(todayStr, tomorrowStr);
-  const notifiedKey = 'srg_notified_reminders';
-  let notifiedMap = {};
-  try {
-    notifiedMap = JSON.parse(sessionStorage.getItem(notifiedKey) || '{}');
-  } catch(e) {
-    notifiedMap = {};
-  }
-
-  const nowMs = now.getTime();
-
-  for (const dateStr of [todayStr, tomorrowStr]) {
-    const events = schedulesMap[dateStr] || [];
-    for (const ev of events) {
-      const remMin = (ev.reminder_min !== undefined && ev.reminder_min !== null) ? parseInt(ev.reminder_min, 10) : 15;
-      if (remMin === -1) continue; // User opted out of reminders
-      if (ev.status === 'cancelled') continue; // Suppress cancelled events
-
-      const timeStr = ev.from_time || '09:00';
-      const eventDate = new Date(`${dateStr}T${timeStr}:00`);
-      if (isNaN(eventDate.getTime())) continue;
-
-      const eventMs = eventDate.getTime();
-      const triggerMs = eventMs - (remMin * 60 * 1000);
-
-      // Trigger if now is between trigger time and event start + 5 minutes
-      if (nowMs >= triggerMs && nowMs <= eventMs + 5 * 60 * 1000) {
-        const notifId = `${ev.id}_${dateStr}_${remMin}`;
-        if (!notifiedMap[notifId]) {
-          notifiedMap[notifId] = true;
-          sessionStorage.setItem(notifiedKey, JSON.stringify(notifiedMap));
-
-          const isTravel = ev.title.toLowerCase().startsWith('travel:') || ev.title.toLowerCase().startsWith('return travel:');
-          let titleText = isTravel ? `🚆 ${ev.title}` : `🔔 ${ev.title}`;
-          let bodyText = '';
-
-          const diffMs = eventMs - nowMs;
-          const diffMins = Math.round(diffMs / 60000);
-          let timeDesc = '';
-          if (diffMins > 1) {
-            timeDesc = `starting in ${diffMins} mins`;
-          } else if (diffMins === 1) {
-            timeDesc = `starting in 1 min`;
-          } else if (diffMins === 0) {
-            timeDesc = `starting now`;
-          } else {
-            timeDesc = `started ${Math.abs(diffMins)} min${Math.abs(diffMins) === 1 ? '' : 's'} ago`;
-          }
-
-          if (isTravel) {
-            bodyText = `Departure ${diffMins > 0 ? `in ${diffMins} mins at ` : 'at '}${ev.from_time}${ev.location ? ' (' + ev.location + ')' : ''}`;
-          } else {
-            bodyText = `${timeDesc} at ${ev.from_time}${ev.location ? ' • ' + ev.location : ''}`;
-          }
-
-          sendCalendarNotification(titleText, {
-            body: bodyText,
-            tag: notifId
-          });
-        }
-      }
-    }
-  }
 }

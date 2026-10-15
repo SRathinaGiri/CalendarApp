@@ -49,23 +49,6 @@ self.addEventListener('message', (event) => {
   }
 });
 
-// Focus or open app window when a reminder notification is clicked
-self.addEventListener('notificationclick', (event) => {
-  event.notification.close();
-  event.waitUntil(
-    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
-      for (const client of clientList) {
-        if (client.url && 'focus' in client) {
-          return client.focus();
-        }
-      }
-      if (self.clients.openWindow) {
-        return self.clients.openWindow('./');
-      }
-    })
-  );
-});
-
 self.addEventListener('fetch', (e) => {
   // Ignore chrome-extension or unsupported schemes
   if (!e.request.url.startsWith('http')) return;

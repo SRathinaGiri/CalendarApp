@@ -211,10 +211,6 @@
         <!-- App Settings & Security -->
         <div class="drawer-section">
           <div class="drawer-section-title">Settings & Security</div>
-          <button id="drawerRemindersBtn" class="drawer-nav-item">
-            <i class="fa-solid fa-bell text-amber"></i>
-            <span id="drawerRemindersText">Event Reminders: Active</span>
-          </button>
           <button id="drawerThemeBtn" class="drawer-nav-item">
             <i class="fa-solid fa-circle-half-stroke text-amber"></i>
             <span id="drawerThemeText">Switch Theme</span>
@@ -420,24 +416,6 @@
             <div class="form-group">
               <label for="schedToTime">To Time *</label>
               <input type="time" id="schedToTime" required value="13:30">
-            </div>
-          </div>
-
-          <!-- Reminder Alert Timing -->
-          <div class="form-group" style="margin-top: 6px;">
-            <label for="schedReminderMin" style="font-size: 0.82rem; font-weight: 600; display: flex; align-items: center; gap: 6px;">
-              <i class="fa-solid fa-bell" style="color: #f59e0b;"></i> Reminder Alert Notification
-            </label>
-            <select id="schedReminderMin" style="width: 100%; padding: 7px 10px; border-radius: var(--radius-md); background: var(--bg-primary); border: 1px solid var(--border-color); color: var(--text-main); font-size: 0.85rem;">
-              <option value="15">🔔 15 minutes before start (Default)</option>
-              <option value="0">🔔 At event start time</option>
-              <option value="30">🔔 30 minutes before</option>
-              <option value="60">🔔 1 hour before</option>
-              <option value="120">🔔 2 hours before</option>
-              <option value="-1">🔕 No reminder</option>
-            </select>
-            <div style="font-size: 0.73rem; color: var(--text-muted); margin-top: 4px; line-height: 1.3;">
-              <i class="fa-solid fa-circle-info"></i> Reminders trigger while app or browser tab is active or backgrounded. When completely closed, delivery depends on OS background policies.
             </div>
           </div>
 
