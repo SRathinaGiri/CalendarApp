@@ -41,7 +41,7 @@
               <div class="brand-logo">
                 <i class="fa-solid fa-calendar-days"></i>
               </div>
-              <span class="brand-name">Calendar App <small id="appVersionBadge" style="font-size:0.7rem; font-weight:600; color:#38bdf8; background:rgba(56,189,248,0.15); padding:1px 5px; border-radius:4px; margin-left:3px;">v1.2.1</small></span>
+              <span class="brand-name">Calendar App <small id="appVersionBadge" style="font-size:0.7rem; font-weight:600; color:#38bdf8; background:rgba(56,189,248,0.15); padding:1px 5px; border-radius:4px; margin-left:3px;">v1.2.2</small></span>
             </div>
           </div>
 
@@ -131,7 +131,7 @@
           </div>
           <div class="brand-text">
             <span class="brand-name">Calendar App</span>
-            <span class="brand-badge" id="drawerVersionBadge">v1.2.1 &bull; Encrypted Offline PWA</span>
+            <span class="brand-badge" id="drawerVersionBadge">v1.2.2 &bull; Encrypted Offline PWA</span>
           </div>
         </div>
         <button id="closeSideMenuBtn" class="btn-icon" title="Close Menu"><i class="fa-solid fa-xmark"></i></button>
@@ -148,7 +148,7 @@
               <div class="drawer-card-title" id="drawerInstallUpdateTitle">Install / Update App</div>
               <div class="drawer-card-desc" id="drawerInstallUpdateDesc">Install or check for updates</div>
             </div>
-            <span id="drawerInstallUpdateBadge" class="drawer-badge">v1.2.1</span>
+            <span id="drawerInstallUpdateBadge" class="drawer-badge">v1.2.2</span>
           </button>
         </div>
 
@@ -225,6 +225,10 @@
           <button id="drawerChangePinBtn" class="drawer-nav-item">
             <i class="fa-solid fa-key text-blue"></i>
             <span>Change Security PIN</span>
+          </button>
+          <button id="drawerRecoveryKeyBtn" class="drawer-nav-item">
+            <i class="fa-solid fa-life-ring text-amber"></i>
+            <span>Emergency Recovery Key</span>
           </button>
           <button id="drawerLockBtn" class="drawer-nav-item">
             <i class="fa-solid fa-lock text-rose"></i>
@@ -1071,7 +1075,7 @@
           </div>
           <h2 style="font-size: 1.45rem; font-weight: 700; margin-bottom: 4px; color: var(--text-main);">Calendar App</h2>
           <div style="display: inline-block; font-size: 0.8rem; font-weight: 600; color: #38bdf8; background: rgba(56,189,248,0.12); padding: 3px 10px; border-radius: 12px; margin-bottom: 16px; border: 1px solid rgba(56,189,248,0.3);">
-            Version <span id="aboutModalVersion">v1.2.1 (PWA)</span>
+            Version <span id="aboutModalVersion">v1.2.2 (PWA)</span>
           </div>
 
           <div style="background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 14px 16px; text-align: left; font-size: 0.88rem; line-height: 1.55; margin-bottom: 16px;">
@@ -1108,6 +1112,75 @@
             </button>
           </div>
         </div>
+    <!-- EMERGENCY RECOVERY KIT MODAL -->
+    <div id="recoveryKitModal" class="modal-backdrop hidden" style="z-index: 10050; background: rgba(15, 23, 42, 0.95); backdrop-filter: blur(14px); display: flex; align-items: center; justify-content: center;">
+      <div class="modal-card" style="max-width: 480px; width: 90%; text-align: center; padding: 26px 22px; border: 1px solid var(--border-color);">
+        <div style="width: 58px; height: 58px; background: linear-gradient(135deg, #f59e0b, #d97706); border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 1.6rem; color: #fff; margin-bottom: 12px; box-shadow: 0 4px 15px rgba(245, 158, 11, 0.4);">
+          <i class="fa-solid fa-life-ring"></i>
+        </div>
+        <h3 style="font-size: 1.25rem; margin-bottom: 6px;">Emergency Recovery Key</h3>
+        <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 16px; line-height: 1.45;">
+          Save this Emergency Recovery Key in a safe place. If you ever forget your Security PIN, this is the <strong>only way</strong> to restore access to your calendar.
+        </p>
+
+        <div style="background: var(--bg-primary); border: 2px dashed #f59e0b; border-radius: var(--radius-md); padding: 14px 10px; margin-bottom: 16px; user-select: all;">
+          <code id="recoveryKeyDisplay" style="font-size: 1.15rem; font-weight: 700; letter-spacing: 2px; color: #f59e0b; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;">SRG-XXXX-XXXX-XXXX-XXXX</code>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 16px;">
+          <button type="button" id="emailRecoveryKeyBtn" class="btn-ghost" style="border: 1px solid var(--border-color); font-size: 0.82rem; justify-content: center; padding: 10px;">
+            <i class="fa-solid fa-envelope text-blue"></i> Email to Myself
+          </button>
+          <button type="button" id="downloadRecoveryKeyBtn" class="btn-ghost" style="border: 1px solid var(--border-color); font-size: 0.82rem; justify-content: center; padding: 10px;">
+            <i class="fa-solid fa-download text-emerald"></i> Download (.txt)
+          </button>
+          <button type="button" id="copyRecoveryKeyBtn" class="btn-ghost" style="border: 1px solid var(--border-color); font-size: 0.82rem; justify-content: center; padding: 10px; grid-column: span 2;">
+            <i class="fa-solid fa-copy text-amber"></i> Copy Key to Clipboard
+          </button>
+        </div>
+
+        <div style="margin-top: 10px;">
+          <button type="button" id="closeRecoveryKitBtn" class="btn-primary" style="width: 100%; justify-content: center; padding: 11px; font-size: 0.94rem;">
+            <i class="fa-solid fa-check"></i> I Have Saved My Key
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- FORGOT PIN / RESET MODAL -->
+    <div id="forgotPinModal" class="modal-backdrop hidden" style="z-index: 10050; background: rgba(15, 23, 42, 0.95); backdrop-filter: blur(14px); display: flex; align-items: center; justify-content: center;">
+      <div class="modal-card" style="max-width: 440px; width: 90%; text-align: center; padding: 26px 22px; border: 1px solid var(--border-color);">
+        <div style="width: 58px; height: 58px; background: linear-gradient(135deg, #ef4444, #dc2626); border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 1.6rem; color: #fff; margin-bottom: 12px; box-shadow: 0 4px 15px rgba(239, 68, 68, 0.4);">
+          <i class="fa-solid fa-key"></i>
+        </div>
+        <h3 style="font-size: 1.25rem; margin-bottom: 6px;">Reset PIN with Recovery Key</h3>
+        <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 16px; line-height: 1.45;">
+          Enter your Emergency Recovery Key to unwrap your encryption vault and set a new PIN.
+        </p>
+
+        <form id="forgotPinResetForm" style="display: flex; flex-direction: column; gap: 12px; text-align: left;">
+          <div class="form-group">
+            <label for="forgotRecoveryKeyInput" style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px; display: block;">Emergency Recovery Key *</label>
+            <input type="text" id="forgotRecoveryKeyInput" placeholder="SRG-XXXX-XXXX-XXXX-XXXX" required autocomplete="off" style="width: 100%; box-sizing: border-box; padding: 11px; font-size: 0.95rem; text-align: center; letter-spacing: 1.5px; text-transform: uppercase; border-radius: var(--radius-md); border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-main); font-family: monospace;">
+          </div>
+          <div class="form-group">
+            <label for="forgotNewPinInput" style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px; display: block;">New Security PIN / Passphrase (Min 6 chars) *</label>
+            <input type="password" id="forgotNewPinInput" placeholder="Enter min 6 characters" required minlength="6" maxlength="64" autocomplete="new-password" style="width: 100%; box-sizing: border-box; padding: 11px; font-size: 0.95rem; text-align: center; border-radius: var(--radius-md); border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-main); font-family: inherit;">
+          </div>
+          <div class="form-group">
+            <label for="forgotConfirmPinInput" style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px; display: block;">Confirm New PIN *</label>
+            <input type="password" id="forgotConfirmPinInput" placeholder="Re-enter new PIN" required minlength="6" maxlength="64" autocomplete="new-password" style="width: 100%; box-sizing: border-box; padding: 11px; font-size: 0.95rem; text-align: center; border-radius: var(--radius-md); border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-main); font-family: inherit;">
+          </div>
+
+          <div id="forgotPinErrorMsg" style="color: #fb7185; font-size: 0.85rem;" class="hidden"></div>
+
+          <div style="display: flex; gap: 10px; margin-top: 6px;">
+            <button type="button" id="cancelForgotPinBtn" class="btn-ghost" style="flex: 1; justify-content: center; padding: 11px;">Cancel</button>
+            <button type="submit" id="submitForgotPinBtn" class="btn-primary" style="flex: 1.5; justify-content: center; padding: 11px; background: linear-gradient(135deg, #10b981, #059669);">
+              <i class="fa-solid fa-unlock"></i> Reset & Unlock
+            </button>
+          </div>
+        </form>
       </div>
     </div>
 
@@ -1132,6 +1205,10 @@
             <div class="form-group" style="text-align: left;">
               <label for="setupConfirmPinInput" style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px; display: block;">Confirm Security PIN / Passphrase *</label>
               <input type="password" id="setupConfirmPinInput" placeholder="Re-enter your PIN" required minlength="6" maxlength="64" autocomplete="new-password" style="width: 100%; box-sizing: border-box; padding: 12px; font-size: 1rem; text-align: center; border-radius: var(--radius-md); border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-main); font-family: inherit;">
+            </div>
+            <div class="form-group" style="text-align: left;">
+              <label for="setupEmailInput" style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 4px; display: block;">Your Email (Optional, for 1-click Recovery Key backup)</label>
+              <input type="email" id="setupEmailInput" placeholder="name@example.com" autocomplete="email" style="width: 100%; box-sizing: border-box; padding: 11px 12px; font-size: 0.95rem; border-radius: var(--radius-md); border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-main); font-family: inherit;">
             </div>
             <div id="setupPinErrorMsg" style="color: #fb7185; font-size: 0.85rem;" class="hidden"></div>
             <button type="submit" id="submitSetupPinBtn" class="btn-primary" style="width: 100%; justify-content: center; padding: 12px; font-size: 0.96rem; margin-top: 4px;">
@@ -1167,6 +1244,12 @@
             <input type="password" id="appLockKeyInput" inputmode="numeric" placeholder="Enter Security PIN" required style="width: 100%; box-sizing: border-box; padding: 12px; font-size: 1rem; text-align: center; border-radius: var(--radius-md); border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-main); font-family: inherit;">
             <button type="submit" class="btn-primary" style="width: 100%; justify-content: center; padding: 12px; font-size: 0.96rem;"><i class="fa-solid fa-key"></i> Unlock Calendar</button>
           </form>
+
+          <div style="margin-top: 10px; display: flex; justify-content: center;">
+            <button type="button" id="forgotPinBtn" class="btn-ghost" style="font-size: 0.82rem; color: var(--primary); text-decoration: underline; border: none; background: transparent; cursor: pointer; padding: 4px 8px;">
+              <i class="fa-solid fa-circle-question"></i> Forgot PIN / Passphrase?
+            </button>
+          </div>
 
           <!-- Biometric Setup Button (visible if device supports sensor but not enrolled) -->
           <div id="enableBiometricPrompt" class="hidden" style="margin-top: 14px;">

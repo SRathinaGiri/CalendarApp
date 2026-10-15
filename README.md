@@ -1,9 +1,9 @@
-# Calendar App (Offline PWA) v1.2.1
+# Calendar App (Offline PWA) v1.2.2
 
 A standalone, local-first Personal Calendar & Daily Organizer Progressive Web App (PWA) powered by client-side **SQLite (WASM)** and **IndexedDB** local storage with **AES-256-GCM hardware-accelerated encryption at rest for both database and file attachments**.
 
-> **Production PWA (v1.2.1)**  
-> Fully client-side, local-first calendar with ACID SQLite storage, Web Crypto AES-256-GCM encryption at rest for database and attachments, enforced 6+ character PIN/passphrase protection, SHA-256 verified backup archives, smart restore re-encryption, wrapped biometric unlock, and 100% offline capabilities.
+> **Production PWA (v1.2.2)**  
+> Fully client-side, local-first calendar with ACID SQLite storage, Web Crypto AES-256-GCM encryption at rest for database and attachments, Emergency Recovery Key kit with 1-click email/download options, forgot PIN reset loop, enforced 6+ character PIN/passphrase protection, SHA-256 verified backup archives, smart restore re-encryption, wrapped biometric unlock, and 100% offline capabilities.
 
 ---
 
@@ -17,6 +17,11 @@ A standalone, local-first Personal Calendar & Daily Organizer Progressive Web Ap
   - Interactive first-time PIN setup prompts the user to choose their own Security PIN (no hardcoded defaults).
   - Secure **Fingerprint & Face ID** biometric quick-unlock via WebAuthn platform authenticators with wrapped key protection.
   - Zero-knowledge architecture: data is encrypted exclusively inside your device browser and never sent to any server.
+- **Emergency Recovery Key (Cryptographic Recovery Kit):**
+  - High-entropy 20-character Emergency Recovery Key (`SRG-XXXX-XXXX-XXXX-XXXX`) generated during PIN setup and PIN changes.
+  - Secure PBKDF2 (100,000 iterations) + AES-GCM recovery vault unlocks and unwraps the master key if you forget your PIN.
+  - 1-click **"Email to Myself"** (`mailto:`), **"Download (.txt)"**, and **"Copy"** options so you never lose access.
+  - **"Forgot PIN / Passphrase?"** recovery loop on the lock screen resets your PIN, restores your calendar, and re-encrypts all database records, snapshots, and attachments with your new key.
 - **IndexedDB Persistence (`SRGCalendarDB`):** Automatically persists edits, schedules, daily notes, financial entries, and file attachments in browser storage.
 - **Atomic 1-Click Complete Backup & Restore (`.zip`):**
   - **Full Export:** Creates an archive containing your SQLite database, an integrity manifest with per-file SHA-256 hashes, and deduplicated ticket attachments (PDFs & images). Supports optional **AES-256 PIN encryption** for both database and all attachments so exported archives can be safely stored on cloud drives (Google Drive, OneDrive, iCloud) or USB drives.
@@ -24,7 +29,7 @@ A standalone, local-first Personal Calendar & Daily Organizer Progressive Web Ap
 - **Local Snapshots:** Save named encrypted database safety snapshots in browser storage anytime. When changing PIN, all past snapshots and attachments are atomically re-encrypted under the new key.
 - **PWA (Progressive Web App):**
   - Installable directly to home screen or desktop from Chrome, Edge, Safari, or Brave.
-  - Version-scoped Service Worker cache cleanup (`v1.2.1`).
+  - Version-scoped Service Worker cache cleanup (`v1.2.2`).
   - In-app install and check for updates buttons.
 - **Comprehensive Calendar Views:**
   - **Calendar View:** 7-column month grid. In portrait mode, uniform square day cells with center indicator badges and a bottom day schedule agenda panel maximize usability. Long-pressing any day initiates multi-date selection for batch scheduling with single-tap date addition/removal. In landscape mode, full titles, times, and notes are shown.
@@ -96,6 +101,7 @@ The web app is deployed directly at:
 - **Hardware-Accelerated AES-256-GCM Encryption:** All SQLite database records, daily notes, transactions, snapshots, and file attachments stored in browser IndexedDB are encrypted at rest using AES-256-GCM via the browser's native Web Crypto API.
 - **User-Defined Security PIN / Passphrase:** First launch prompts you to create a private PIN or Passphrase (minimum 6 characters, up to 64 characters). Keys are derived via PBKDF2 (100,000 iterations, SHA-256) with unique cryptographic salts.
 - **Hardened Biometric Unlock:** Secure Fingerprint and Face ID quick-unlock via WebAuthn platform authenticators during active browser sessions without exposing or storing raw master keys on disk.
+- **Emergency Recovery Kit & Forgot PIN Loop:** Generate a 20-character cryptographic recovery key during PIN setup. Email it to yourself via `mailto:`, download it as a `.txt` file, or copy it. If you forget your PIN, tap "Forgot PIN / Passphrase?" to unlock and re-encrypt the vault without data loss.
 - **Atomic Change PIN:** Open the side drawer -> tap **"Change Security PIN"** to derive a new key with a fresh salt, re-encrypt the active database, re-encrypt all historical snapshots, and re-encrypt all stored attachments atomically.
 - **Zero-Knowledge Privacy:** Your PIN, database, and attachments are encrypted strictly inside your browser. No data or keys are ever transmitted to any external server.
 

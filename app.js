@@ -112,7 +112,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.2.1';
+const APP_VERSION = 'v1.2.2';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -2866,6 +2866,17 @@ async function handleSetupPinSubmit(e) {
     await createAuthVerificationToken(key);
     await persistKeyToSession(key);
 
+    // Save optional recovery email if provided
+    const emailInput = document.getElementById('setupEmailInput');
+    const userEmail = emailInput ? emailInput.value.trim() : '';
+    if (userEmail) {
+      localStorage.setItem('srg_user_recovery_email', userEmail);
+    }
+
+    // Generate and securely vault Emergency Recovery Key
+    const recoveryKey = generateRecoveryKey();
+    await saveRecoveryVault(key, recoveryKey);
+
     localStorage.setItem('srg_app_pin_configured', 'true');
     localStorage.removeItem('srg_app_pin'); // Purge legacy plaintext PIN
 
@@ -2893,6 +2904,11 @@ async function handleSetupPinSubmit(e) {
     updateBadge('Local SQLite Active');
 
     showToast('✓ Security PIN set & Database encrypted with AES-256!', 'success', 4000);
+
+    // Automatically prompt Emergency Recovery Kit so user can email or save their key
+    setTimeout(() => {
+      openRecoveryKitModal(recoveryKey, true);
+    }, 450);
 
     // Offer biometric unlock if available
     isBiometricAvailable().then(available => {
@@ -3041,6 +3057,475 @@ async function lockAppSecurity() {
 
   if (localStorage.getItem('srg_biometric_enabled') === 'true') {
     setTimeout(() => unlockAppWithBiometric(true), 400);
+  }
+}
+
+/* ==========================================================================
+   EMERGENCY RECOVERY KIT & FORGOT PIN / PASSPHRASE RECOVERY VAULT
+   ========================================================================== */
+
+const RECOVERY_MAGIC = new Uint8Array([0x53, 0x52, 0x47, 0x52, 0x45, 0x43, 0x31]); // "SRGREC1" (7 bytes)
+
+// Generate a high-entropy 20-character formatted Recovery Key: SRG-XXXX-XXXX-XXXX-XXXX
+function generateRecoveryKey() {
+  const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ'; // base32 Crockford style without ambiguous 0/O, 1/I
+  const randomValues = crypto.getRandomValues(new Uint8Array(16));
+  let keyStr = '';
+  for (let i = 0; i < 16; i++) {
+    keyStr += chars[randomValues[i] % chars.length];
+  }
+  return `SRG-${keyStr.slice(0, 4)}-${keyStr.slice(4, 8)}-${keyStr.slice(8, 12)}-${keyStr.slice(12, 16)}`;
+}
+
+// Normalize recovery key string (removes hyphens, spaces, converts to uppercase)
+function normalizeRecoveryKey(rawKey) {
+  if (!rawKey || typeof rawKey !== 'string') return '';
+  let cleaned = rawKey.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (cleaned.startsWith('SRG')) {
+    cleaned = cleaned.slice(3);
+  }
+  return cleaned;
+}
+
+// Derive a 256-bit AES-GCM wrapping key from normalized recovery key using PBKDF2
+async function deriveRecoveryWrappingKey(normalizedKey, salt) {
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    enc.encode('SRG_RECOVERY_' + normalizedKey),
+    'PBKDF2',
+    false,
+    ['deriveKey']
+  );
+  return await crypto.subtle.deriveKey(
+    {
+      name: 'PBKDF2',
+      salt: salt,
+      iterations: PBKDF2_ITERATIONS,
+      hash: 'SHA-256'
+    },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+}
+
+// Save encrypted recovery vault protecting raw master key
+async function saveRecoveryVault(masterKey, recoveryKey) {
+  if (!masterKey || !recoveryKey) return;
+  try {
+    const rawMasterBytes = await crypto.subtle.exportKey('raw', masterKey);
+    const normalized = normalizeRecoveryKey(recoveryKey);
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const wrapKey = await deriveRecoveryWrappingKey(normalized, salt);
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+
+    const cipherBuf = await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv: iv },
+      wrapKey,
+      rawMasterBytes
+    );
+    const ciphertext = new Uint8Array(cipherBuf);
+
+    // Layout: MAGIC (7) + SALT (16) + IV (12) + CIPHERTEXT (48)
+    const packed = new Uint8Array(RECOVERY_MAGIC.length + salt.length + iv.length + ciphertext.length);
+    packed.set(RECOVERY_MAGIC, 0);
+    packed.set(salt, RECOVERY_MAGIC.length);
+    packed.set(iv, RECOVERY_MAGIC.length + salt.length);
+    packed.set(ciphertext, RECOVERY_MAGIC.length + salt.length + iv.length);
+
+    const b64 = bufferToBase64(packed);
+    localStorage.setItem('srg_recovery_vault', b64);
+    localStorage.setItem('srg_recovery_key_display', recoveryKey);
+
+    // Also persist in IndexedDB 'files' store for redundancy
+    try {
+      const idb = await openSRGDatabase();
+      const tx = idb.transaction('files', 'readwrite');
+      tx.objectStore('files').put(packed, 'srg_recovery_vault');
+    } catch(idbErr) {
+      console.warn('Could not persist recovery vault to IndexedDB:', idbErr);
+    }
+  } catch(e) {
+    console.error('saveRecoveryVault failed:', e);
+  }
+}
+
+// Get the stored packed recovery vault bytes
+async function getStoredRecoveryVaultBytes() {
+  const b64 = localStorage.getItem('srg_recovery_vault');
+  if (b64) {
+    try {
+      return base64ToBuffer(b64);
+    } catch(e) {}
+  }
+  try {
+    const idb = await openSRGDatabase();
+    const tx = idb.transaction('files', 'readonly');
+    const store = tx.objectStore('files');
+    const req = store.get('srg_recovery_vault');
+    const res = await new Promise((resolve) => {
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    });
+    if (res instanceof Uint8Array) return res;
+    if (res instanceof ArrayBuffer) return new Uint8Array(res);
+  } catch(e) {}
+  return null;
+}
+
+// Unwrap master database CryptoKey using Recovery Key
+async function unwrapMasterKeyWithRecoveryKey(inputRecoveryKey) {
+  const normalized = normalizeRecoveryKey(inputRecoveryKey);
+  if (!normalized || normalized.length < 16) {
+    throw new Error('Recovery Key must be 16 characters or formatted as SRG-XXXX-XXXX-XXXX-XXXX');
+  }
+
+  const packed = await getStoredRecoveryVaultBytes();
+  if (!packed || packed.length < RECOVERY_MAGIC.length + 16 + 12 + 16) {
+    throw new Error('No valid recovery vault found on this device');
+  }
+
+  // Verify RECOVERY_MAGIC
+  for (let i = 0; i < RECOVERY_MAGIC.length; i++) {
+    if (packed[i] !== RECOVERY_MAGIC[i]) {
+      throw new Error('Corrupt or incompatible recovery vault format');
+    }
+  }
+
+  const saltStart = RECOVERY_MAGIC.length;
+  const ivStart = saltStart + 16;
+  const cipherStart = ivStart + 12;
+
+  const salt = packed.slice(saltStart, ivStart);
+  const iv = packed.slice(ivStart, cipherStart);
+  const ciphertext = packed.slice(cipherStart);
+
+  const wrapKey = await deriveRecoveryWrappingKey(normalized, salt);
+  const rawMasterBytes = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: iv },
+    wrapKey,
+    ciphertext
+  );
+
+  return await crypto.subtle.importKey(
+    'raw',
+    rawMasterBytes,
+    { name: 'AES-GCM' },
+    true,
+    ['encrypt', 'decrypt']
+  );
+}
+
+// UI: Open Emergency Recovery Kit Modal
+function openRecoveryKitModal(recoveryKey, isNewSetup = false) {
+  const modal = document.getElementById('recoveryKitModal');
+  if (!modal) return;
+  const display = document.getElementById('recoveryKeyDisplay');
+  const key = recoveryKey || localStorage.getItem('srg_recovery_key_display') || 'SRG-XXXX-XXXX-XXXX-XXXX';
+  if (display) display.textContent = key;
+  modal.classList.remove('hidden');
+}
+
+// UI: Close Emergency Recovery Kit Modal
+function closeRecoveryKitModal() {
+  const modal = document.getElementById('recoveryKitModal');
+  if (!modal) return;
+  modal.classList.add('hidden');
+}
+
+// UI: Copy Recovery Key to Clipboard
+async function copyRecoveryKeyToClipboard() {
+  const display = document.getElementById('recoveryKeyDisplay');
+  const key = display ? display.textContent.trim() : '';
+  if (!key) return;
+  try {
+    await navigator.clipboard.writeText(key);
+    showToast('✓ Emergency Recovery Key copied to clipboard!', 'success', 3000);
+  } catch(e) {
+    prompt('Copy your Emergency Recovery Key:', key);
+  }
+}
+
+// UI: Download Recovery Key as a text file
+function downloadRecoveryKeyFile() {
+  const display = document.getElementById('recoveryKeyDisplay');
+  const key = display ? display.textContent.trim() : '';
+  if (!key) return;
+  const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
+  const content = [
+    '=================================================================',
+    '              CALENDAR APP - EMERGENCY RECOVERY KIT             ',
+    '=================================================================',
+    '',
+    'Keep this file safe and private. This Emergency Recovery Key is the',
+    'ONLY cryptographic mechanism to restore access to your encrypted',
+    'calendar database, notes, finance ledgers, and attachments if you',
+    'forget your Security PIN.',
+    '',
+    '-----------------------------------------------------------------',
+    `EMERGENCY RECOVERY KEY:  ${key}`,
+    '-----------------------------------------------------------------',
+    '',
+    `Generated On:   ${timestamp} (UTC)`,
+    `App Version:    ${APP_VERSION}`,
+    `Encryption:     Zero-Knowledge AES-256-GCM + PBKDF2 (100,000 iterations)`,
+    '',
+    'HOW TO RESTORE YOUR ACCESS:',
+    '1. Open Calendar App on this device.',
+    '2. On the lock screen, click "Forgot PIN / Passphrase?".',
+    '3. Enter your Emergency Recovery Key exactly as shown above.',
+    '4. Enter and confirm your new Security PIN (min 6 characters).',
+    '5. Click "Reset & Unlock". Your calendar will be unlocked and re-encrypted.',
+    '',
+    'SECURITY ADVICE:',
+    '- Never share this key with anyone.',
+    '- Store a printed copy or save it in your password manager.',
+    '================================================================='
+  ].join('\r\n');
+
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `CalendarApp-Recovery-Key-${key.replace(/[^A-Z0-9]/g, '')}.txt`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  showToast('✓ Recovery Kit file downloaded successfully!', 'success', 3000);
+}
+
+// UI: Email Recovery Key to user via mailto
+function emailRecoveryKey() {
+  const display = document.getElementById('recoveryKeyDisplay');
+  const key = display ? display.textContent.trim() : '';
+  if (!key) return;
+
+  const savedEmail = localStorage.getItem('srg_user_recovery_email') || '';
+  const recipient = prompt('Enter the email address to receive your Emergency Recovery Kit:', savedEmail);
+  if (recipient === null) return; // user cancelled
+  const trimmedRecipient = recipient.trim();
+  if (trimmedRecipient) {
+    localStorage.setItem('srg_user_recovery_email', trimmedRecipient);
+  }
+
+  const subject = encodeURIComponent('Calendar App - My Emergency Recovery Key');
+  const bodyText = [
+    'Here is your Emergency Recovery Key for Calendar App.',
+    '',
+    `EMERGENCY RECOVERY KEY: ${key}`,
+    '',
+    'If you ever forget your Security PIN, open Calendar App, click "Forgot PIN / Passphrase?", and enter this key to reset your PIN and restore your calendar.',
+    '',
+    'Important: Keep this email confidential.'
+  ].join('\n');
+  const body = encodeURIComponent(bodyText);
+
+  window.location.href = `mailto:${trimmedRecipient}?subject=${subject}&body=${body}`;
+  showToast('Opening your email client...', 'info', 3000);
+}
+
+// UI: Open Forgot PIN Modal
+function openForgotPinModal() {
+  const modal = document.getElementById('forgotPinModal');
+  if (!modal) return;
+  const keyInp = document.getElementById('forgotRecoveryKeyInput');
+  const pinInp = document.getElementById('forgotNewPinInput');
+  const confInp = document.getElementById('forgotConfirmPinInput');
+  const errEl = document.getElementById('forgotPinErrorMsg');
+  if (keyInp) keyInp.value = '';
+  if (pinInp) pinInp.value = '';
+  if (confInp) confInp.value = '';
+  if (errEl) {
+    errEl.textContent = '';
+    errEl.classList.add('hidden');
+  }
+  modal.classList.remove('hidden');
+  if (keyInp) keyInp.focus();
+}
+
+// UI: Close Forgot PIN Modal
+function closeForgotPinModal() {
+  const modal = document.getElementById('forgotPinModal');
+  if (modal) modal.classList.add('hidden');
+}
+
+// Handle Forgot PIN Reset Submit
+async function handleForgotPinResetSubmit(e) {
+  e.preventDefault();
+  const inputRecoveryKey = (document.getElementById('forgotRecoveryKeyInput')?.value || '').trim();
+  const newPin = (document.getElementById('forgotNewPinInput')?.value || '').trim();
+  const confirmPin = (document.getElementById('forgotConfirmPinInput')?.value || '').trim();
+  const errEl = document.getElementById('forgotPinErrorMsg');
+  const submitBtn = document.getElementById('submitForgotPinBtn');
+
+  if (!inputRecoveryKey) {
+    if (errEl) {
+      errEl.textContent = 'Please enter your Emergency Recovery Key.';
+      errEl.classList.remove('hidden');
+    }
+    return;
+  }
+
+  if (!newPin || newPin.length < 6 || newPin.length > 64) {
+    if (errEl) {
+      errEl.textContent = 'New PIN / Passphrase must be at least 6 characters.';
+      errEl.classList.remove('hidden');
+    }
+    return;
+  }
+
+  if (newPin !== confirmPin) {
+    if (errEl) {
+      errEl.textContent = 'New PIN and confirmation do not match.';
+      errEl.classList.remove('hidden');
+    }
+    return;
+  }
+
+  const originalBtnHtml = submitBtn ? submitBtn.innerHTML : '';
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Restoring & Re-encrypting...';
+  }
+
+  try {
+    // 1. Unwrap the master key from the vault using the recovery key
+    const recoveredMasterKey = await unwrapMasterKeyWithRecoveryKey(inputRecoveryKey);
+    if (!recoveredMasterKey) {
+      throw new Error('Could not unwrap encryption key with the provided Recovery Key.');
+    }
+
+    // 2. Load the encrypted database from IndexedDB if not currently in memory
+    const encryptedBytes = cachedEncryptedDbBytes || await loadDbFromIndexedDB();
+    if (!encryptedBytes) {
+      throw new Error('No calendar database found on this device to recover.');
+    }
+
+    // 3. Decrypt the database using the recovered master key
+    const decryptedBytes = await decryptDatabaseBytes(encryptedBytes, recoveredMasterKey, false);
+    db = new SQL.Database(decryptedBytes);
+    ensureSchemaUpToDate();
+
+    // 4. Derive fresh master key and salt from the new PIN
+    const newSalt = crypto.getRandomValues(new Uint8Array(16));
+    const newMasterKey = await deriveKeyFromPin(newPin, newSalt);
+
+    // 5. Re-encrypt all historical snapshots with the new key
+    const idb = await openSRGDatabase();
+    try {
+      const snapTx = idb.transaction('snapshots', 'readwrite');
+      const snapStore = snapTx.objectStore('snapshots');
+      const snapReq = snapStore.getAll();
+      await new Promise((resolve) => {
+        snapReq.onsuccess = async () => {
+          const list = snapReq.result || [];
+          for (const snap of list) {
+            if (snap && snap.data) {
+              let snapBytes = new Uint8Array(snap.data);
+              if (isEncryptedDbBytes(snapBytes)) {
+                try {
+                  const dec = await decryptDatabaseBytes(snapBytes, recoveredMasterKey, false);
+                  const reEnc = await encryptWithKeyAndSalt(dec, newMasterKey, newSalt);
+                  snap.data = reEnc;
+                  snap.size = reEnc.byteLength;
+                  snapStore.put(snap);
+                } catch(e) {}
+              }
+            }
+          }
+          resolve();
+        };
+        snapReq.onerror = () => resolve();
+      });
+      await new Promise(r => { snapTx.oncomplete = r; snapTx.onerror = r; });
+    } catch(snapErr) {
+      console.warn('Snapshot re-encryption error during recovery:', snapErr);
+    }
+
+    // 6. Re-encrypt all stored attachments with the new key
+    try {
+      const fileTx = idb.transaction('files', 'readwrite');
+      const fileStore = fileTx.objectStore('files');
+      const cursorReq = fileStore.openCursor();
+      await new Promise((resolve) => {
+        cursorReq.onsuccess = async (ev) => {
+          const cursor = ev.target.result;
+          if (cursor) {
+            const k = String(cursor.key);
+            if (k.startsWith('att_')) {
+              const val = cursor.value;
+              if (isEncryptedAttachmentBytes(val)) {
+                try {
+                  const plain = await decryptAttachmentData(val, recoveredMasterKey);
+                  if (plain) {
+                    const reEnc = await encryptAttachmentData(plain, newMasterKey);
+                    cursor.update(reEnc);
+                  }
+                } catch(err) {}
+              }
+            }
+            cursor.continue();
+          } else {
+            resolve();
+          }
+        };
+        cursorReq.onerror = () => resolve();
+      });
+      await new Promise(r => { fileTx.oncomplete = r; fileTx.onerror = r; });
+    } catch(fileErr) {
+      console.warn('Attachment re-encryption error during recovery:', fileErr);
+    }
+
+    // 7. Generate a new Emergency Recovery Key and update the recovery vault
+    const newRecoveryKey = generateRecoveryKey();
+    await saveRecoveryVault(newMasterKey, newRecoveryKey);
+
+    // 8. Commit new security configuration
+    storeCryptoSalt(newSalt);
+    currentEncryptionKey = newMasterKey;
+    await createAuthVerificationToken(newMasterKey);
+    await persistKeyToSession(newMasterKey);
+
+    // 9. If biometrics were enabled, re-wrap with the new master key
+    if (localStorage.getItem('srg_biometric_enabled') === 'true') {
+      await saveBiometricEncryptionKey(newMasterKey);
+    }
+
+    // 10. Save newly encrypted database to IndexedDB
+    await saveDbToIndexedDB(false);
+
+    // 11. Unlock application
+    isAppUnlocked = true;
+    const overlay = document.getElementById('appLockOverlay');
+    if (overlay) overlay.classList.add('hidden');
+    closeForgotPinModal();
+
+    loadMasterDataFromDb();
+    populateTitlesDatalist();
+    switchToView(currentView, currentDate);
+    updateBadge('Local SQLite Active');
+
+    showToast('✓ PIN reset successfully! Calendar restored & re-encrypted.', 'success', 5000);
+
+    // Prompt user with their new Emergency Recovery Key
+    setTimeout(() => {
+      openRecoveryKitModal(newRecoveryKey);
+    }, 450);
+
+  } catch(err) {
+    console.error('handleForgotPinResetSubmit error:', err);
+    if (errEl) {
+      errEl.textContent = 'Recovery failed: ' + (err.message || 'Invalid Emergency Recovery Key');
+      errEl.classList.remove('hidden');
+    }
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = originalBtnHtml;
+    }
   }
 }
 
@@ -3218,8 +3703,15 @@ async function handleChangePinSubmit(e) {
       await saveDbToIndexedDB();
     }
 
+    // 4. Generate replacement Emergency Recovery Key and update recovery vault
+    const newRecoveryKey = generateRecoveryKey();
+    await saveRecoveryVault(newKey, newRecoveryKey);
+
     closeChangePinModal();
-    showToast('✓ Security PIN changed! Database, snapshots & attachments re-encrypted.', 'success', 5000);
+    showToast('✓ Security PIN changed! A new Emergency Recovery Key has been generated.', 'success', 5000);
+    setTimeout(() => {
+      openRecoveryKitModal(newRecoveryKey);
+    }, 500);
   } catch (err) {
     console.error('Error changing PIN:', err);
     if (errEl) {
@@ -7161,6 +7653,18 @@ function setupUIEventListeners() {
       openChangePinModal();
     });
   }
+  const drawerRecoveryKeyBtn = document.getElementById('drawerRecoveryKeyBtn');
+  if (drawerRecoveryKeyBtn) {
+    drawerRecoveryKeyBtn.addEventListener('click', async () => {
+      closeSideMenu();
+      let key = localStorage.getItem('srg_recovery_key_display');
+      if (!key && currentEncryptionKey) {
+        key = generateRecoveryKey();
+        await saveRecoveryVault(currentEncryptionKey, key);
+      }
+      openRecoveryKitModal(key);
+    });
+  }
   const drawerBiometricBtn = document.getElementById('drawerBiometricBtn');
   if (drawerBiometricBtn) {
     drawerBiometricBtn.addEventListener('click', async () => {
@@ -7380,6 +7884,57 @@ function setupUIEventListeners() {
   if (enableBiometricBtn) {
     enableBiometricBtn.addEventListener('click', () => {
       registerBiometricCredential();
+    });
+  }
+
+  // Forgot PIN / Password Recovery Controls
+  const forgotPinBtn = document.getElementById('forgotPinBtn');
+  if (forgotPinBtn) {
+    forgotPinBtn.addEventListener('click', openForgotPinModal);
+  }
+
+  const cancelForgotPinBtn = document.getElementById('cancelForgotPinBtn');
+  if (cancelForgotPinBtn) {
+    cancelForgotPinBtn.addEventListener('click', closeForgotPinModal);
+  }
+
+  const forgotPinResetForm = document.getElementById('forgotPinResetForm');
+  if (forgotPinResetForm) {
+    forgotPinResetForm.addEventListener('submit', handleForgotPinResetSubmit);
+  }
+
+  const forgotPinModal = document.getElementById('forgotPinModal');
+  if (forgotPinModal) {
+    forgotPinModal.addEventListener('click', (e) => {
+      if (e.target === forgotPinModal) closeForgotPinModal();
+    });
+  }
+
+  // Emergency Recovery Kit Modal Controls
+  const closeRecoveryKitBtn = document.getElementById('closeRecoveryKitBtn');
+  if (closeRecoveryKitBtn) {
+    closeRecoveryKitBtn.addEventListener('click', closeRecoveryKitModal);
+  }
+
+  const copyRecoveryKeyBtn = document.getElementById('copyRecoveryKeyBtn');
+  if (copyRecoveryKeyBtn) {
+    copyRecoveryKeyBtn.addEventListener('click', copyRecoveryKeyToClipboard);
+  }
+
+  const downloadRecoveryKeyBtn = document.getElementById('downloadRecoveryKeyBtn');
+  if (downloadRecoveryKeyBtn) {
+    downloadRecoveryKeyBtn.addEventListener('click', downloadRecoveryKeyFile);
+  }
+
+  const emailRecoveryKeyBtn = document.getElementById('emailRecoveryKeyBtn');
+  if (emailRecoveryKeyBtn) {
+    emailRecoveryKeyBtn.addEventListener('click', emailRecoveryKey);
+  }
+
+  const recoveryKitModal = document.getElementById('recoveryKitModal');
+  if (recoveryKitModal) {
+    recoveryKitModal.addEventListener('click', (e) => {
+      if (e.target === recoveryKitModal) closeRecoveryKitModal();
     });
   }
 
