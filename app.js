@@ -112,7 +112,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.3.5';
+const APP_VERSION = 'v1.3.6';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -331,16 +331,10 @@ let cachedEncryptedDbBytes = null;
 async function initSqliteDatabase() {
   updateBadge('Initializing DB...');
   try {
-    try {
-      SQL = await initSqlJs({
-        locateFile: file => file
-      });
-    } catch(e) {
-      console.warn('Local sql-wasm.wasm load fallback to CDN:', e);
-      SQL = await initSqlJs({
-        locateFile: file => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${file}`
-      });
-    }
+    // Local WASM only: a CDN fallback would leak usage to a third party and break the offline promise.
+    SQL = await initSqlJs({
+      locateFile: file => file
+    });
 
     cachedEncryptedDbBytes = await loadDbFromIndexedDB();
     updateBadge('Engine Ready');
@@ -4970,8 +4964,8 @@ function getDailyTransactionsMap() {
       const rows = rowsToObjects(res[0]);
       rows.forEach(r => {
         if (!map[r.txn_date]) map[r.txn_date] = { receipts: 0, payments: 0, count: 0 };
-        if (r.type === 'receipt') map[r.txn_date].receipts += Number(r.amount || 0);
-        else map[r.txn_date].payments += Number(r.amount || 0);
+        if (r.type === 'receipt') map[r.txn_date].receipts += toPaise(r.amount);
+        else map[r.txn_date].payments += toPaise(r.amount);
         map[r.txn_date].count++;
       });
     }
@@ -4988,7 +4982,7 @@ async function saveDailyTransaction(txn) {
   const type = txn.type;
   const debit = (txn.debit_account || '').trim();
   const credit = (txn.credit_account || '').trim();
-  const amount = parseFloat(txn.amount) || 0;
+  const amount = toPaise(txn.amount) / 100; // stored as rupees, normalised to whole paise
   const desc = (txn.description || '').trim();
   const now = new Date().toISOString();
 
@@ -5077,7 +5071,7 @@ function renderFinanceTransactionsList(dateStr) {
     container.innerHTML = '<div style="font-size:0.85rem; color:var(--text-muted); text-align:center; padding:12px;">No financial transactions for this date.</div>';
   } else {
     txns.forEach(t => {
-      const amt = Number(t.amount || 0);
+      const amt = toPaise(t.amount);
       if (t.type === 'receipt') totalReceipts += amt;
       else totalPayments += amt;
 
@@ -5086,7 +5080,7 @@ function renderFinanceTransactionsList(dateStr) {
       card.innerHTML = `
         <div>
           <span style="font-weight:600; color:${t.type === 'receipt' ? 'var(--receipt-color)' : 'var(--payment-color)'};">
-            ${t.type === 'receipt' ? '🟢 Receipt' : '🔴 Payment'} &mdash; ₹${amt.toFixed(2)}
+            ${t.type === 'receipt' ? '🟢 Receipt' : '🔴 Payment'} &mdash; ${formatINR(amt)}
           </span>
           <div style="font-size:0.78rem; color:var(--text-muted); margin-top:2px;">
             Dr: <strong>${escapeHtml(t.debit_account || '')}</strong> | Cr: <strong>${escapeHtml(t.credit_account || '')}</strong>
@@ -5128,10 +5122,10 @@ function renderFinanceTransactionsList(dateStr) {
   }
 
   const net = totalReceipts - totalPayments;
-  if (receiptsEl) receiptsEl.textContent = `₹${totalReceipts.toFixed(2)}`;
-  if (paymentsEl) paymentsEl.textContent = `₹${totalPayments.toFixed(2)}`;
+  if (receiptsEl) receiptsEl.textContent = `${formatINR(totalReceipts)}`;
+  if (paymentsEl) paymentsEl.textContent = `${formatINR(totalPayments)}`;
   if (netEl) {
-    netEl.textContent = `₹${net.toFixed(2)}`;
+    netEl.textContent = `${formatINR(net)}`;
     netEl.style.color = net >= 0 ? 'var(--net-positive)' : 'var(--payment-color)';
   }
 }
@@ -5430,13 +5424,13 @@ function renderPortraitMonthView() {
     if (txns.length > 0) {
       let rec = 0, pay = 0;
       txns.forEach(t => {
-        if (t.type === 'receipt') rec += Number(t.amount || 0);
-        else pay += Number(t.amount || 0);
+        if (t.type === 'receipt') rec += toPaise(t.amount);
+        else pay += toPaise(t.amount);
       });
       const net = rec - pay;
       tdFin.innerHTML = `
         <div class="portrait-finance-badge">
-          <span>💰 In: <strong class="fin-in">₹${rec.toFixed(0)}</strong> | Out: <strong class="fin-out">₹${pay.toFixed(0)}</strong></span>
+          <span>💰 In: <strong class="fin-in">${formatINR(rec, 0)}</strong> | Out: <strong class="fin-out">${formatINR(pay, 0)}</strong></span>
           <button type="button" class="btn-xs btn-secondary edit-fin-btn"><i class="fa-solid fa-pen-to-square"></i></button>
         </div>
       `;
@@ -5600,8 +5594,8 @@ function createDayCell(dateStr, dayNum, isOtherMonth, schedules, dayOfWeekIdx, i
   if (hasFinance) {
     const finPill = document.createElement('div');
     finPill.className = 'day-finance-pill';
-    finPill.title = `Receipts: ₹${txnSummary.receipts.toFixed(2)} | Payments: ₹${txnSummary.payments.toFixed(2)}`;
-    finPill.innerHTML = `<i class="fa-solid fa-coins"></i> <span class="pill-text">+₹${txnSummary.receipts} / -₹${txnSummary.payments}</span>`;
+    finPill.title = `Receipts: ${formatINR(txnSummary.receipts)} | Payments: ${formatINR(txnSummary.payments)}`;
+    finPill.innerHTML = `<i class="fa-solid fa-coins"></i> <span class="pill-text">+${formatINR(txnSummary.receipts)} / -${formatINR(txnSummary.payments)}</span>`;
     finPill.addEventListener('click', (e) => {
       e.stopPropagation();
       openDailyFinanceModal(dateStr);
@@ -5836,8 +5830,8 @@ function renderPortraitCalendarDayAgenda(dateStr) {
           <button type="button" class="portrait-sub-action-btn view-fin-btn" style="color:#34d399; cursor:pointer;"><i class="fa-solid fa-pen"></i> View</button>
         </div>
         <div class="portrait-agenda-fin-values" style="display:flex; gap:16px; font-size:0.86rem; margin-top:3px;">
-          <span style="color:var(--receipt-color); font-weight:600;">Receipts: +₹${txnSummary.receipts.toFixed(2)}</span>
-          <span style="color:var(--payment-color); font-weight:600;">Payments: -₹${txnSummary.payments.toFixed(2)}</span>
+          <span style="color:var(--receipt-color); font-weight:600;">Receipts: +${formatINR(txnSummary.receipts)}</span>
+          <span style="color:var(--payment-color); font-weight:600;">Payments: -${formatINR(txnSummary.payments)}</span>
         </div>
       </div>
     `;
@@ -6181,8 +6175,8 @@ function renderDayView() {
   if (txns.length > 0) {
     let receipts = 0, payments = 0;
     txns.forEach(t => {
-      if (t.type === 'receipt') receipts += Number(t.amount || 0);
-      else payments += Number(t.amount || 0);
+      if (t.type === 'receipt') receipts += toPaise(t.amount);
+      else payments += toPaise(t.amount);
     });
     const net = receipts - payments;
 
@@ -6194,9 +6188,9 @@ function renderDayView() {
         <button type="button" class="btn-xs btn-secondary edit-fin-btn"><i class="fa-solid fa-pen-to-square"></i> Manage Finance</button>
       </div>
       <div style="font-size:0.9rem; display:flex; gap:16px; flex-wrap:wrap;">
-        <span>Receipts: <strong style="color:var(--receipt-color);">₹${receipts.toFixed(2)}</strong></span>
-        <span>Payments: <strong style="color:var(--payment-color);">₹${payments.toFixed(2)}</strong></span>
-        <span>Net Flow: <strong style="color:${net >= 0 ? 'var(--net-positive)' : 'var(--net-negative)'};">₹${net.toFixed(2)}</strong></span>
+        <span>Receipts: <strong style="color:var(--receipt-color);">${formatINR(receipts)}</strong></span>
+        <span>Payments: <strong style="color:var(--payment-color);">${formatINR(payments)}</strong></span>
+        <span>Net Flow: <strong style="color:${net >= 0 ? 'var(--net-positive)' : 'var(--net-negative)'};">${formatINR(net)}</strong></span>
       </div>
     `;
     const editFinBtn = finBanner.querySelector('.edit-fin-btn');
@@ -6615,8 +6609,27 @@ function renderAgendaView(resetPagination = true, scrollDirection = 'center') {
 }
 
 function escapeHtml(str) {
-  if (!str) return '';
+  if (str === null || str === undefined) return '';
   return String(str).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
+}
+
+// Money: amounts are summed as integer paise so totals never drift (binary floats make 0.1 + 0.2 != 0.3).
+// Rounding rule: half away from zero to the nearest paisa, applied once when a value enters a calculation.
+function toPaise(value) {
+  if (value === null || value === undefined || value === '') return 0;
+  const n = typeof value === 'number' ? value : Number(String(value).replace(/[₹,\s]/g, ''));
+  if (!Number.isFinite(n)) return 0;
+  // Decimal-exponent shift avoids 1.005 * 100 = 100.4999… rounding down.
+  let p = Math.round(Number(Math.abs(n) + 'e2'));
+  if (!Number.isFinite(p)) p = Math.round(Math.abs(n) * 100);
+  return n < 0 ? -p : p;
+}
+
+// Display rupees from paise with Indian digit grouping (₹1,23,456.78).
+function formatINR(paise, fractionDigits = 2) {
+  const p = Math.round(Number(paise) || 0);
+  const text = (Math.abs(p) / 100).toLocaleString('en-IN', { minimumFractionDigits: fractionDigits, maximumFractionDigits: fractionDigits });
+  return (p < 0 ? '-₹' : '₹') + text;
 }
 
 function sanitizeColor(val, fallback = '#3b82f6') {
@@ -7940,7 +7953,7 @@ async function handleScheduleFormSubmit(e) {
       `Onward travel for program: ${title}`,
       `Departure: ${formatDateIndian(oDate)} at ${oDepTime} | Arrival: ${formatDateIndian(oArrDate)} at ${oArrTime}`,
       oPnr ? `PNR: ${oPnr}` : '',
-      oAmt > 0 ? `Amount: ₹${oAmt.toFixed(2)} (${oReimb ? 'Reimbursable' : 'Non-reimbursable'})` : 'Sponsored by Organizer (₹0.00)'
+      oAmt > 0 ? `Amount: ${formatINR(toPaise(oAmt))} (${oReimb ? 'Reimbursable' : 'Non-reimbursable'})` : 'Sponsored by Organizer (₹0.00)'
     ].filter(Boolean).join(' | ');
 
     const oAttachments = cleanedOnwardAtt ? JSON.stringify([cleanedOnwardAtt]) : '[]';
@@ -8006,7 +8019,7 @@ async function handleScheduleFormSubmit(e) {
       `Return travel from program: ${title}`,
       `Departure: ${formatDateIndian(rDate)} at ${rDepTime} | Arrival: ${formatDateIndian(rArrDate)} at ${rArrTime}`,
       rPnr ? `PNR: ${rPnr}` : '',
-      rAmt > 0 ? `Amount: ₹${rAmt.toFixed(2)} (${rReimb ? 'Reimbursable' : 'Non-reimbursable'})` : 'Sponsored by Organizer (₹0.00)'
+      rAmt > 0 ? `Amount: ${formatINR(toPaise(rAmt))} (${rReimb ? 'Reimbursable' : 'Non-reimbursable'})` : 'Sponsored by Organizer (₹0.00)'
     ].filter(Boolean).join(' | ');
 
     const rAttachments = cleanedReturnAtt ? JSON.stringify([cleanedReturnAtt]) : '[]';
@@ -9950,8 +9963,8 @@ function renderJournalReport(container, fromDate, toDate) {
   let totalReceipts = 0;
   let totalPayments = 0;
   txns.forEach(t => {
-    if (t.type === 'receipt') totalReceipts += Number(t.amount || 0);
-    else totalPayments += Number(t.amount || 0);
+    if (t.type === 'receipt') totalReceipts += toPaise(t.amount);
+    else totalPayments += toPaise(t.amount);
   });
   const netFlow = totalReceipts - totalPayments;
 
@@ -9959,9 +9972,9 @@ function renderJournalReport(container, fromDate, toDate) {
     <div style="margin-bottom:14px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
       <h4 style="margin:0; font-size:1rem; color:var(--text-main);"><i class="fa-solid fa-book" style="color:var(--receipt-color);"></i> Journal Statement (${formatDateIndian(fromDate)} to ${formatDateIndian(toDate)})</h4>
       <div style="font-size:0.85rem; display:flex; gap:12px;">
-        <span>Receipts: <strong style="color:var(--receipt-color);">₹${totalReceipts.toFixed(2)}</strong></span>
-        <span>Payments: <strong style="color:var(--payment-color);">₹${totalPayments.toFixed(2)}</strong></span>
-        <span>Net Flow: <strong style="color:${netFlow >= 0 ? 'var(--net-positive)' : 'var(--payment-color)'};">₹${netFlow.toFixed(2)}</strong></span>
+        <span>Receipts: <strong style="color:var(--receipt-color);">${formatINR(totalReceipts)}</strong></span>
+        <span>Payments: <strong style="color:var(--payment-color);">${formatINR(totalPayments)}</strong></span>
+        <span>Net Flow: <strong style="color:${netFlow >= 0 ? 'var(--net-positive)' : 'var(--payment-color)'};">${formatINR(netFlow)}</strong></span>
       </div>
     </div>
     <table style="width:100%; border-collapse:collapse; font-size:0.86rem; text-align:left;">
@@ -9986,7 +9999,7 @@ function renderJournalReport(container, fromDate, toDate) {
         <td style="padding:8px 10px;"><span style="color:${isReceipt ? 'var(--receipt-color)' : 'var(--payment-color)'}; font-weight:600;">${isReceipt ? '🟢 Receipt' : '🔴 Payment'}</span></td>
         <td style="padding:8px 10px;">${escapeHtml(t.debit_account || '-')}</td>
         <td style="padding:8px 10px;">${escapeHtml(t.credit_account || '-')}</td>
-        <td style="padding:8px 10px; text-align:right; font-weight:700; color:${isReceipt ? 'var(--receipt-color)' : 'var(--payment-color)'};">₹${Number(t.amount || 0).toFixed(2)}</td>
+        <td style="padding:8px 10px; text-align:right; font-weight:700; color:${isReceipt ? 'var(--receipt-color)' : 'var(--payment-color)'};">${formatINR(toPaise(t.amount))}</td>
         <td style="padding:8px 10px; color:var(--text-muted);">${escapeHtml(t.description || '-')}</td>
       </tr>
     `;
@@ -10045,12 +10058,12 @@ function renderLedgerReport(container, fromDate, toDate) {
     let contraAcct = '';
 
     if (t.debit_account === targetAccount) {
-      drAmt = Number(t.amount || 0);
+      drAmt = toPaise(t.amount);
       contraAcct = 'To ' + (t.credit_account || 'Cash/Bank');
       runningBalance += drAmt;
       totalDebit += drAmt;
     } else {
-      crAmt = Number(t.amount || 0);
+      crAmt = toPaise(t.amount);
       contraAcct = 'By ' + (t.debit_account || 'Cash/Bank');
       runningBalance -= crAmt;
       totalCredit += crAmt;
@@ -10060,9 +10073,9 @@ function renderLedgerReport(container, fromDate, toDate) {
       <tr style="border-bottom:1px solid var(--border-color);">
         <td style="padding:8px 10px; font-weight:600;">${formatDateIndian(t.txn_date)}</td>
         <td style="padding:8px 10px; font-weight:600; color:var(--text-main);">${escapeHtml(contraAcct)}</td>
-        <td style="padding:8px 10px; text-align:right; color:var(--receipt-color);">${drAmt > 0 ? '₹' + drAmt.toFixed(2) : '-'}</td>
-        <td style="padding:8px 10px; text-align:right; color:var(--payment-color);">${crAmt > 0 ? '₹' + crAmt.toFixed(2) : '-'}</td>
-        <td style="padding:8px 10px; text-align:right; font-weight:700; color:${runningBalance >= 0 ? 'var(--net-positive)' : 'var(--payment-color)'};">₹${runningBalance.toFixed(2)}</td>
+        <td style="padding:8px 10px; text-align:right; color:var(--receipt-color);">${drAmt > 0 ? formatINR(drAmt) : '-'}</td>
+        <td style="padding:8px 10px; text-align:right; color:var(--payment-color);">${crAmt > 0 ? formatINR(crAmt) : '-'}</td>
+        <td style="padding:8px 10px; text-align:right; font-weight:700; color:${runningBalance >= 0 ? 'var(--net-positive)' : 'var(--payment-color)'};">${formatINR(runningBalance)}</td>
         <td style="padding:8px 10px; color:var(--text-muted);">${escapeHtml(t.description || '-')}</td>
       </tr>
     `;
@@ -10071,9 +10084,9 @@ function renderLedgerReport(container, fromDate, toDate) {
   html += `
       <tr style="background:var(--bg-tertiary); font-weight:700; border-top:2px solid var(--border-color);">
         <td colspan="2" style="padding:10px;">TOTALS & CLOSING BALANCE</td>
-        <td style="padding:10px; text-align:right; color:var(--receipt-color);">Dr ₹${totalDebit.toFixed(2)}</td>
-        <td style="padding:10px; text-align:right; color:var(--payment-color);">Cr ₹${totalCredit.toFixed(2)}</td>
-        <td style="padding:10px; text-align:right; color:var(--net-positive);">₹${runningBalance.toFixed(2)}</td>
+        <td style="padding:10px; text-align:right; color:var(--receipt-color);">Dr ${formatINR(totalDebit)}</td>
+        <td style="padding:10px; text-align:right; color:var(--payment-color);">Cr ${formatINR(totalCredit)}</td>
+        <td style="padding:10px; text-align:right; color:var(--net-positive);">${formatINR(runningBalance)}</td>
         <td style="padding:10px;"></td>
       </tr>
     </tbody></table>
@@ -10165,7 +10178,7 @@ function renderTicketCostReport(container, fromDate, toDate) {
           // 1. ONWARD TICKET
           if (tInfo.onward && tInfo.onward.enabled) {
             const o = tInfo.onward;
-            const amt = Number(o.amount || 0);
+            const amt = toPaise(o.amount);
             const depDate = o.fromDate || s.schedule_date;
             const arrDate = o.toDate || depDate;
 
@@ -10196,7 +10209,7 @@ function renderTicketCostReport(container, fromDate, toDate) {
           // 2. RETURN TICKET
           if (tInfo.return && tInfo.return.enabled) {
             const r = tInfo.return;
-            const amt = Number(r.amount || 0);
+            const amt = toPaise(r.amount);
             const depDate = r.fromDate || s.schedule_date;
             const arrDate = r.toDate || depDate;
 
@@ -10255,9 +10268,9 @@ function renderTicketCostReport(container, fromDate, toDate) {
     <div style="margin-bottom:14px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
       <h4 style="margin:0; font-size:1rem; color:var(--text-main);"><i class="fa-solid fa-ticket" style="color:#8b5cf6;"></i> Ticket Cost & Travel Expenses (${formatDateIndian(fromDate)} to ${formatDateIndian(toDate)})</h4>
       <div style="font-size:0.85rem; display:flex; gap:12px;">
-        <span>Reimbursable: <strong style="color:var(--receipt-color);">₹${totalReimbursable.toFixed(2)}</strong></span>
-        <span>Self-Paid: <strong style="color:var(--badge-amber-text);">₹${totalSelf.toFixed(2)}</strong></span>
-        <span>Grand Total: <strong style="color:var(--net-positive);">₹${grandTotal.toFixed(2)}</strong></span>
+        <span>Reimbursable: <strong style="color:var(--receipt-color);">${formatINR(totalReimbursable)}</strong></span>
+        <span>Self-Paid: <strong style="color:var(--badge-amber-text);">${formatINR(totalSelf)}</strong></span>
+        <span>Grand Total: <strong style="color:var(--net-positive);">${formatINR(grandTotal)}</strong></span>
       </div>
     </div>
     <div style="overflow-x:auto;">
@@ -10290,7 +10303,7 @@ function renderTicketCostReport(container, fromDate, toDate) {
         <td style="padding:8px 10px; font-weight:600; color:var(--text-main);">${routeStr}</td>
         <td style="padding:8px 10px; color:var(--text-muted);">${modeStr}</td>
         <td style="padding:8px 10px;">${pnrBadge}</td>
-        <td style="padding:8px 10px; text-align:right; font-weight:700; color:var(--net-positive);">₹${e.amount.toFixed(2)}</td>
+        <td style="padding:8px 10px; text-align:right; font-weight:700; color:var(--net-positive);">${formatINR(e.amount)}</td>
         <td style="padding:8px 10px; text-align:center;">
           ${e.isReimbursable ? '<span style="color:var(--receipt-color); background:var(--badge-green-bg); border:1px solid var(--badge-green-border); padding:2px 8px; border-radius:4px; font-weight:600;">🟢 Reimbursable</span>' : '<span style="color:var(--text-muted); background:var(--bg-tertiary); padding:2px 8px; border-radius:4px;">⚪ Self-Paid</span>'}
         </td>
@@ -10303,10 +10316,10 @@ function renderTicketCostReport(container, fromDate, toDate) {
         <tfoot style="background:var(--bg-tertiary); font-weight:700; border-top:2px solid var(--border-color);">
           <tr>
             <td colspan="5" style="padding:10px; text-align:right;">TOTAL EXPENDITURE SUMMARY</td>
-            <td style="padding:10px; text-align:right; color:var(--net-positive); font-size:0.95rem;">₹${grandTotal.toFixed(2)}</td>
+            <td style="padding:10px; text-align:right; color:var(--net-positive); font-size:0.95rem;">${formatINR(grandTotal)}</td>
             <td style="padding:10px; text-align:center; font-size:0.8rem;">
-              <span style="color:var(--receipt-color); font-weight:600;">Reimbursable: ₹${totalReimbursable.toFixed(2)}</span><br>
-              <span style="color:var(--badge-amber-text); font-weight:600;">Self-Paid: ₹${totalSelf.toFixed(2)}</span>
+              <span style="color:var(--receipt-color); font-weight:600;">Reimbursable: ${formatINR(totalReimbursable)}</span><br>
+              <span style="color:var(--badge-amber-text); font-weight:600;">Self-Paid: ${formatINR(totalSelf)}</span>
             </td>
           </tr>
         </tfoot>
@@ -10439,7 +10452,7 @@ async function renderTicketClaimReport(container, fromDate, toDate) {
           // 1. ONWARD TICKET
           if (tInfo.onward && tInfo.onward.enabled) {
             const o = tInfo.onward;
-            const amt = Number(o.amount || 0);
+            const amt = toPaise(o.amount);
             const depDate = o.fromDate || s.schedule_date;
             const arrDate = o.toDate || depDate;
 
@@ -10473,7 +10486,7 @@ async function renderTicketClaimReport(container, fromDate, toDate) {
           // 2. RETURN TICKET
           if (tInfo.return && tInfo.return.enabled) {
             const r = tInfo.return;
-            const amt = Number(r.amount || 0);
+            const amt = toPaise(r.amount);
             const depDate = r.fromDate || s.schedule_date;
             const arrDate = r.toDate || depDate;
 
@@ -10582,7 +10595,7 @@ async function renderTicketClaimReport(container, fromDate, toDate) {
             </div>
           </div>
           <div style="text-align:right;">
-            <strong style="color:var(--net-positive);">₹${e.amount.toFixed(2)}</strong>
+            <strong style="color:var(--net-positive);">${formatINR(e.amount)}</strong>
             <div style="font-size:0.7rem; color:${e.isReimbursable ? 'var(--receipt-color)' : 'var(--text-muted)'};">${e.isReimbursable ? '🟢 Reimbursable' : '⚪ Self'}</div>
           </div>
         </label>
@@ -10608,7 +10621,7 @@ async function renderTicketClaimReport(container, fromDate, toDate) {
         <!-- Summary Bar -->
         <div style="display:flex; justify-content:space-between; align-items:center; background:#f8fafc; padding:10px 14px; border-radius:6px; border:1px solid #e2e8f0; margin-bottom:16px; font-size:0.88rem;">
           <div>Total Selected Tickets: <strong>${selectedTickets.length}</strong></div>
-          <div>Total Reimbursement Claimed: <strong style="font-size:1.1rem; color:#2563eb;">₹${claimTotal.toFixed(2)}</strong></div>
+          <div>Total Reimbursement Claimed: <strong style="font-size:1.1rem; color:#2563eb;">${formatINR(claimTotal)}</strong></div>
         </div>
     `;
 
@@ -10654,7 +10667,7 @@ async function renderTicketClaimReport(container, fromDate, toDate) {
             <td style="padding:8px; color:#334155;">${escapeHtml(e.mode)}${e.details ? ' (' + escapeHtml(e.details) + ')' : ''}</td>
             <td style="padding:8px;"><code style="background:#f1f5f9; padding:2px 6px; border-radius:3px; font-size:0.8rem; color:#0f172a; font-weight:600;">${escapeHtml(e.pnr || '-')}</code></td>
             <td style="padding:8px; text-align:center; font-size:0.78rem; font-weight:600; color:${hasAtt ? '#0284c7' : '#94a3b8'};">${hasAtt ? '📎 ' + annexureLabel : 'No Attachment'}</td>
-            <td style="padding:8px; text-align:right; font-weight:700; color:#0f172a;">₹${e.amount.toFixed(2)}</td>
+            <td style="padding:8px; text-align:right; font-weight:700; color:#0f172a;">${formatINR(e.amount)}</td>
           </tr>
         `;
       });
@@ -10664,7 +10677,7 @@ async function renderTicketClaimReport(container, fromDate, toDate) {
           <tfoot style="background:#f8fafc; font-weight:700; border-top:2px solid #0f172a;">
             <tr>
               <td colspan="6" style="padding:10px; text-align:right; text-transform:uppercase;">Total Amount Claimed:</td>
-              <td style="padding:10px; text-align:right; color:#2563eb; font-size:1.05rem;">₹${claimTotal.toFixed(2)}</td>
+              <td style="padding:10px; text-align:right; color:#2563eb; font-size:1.05rem;">${formatINR(claimTotal)}</td>
             </tr>
           </tfoot>
         </table>
@@ -10711,7 +10724,7 @@ async function renderTicketClaimReport(container, fromDate, toDate) {
                 </div>
                 
                 <div style="font-size:0.82rem; color:#334155; margin-bottom:12px; text-align:left;">
-                  Mode/Train: <strong>${escapeHtml(e.mode)} ${e.details ? '(' + escapeHtml(e.details) + ')' : ''}</strong> | Ticket Cost: <strong style="color:#2563eb;">₹${e.amount.toFixed(2)}</strong> | File: <em>${escapeHtml(att.name || att.filename || 'Ticket Document')}</em>
+                  Mode/Train: <strong>${escapeHtml(e.mode)} ${e.details ? '(' + escapeHtml(e.details) + ')' : ''}</strong> | Ticket Cost: <strong style="color:#2563eb;">${formatINR(e.amount)}</strong> | File: <em>${escapeHtml(att.name || att.filename || 'Ticket Document')}</em>
                 </div>
           `;
 

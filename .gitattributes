@@ -1,0 +1,11 @@
+* text=auto eol=lf
+
+*.png   binary
+*.wasm  binary
+*.woff2 binary
+
+# Vendored minified libraries: exclude from diffs and language stats
+*.min.js         linguist-vendored -diff
+*.min.css        linguist-vendored -diff
+sql-wasm.js      linguist-vendored -diff
+vendor/**        linguist-vendored

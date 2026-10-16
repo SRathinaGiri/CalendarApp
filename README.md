@@ -1,15 +1,16 @@
-# Calendar App (Offline PWA) v1.3.5
+# Calendar App (Offline PWA) v1.3.6
 
 A standalone, local-first Personal Calendar & Daily Organizer Progressive Web App (PWA) powered by client-side **SQLite (WASM)** and **IndexedDB** local storage with **AES-256-GCM hardware-accelerated encryption at rest for both database and file attachments**.
 
-> **Production PWA (v1.3.5)**  
+> **Production PWA (v1.3.6)**  
 > Fully client-side, local-first calendar with ACID SQLite storage, Web Crypto AES-256-GCM encryption at rest for database and attachments, OWASP-compliant 600,000-iteration PBKDF2 key derivation with versioned headers (`SRGE2`), non-extractable in-memory runtime keys, dual-tier WebAuthn biometrics (Hardware PRF `SRGBIO1` & Platform User Verification `SRGBIO2` with mobile gesture tap-to-scan hero card and passkey autofill), virtual keyboard suppression on biometric lock screens, 5-minute inactivity auto-lock and progressive PIN attempt throttling, fail-closed persistence guarantees, strict Content Security Policy (CSP), safe Emergency Recovery Kit, forgot PIN reset loop, enforced 6+ character PIN/passphrase protection, SHA-256 corruption-verified backup archives, optional AES-256 encrypted backups, atomic single-transaction restore & re-encryption including the recovery vault, robust offline attachment encryption migration, and 100% offline capabilities.
 
 ---
 
 ## 🌟 Key Features
 
-- **Local-First & Offline Architecture:** Calendar data and attachments are stored exclusively on your device in IndexedDB. All assets including SQLite WASM (`sql.js`), PDF.js, and workers are bundled locally so core features work 100% offline once installed or cached.
+- **Local-First & Offline Architecture:** Calendar data and attachments are stored exclusively on your device in IndexedDB. All assets — SQLite WASM (`sql.js`), PDF.js and its worker, JSZip, pako, Font Awesome icons and the Plus Jakarta Sans font — are bundled locally, so the app makes **zero third-party network requests** and works 100% offline once installed or cached.
+- **Accurate Money Totals:** Receipts, payments, ledgers and travel/claim totals are summed in integer paise (no floating-point drift) and displayed with Indian digit grouping (₹1,23,456.78).
 - **Embedded SQLite WASM Engine (`sql.js`):** Embedded relational database providing SQL queries, atomic transaction guarantees on schedule saves, and direct `.db` file exports.
 - **Hardware-Accelerated AES-256-GCM Database & Attachment Encryption at Rest:**
   - Transparently encrypts the SQLite database, all historical snapshots, and all ticket attachments stored in browser IndexedDB with authenticated **AES-256-GCM**.
@@ -36,7 +37,7 @@ A standalone, local-first Personal Calendar & Daily Organizer Progressive Web Ap
 - **Local Snapshots:** Save named encrypted database safety snapshots in browser storage anytime. When changing PIN, all past snapshots and attachments are atomically re-encrypted under the new key with full pre-commit verification.
 - **PWA (Progressive Web App):**
   - Installable directly to home screen or desktop from Chrome, Edge, Safari, or Brave.
-  - Version-scoped Service Worker cache cleanup (`v1.3.5`).
+  - Version-scoped Service Worker cache cleanup (`v1.3.6`).
   - In-app install and check for updates buttons.
 - **Comprehensive Calendar Views:**
   - **Calendar View:** 7-column month grid. In portrait mode, uniform square day cells with center indicator badges and a bottom day schedule agenda panel maximize usability. Long-pressing any day initiates multi-date selection for batch scheduling with single-tap date addition/removal. In landscape mode, full titles, times, and notes are shown.
@@ -133,6 +134,45 @@ Because Calendar App is a single-device, local-first application, all your data 
 
 ---
 
+## 🕵️ Privacy
+
+- No accounts, no analytics, no telemetry, no ads, no cookies.
+- The app never sends your calendar, notes, transactions or attachments anywhere. The only outbound actions are ones you trigger yourself (e.g. the optional *Email to Myself* recovery link opens your own mail client).
+- You can confirm this: open DevTools → **Network** while using the app — every request is to the app's own origin.
+
+## ⚠️ Disclaimer & Limitations
+
+- The **daily finance / receipts & payments** module is a personal record-keeping aid. It is **not** accounting, bookkeeping or tax software, and its reports are not intended to be filed with or certified to any authority. Verify figures independently before relying on them.
+- The travel **reimbursement claim statement** is a convenience printout; check it against your actual tickets and your organisation's rules.
+- Data lives only in this browser profile. Clearing site data, uninstalling the browser or losing the device deletes it — keep regular full backups.
+- If you forget your PIN **and** lose the recovery key, your data cannot be recovered. There is no server-side reset.
+- See [SECURITY.md](SECURITY.md) for the full threat model and how to report a vulnerability.
+
+---
+
+## 🧰 Project Structure
+
+| Path | Purpose |
+|---|---|
+| `index.html` | App shell, markup and Content Security Policy |
+| `app.js` | All application logic (database, encryption, views, reports) |
+| `styles.css` | Styles (dark/light themes, print layouts) |
+| `sw.js` | Service worker — offline cache (`CACHE_NAME` must be bumped on every release) |
+| `manifest.json`, `icon-*.png` | PWA manifest and icons |
+| `taxonomy_seed.js` | Default tag categories/tags for a fresh database (generic, no personal data) |
+| `sql-wasm.*`, `pdf*.js`, `jszip.min.js`, `pako.min.js`, `vendor/` | Bundled third-party libraries, fonts and icons — see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) |
+
+There is no build step: edit the files and reload. When releasing, update `APP_VERSION` in `app.js`, the version badges in `index.html`, `CACHE_NAME` in `sw.js`, and [CHANGELOG.md](CHANGELOG.md).
+
+## 🤝 Contributing
+
+Issues and pull requests are welcome. Please:
+- Never include real personal data (names, schedules, PNRs, amounts, PAN/Aadhaar, bank details) in issues, screenshots or test files — use obviously synthetic data.
+- Keep the app dependency-free at runtime: no CDN links, no external `fetch()`; bundle any new library locally and add it to `THIRD_PARTY_NOTICES.md` and `sw.js`.
+- Report security issues privately as described in [SECURITY.md](SECURITY.md).
+
+---
+
 ## 📄 License
 
-This project is licensed under the [MIT License](LICENSE) - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the [MIT License](LICENSE) - see the [LICENSE](LICENSE) file for details. Bundled third-party components retain their own licences — see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

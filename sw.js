@@ -1,4 +1,4 @@
-const CACHE_NAME = 'calendar-app-v1.3.5';
+const CACHE_NAME = 'calendar-app-v1.3.6';
 const CORE_ASSETS = [
   './',
   './index.html',
@@ -13,7 +13,13 @@ const CORE_ASSETS = [
   './sql-wasm.wasm',
   './pdf.min.js',
   './pdf.worker.min.js',
-  './taxonomy_seed.js'
+  './taxonomy_seed.js',
+  './vendor/fontawesome/css/fontawesome.min.css',
+  './vendor/fontawesome/css/solid.min.css',
+  './vendor/fontawesome/css/regular.min.css',
+  './vendor/fontawesome/webfonts/fa-solid-900.woff2',
+  './vendor/fontawesome/webfonts/fa-regular-400.woff2',
+  './vendor/fonts/plus-jakarta-sans-latin-wght.woff2'
 ];
 
 self.addEventListener('install', (e) => {
@@ -52,6 +58,8 @@ self.addEventListener('message', (event) => {
 self.addEventListener('fetch', (e) => {
   // Ignore chrome-extension or unsupported schemes
   if (!e.request.url.startsWith('http')) return;
+  // Only same-origin GETs are cached: the app makes no third-party requests, and the Cache API rejects non-GET.
+  if (e.request.method !== 'GET' || new URL(e.request.url).origin !== self.location.origin) return;
 
   e.respondWith(
     caches.match(e.request).then((cachedResponse) => {
@@ -59,7 +67,7 @@ self.addEventListener('fetch', (e) => {
         return cachedResponse;
       }
       return fetch(e.request).then((networkResponse) => {
-        if (networkResponse && (networkResponse.status === 200 || networkResponse.type === 'opaque')) {
+        if (networkResponse && networkResponse.status === 200) {
           const responseToCache = networkResponse.clone();
           caches.open(CACHE_NAME).then((cache) => {
             cache.put(e.request, responseToCache);
