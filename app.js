@@ -112,7 +112,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.3.2';
+const APP_VERSION = 'v1.3.3';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -1609,16 +1609,23 @@ async function importFullBackupZip(file) {
     let backupSalt = null;
 
     if (isEncryptedDbBytes(dbBinary)) {
-      const saltStart = CRYPTO_MAGIC.length;
-      backupSalt = dbBinary.slice(saltStart, saltStart + 16);
-      const pin = prompt('🔒 The backup database is encrypted with AES-256.\n\nPlease enter the Security PIN used to encrypt this backup:');
+      const parsedHeader = parseEncryptedDbHeader(dbBinary);
+      backupSalt = parsedHeader ? parsedHeader.salt : dbBinary.slice(CRYPTO_MAGIC.length, CRYPTO_MAGIC.length + 16);
+      const backupIterations = parsedHeader ? parsedHeader.iterations : PBKDF2_ITERATIONS;
+      const pin = await requestPinPromptModal({
+        title: 'Encrypted Backup Restore',
+        message: 'This backup database is encrypted with AES-256. Enter the Security PIN used to encrypt this backup:',
+        placeholder: 'Enter Backup PIN',
+        confirmText: 'Decrypt & Restore',
+        iconClass: 'fa-solid fa-file-shield'
+      });
       if (!pin) {
         if (loadingToast) dismissToast(loadingToast);
         showToast('Restore cancelled: Security PIN is required for encrypted backup.', 'warning');
         return;
       }
       try {
-        backupKey = await deriveKeyFromPin(pin, backupSalt);
+        backupKey = await deriveKeyFromPin(pin, backupSalt, backupIterations, false);
         dbBinary = await decryptDatabaseBytes(dbBinary, backupKey, false);
       } catch(decErr) {
         if (loadingToast) dismissToast(loadingToast);
@@ -1659,10 +1666,16 @@ async function importFullBackupZip(file) {
       let dataUrl = null;
       if (isEncryptedAttachmentBytes(fileBytes)) {
         if (!backupKey) {
-          const pin = prompt(`🔒 Attachment "${filename}" is encrypted. Enter Security PIN:`);
+          const pin = await requestPinPromptModal({
+            title: 'Encrypted Attachment',
+            message: `Attachment "${filename}" is encrypted with AES-256. Enter the Security PIN to decrypt it:`,
+            placeholder: 'Enter Security PIN',
+            confirmText: 'Decrypt',
+            iconClass: 'fa-solid fa-file-shield'
+          });
           if (!pin) throw new Error('PIN required to decrypt attachments.');
           const salt = getStoredCryptoSalt() || crypto.getRandomValues(new Uint8Array(16));
-          backupKey = await deriveKeyFromPin(pin, salt);
+          backupKey = await deriveKeyFromPin(pin, salt, PBKDF2_ITERATIONS, false);
         }
         dataUrl = await decryptAttachmentData(fileBytes, backupKey);
       } else {
@@ -3147,7 +3160,13 @@ async function registerBiometricCredential() {
     return false;
   }
 
-  const enteredPin = prompt('Enter your Security PIN to link hardware-bound biometric unlock:');
+  const enteredPin = await requestPinPromptModal({
+    title: 'Link Biometric Unlock',
+    message: 'Enter your Security PIN to link hardware-bound biometric authentication (WebAuthn PRF):',
+    placeholder: 'Enter Security PIN',
+    confirmText: 'Verify & Link',
+    iconClass: 'fa-solid fa-fingerprint'
+  });
   if (!enteredPin) return false;
 
   const dbBytes = cachedEncryptedDbBytes || await loadDbFromIndexedDB();
@@ -4462,6 +4481,85 @@ async function atomicReencryptAllData(oldKey, newKey, newSalt, recoveryKey = nul
     stagedVaultBytes,
     stagedAuthTokenBytes
   };
+}
+
+/* ==========================================================================
+   SECURE PIN PROMPT MODAL (MASKED PASSWORD INPUT DIALOG)
+   ========================================================================== */
+let activePinPromptResolver = null;
+
+function requestPinPromptModal({
+  title = 'Enter Security PIN',
+  message = 'Please enter your Security PIN to continue.',
+  placeholder = 'Enter Security PIN',
+  confirmText = 'Confirm',
+  iconClass = 'fa-solid fa-shield-halved'
+} = {}) {
+  return new Promise((resolve) => {
+    // If there's an existing prompt open, cancel it first
+    if (activePinPromptResolver) {
+      activePinPromptResolver(null);
+      activePinPromptResolver = null;
+    }
+
+    const modal = document.getElementById('securePinPromptModal');
+    const titleEl = document.getElementById('securePinPromptTitle');
+    const msgEl = document.getElementById('securePinPromptMessage');
+    const inputEl = document.getElementById('securePinPromptInput');
+    const submitTextEl = document.getElementById('securePinPromptSubmitText');
+    const iconEl = document.getElementById('securePinPromptIcon');
+    const errEl = document.getElementById('securePinPromptError');
+
+    if (!modal || !inputEl) {
+      const fallback = prompt(`${title}\n\n${message}`);
+      return resolve(fallback);
+    }
+
+    if (titleEl) titleEl.textContent = title;
+    if (msgEl) msgEl.textContent = message;
+    if (inputEl) {
+      inputEl.placeholder = placeholder;
+      inputEl.value = '';
+      inputEl.type = 'password';
+    }
+    if (submitTextEl) submitTextEl.textContent = confirmText;
+    if (iconEl && iconClass) {
+      iconEl.className = iconClass;
+    }
+    if (errEl) {
+      errEl.textContent = '';
+      errEl.classList.add('hidden');
+    }
+
+    const toggleBtn = document.getElementById('securePinPromptToggleVisibility');
+    if (toggleBtn) {
+      toggleBtn.innerHTML = '<i class="fa-solid fa-eye"></i>';
+    }
+
+    activePinPromptResolver = resolve;
+    modal.classList.remove('hidden');
+
+    setTimeout(() => {
+      inputEl.focus();
+    }, 80);
+  });
+}
+
+function closeSecurePinPromptModal(result = null) {
+  const modal = document.getElementById('securePinPromptModal');
+  if (modal) {
+    modal.classList.add('hidden');
+  }
+  const inputEl = document.getElementById('securePinPromptInput');
+  if (inputEl) {
+    inputEl.value = '';
+    inputEl.type = 'password';
+  }
+  if (activePinPromptResolver) {
+    const res = activePinPromptResolver;
+    activePinPromptResolver = null;
+    res(result);
+  }
 }
 
 /* ==========================================================================
@@ -8369,14 +8467,21 @@ function importSqliteFile(e) {
       let backupSalt = null;
 
       if (isEncryptedDbBytes(u8)) {
-        const saltStart = CRYPTO_MAGIC.length;
-        backupSalt = u8.slice(saltStart, saltStart + 16);
-        const pin = prompt('🔒 This backup file is encrypted with AES-256.\n\nPlease enter the Security PIN used to create it:');
+        const parsedHeader = parseEncryptedDbHeader(u8);
+        backupSalt = parsedHeader ? parsedHeader.salt : u8.slice(CRYPTO_MAGIC.length, CRYPTO_MAGIC.length + 16);
+        const backupIterations = parsedHeader ? parsedHeader.iterations : PBKDF2_ITERATIONS;
+        const pin = await requestPinPromptModal({
+          title: 'Encrypted Database Import',
+          message: 'This database backup file is encrypted with AES-256. Enter the Security PIN used to create it:',
+          placeholder: 'Enter Backup PIN',
+          confirmText: 'Decrypt & Import',
+          iconClass: 'fa-solid fa-file-shield'
+        });
         if (!pin) {
           showToast('Import cancelled: PIN required for encrypted backup.', 'warning');
           return;
         }
-        backupKey = await deriveKeyFromPin(pin, backupSalt);
+        backupKey = await deriveKeyFromPin(pin, backupSalt, backupIterations, false);
         u8 = await decryptDatabaseBytes(u8, backupKey, false);
       }
 
@@ -8533,7 +8638,13 @@ function setupUIEventListeners() {
         showToast('Please set up a Security PIN first to enable encryption and recovery.', 'warning', 4000);
         return;
       }
-      const enteredPin = prompt('To view or generate a fresh Emergency Recovery Key, enter your Security PIN:');
+      const enteredPin = await requestPinPromptModal({
+        title: 'Emergency Recovery Key',
+        message: 'To view or generate a fresh Emergency Recovery Key, enter your Security PIN:',
+        placeholder: 'Enter Security PIN',
+        confirmText: 'Verify PIN',
+        iconClass: 'fa-solid fa-life-ring'
+      });
       if (!enteredPin || !enteredPin.trim()) return;
       const salt = getStoredCryptoSalt();
       if (!salt) {
@@ -8832,6 +8943,52 @@ function setupUIEventListeners() {
       if (e.target === recoveryKitModal) closeRecoveryKitModal();
     });
   }
+
+  // Secure PIN Prompt Modal Controls
+  const securePinPromptForm = document.getElementById('securePinPromptForm');
+  if (securePinPromptForm) {
+    securePinPromptForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const val = (document.getElementById('securePinPromptInput')?.value || '').trim();
+      closeSecurePinPromptModal(val || null);
+    });
+  }
+
+  const cancelSecurePinPromptBtn = document.getElementById('cancelSecurePinPromptBtn');
+  if (cancelSecurePinPromptBtn) {
+    cancelSecurePinPromptBtn.addEventListener('click', () => {
+      closeSecurePinPromptModal(null);
+    });
+  }
+
+  const securePinPromptToggleVisibility = document.getElementById('securePinPromptToggleVisibility');
+  if (securePinPromptToggleVisibility) {
+    securePinPromptToggleVisibility.addEventListener('click', () => {
+      const inputEl = document.getElementById('securePinPromptInput');
+      if (!inputEl) return;
+      const isPassword = inputEl.type === 'password';
+      inputEl.type = isPassword ? 'text' : 'password';
+      securePinPromptToggleVisibility.innerHTML = isPassword
+        ? '<i class="fa-solid fa-eye-slash"></i>'
+        : '<i class="fa-solid fa-eye"></i>';
+    });
+  }
+
+  const securePinPromptModal = document.getElementById('securePinPromptModal');
+  if (securePinPromptModal) {
+    securePinPromptModal.addEventListener('click', (e) => {
+      if (e.target === securePinPromptModal) closeSecurePinPromptModal(null);
+    });
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      const modal = document.getElementById('securePinPromptModal');
+      if (modal && !modal.classList.contains('hidden')) {
+        closeSecurePinPromptModal(null);
+      }
+    }
+  });
 
   // Header Note & Finance Buttons
   const headerNoteBtn = document.getElementById('headerNoteBtn');
