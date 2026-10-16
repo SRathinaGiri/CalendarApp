@@ -232,20 +232,35 @@ async function handleInstallOrUpdateClick() {
     return;
   }
 
-  // If already installed or no prompt, perform a manual update check
-  if (swRegistration) {
-    showToast('Checking for Calendar App updates...', 'info', 2500);
-    try {
-      await swRegistration.update();
-      setTimeout(() => {
-        if (!updateWaiting) {
-          showToast(`Calendar App is up to date (${APP_VERSION})`, 'success', 3000);
+  // Active check for updates directly from network bypassing cache
+  showToast('Checking for Calendar App updates...', 'info', 2500);
+  try {
+    const res = await fetch(`./sw.js?_check=${Date.now()}`, { cache: 'no-store' });
+    if (res.ok) {
+      const text = await res.text();
+      const match = text.match(/calendar-app-(v[\d.]+)/);
+      const remoteVersion = match ? match[1] : null;
+
+      if (remoteVersion && remoteVersion !== APP_VERSION) {
+        showToast(`New version ${remoteVersion} found! Updating now...`, 'info', 2000);
+        if ('caches' in window) {
+          const names = await caches.keys();
+          await Promise.all(names.map(name => caches.delete(name)));
         }
-      }, 1200);
-    } catch (err) {
-      showToast(`Calendar App is running ${APP_VERSION}`, 'info', 3000);
+        if (swRegistration) {
+          try { await swRegistration.update(); } catch(e) {}
+        }
+        setTimeout(() => {
+          window.location.reload(true);
+        }, 600);
+        return;
+      }
     }
-  } else {
+    if (swRegistration) {
+      await swRegistration.update();
+    }
+    showToast(`Calendar App is up to date (${APP_VERSION})`, 'success', 3000);
+  } catch (err) {
     showToast(`Calendar App is running ${APP_VERSION}`, 'info', 3000);
   }
 }
