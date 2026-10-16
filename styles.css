@@ -312,6 +312,32 @@ body {
   50% { box-shadow: 0 0 0 6px rgba(245, 158, 11, 0); }
 }
 
+@keyframes biometricPulse {
+  0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.6); }
+  70% { box-shadow: 0 0 0 14px rgba(16, 185, 129, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+}
+
+.biometric-pulsing {
+  animation: biometricPulse 2s infinite cubic-bezier(0.4, 0, 0.6, 1);
+}
+
+#biometricHeroBox {
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#biometricHeroBox:hover, #biometricHeroBox:focus-visible {
+  border-color: #10b981;
+  background: rgba(16, 185, 129, 0.12);
+  outline: none;
+}
+
+#biometricHeroBox:active {
+  transform: scale(0.98);
+}
+
+
 .brand {
   display: flex;
   align-items: center;

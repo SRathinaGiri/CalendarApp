@@ -112,7 +112,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.3.4';
+const APP_VERSION = 'v1.3.5';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -3115,6 +3115,7 @@ async function removeBiometricEncryptionKey() {
   localStorage.removeItem('srg_biometric_cred_id');
   localStorage.removeItem('srg_bio_salt');
   localStorage.removeItem('srg_biometric_mode');
+  localStorage.removeItem('srg_bio_token_b64');
   try {
     const idb = await openSRGDatabase();
     const tx = idb.transaction('files', 'readwrite');
@@ -3178,16 +3179,43 @@ async function isBiometricAvailable() {
   return false;
 }
 
+function updateBiometricButtonState(isAuthenticating) {
+  const heroBox = document.getElementById('biometricHeroBox');
+  const heroIcon = document.getElementById('biometricHeroIcon');
+  const heroTitle = document.getElementById('biometricHeroTitle');
+  const heroSubtitle = document.getElementById('biometricHeroSubtitle');
+  const iconRing = document.getElementById('biometricIconRing');
+
+  if (isAuthenticating) {
+    if (heroIcon) heroIcon.className = 'fa-solid fa-spinner fa-spin';
+    if (heroTitle) heroTitle.textContent = 'Awaiting Fingerprint...';
+    if (heroSubtitle) heroSubtitle.textContent = 'Touch your fingerprint sensor to verify identity';
+    if (iconRing) iconRing.classList.remove('biometric-pulsing');
+    if (heroBox) heroBox.style.borderColor = '#10b981';
+  } else {
+    if (heroIcon) heroIcon.className = 'fa-solid fa-fingerprint';
+    if (heroTitle) heroTitle.textContent = 'Tap to Scan Fingerprint';
+    if (heroSubtitle) heroSubtitle.textContent = 'Touch sensor to unlock with biometrics';
+    if (iconRing) iconRing.classList.add('biometric-pulsing');
+    if (heroBox) heroBox.style.borderColor = 'rgba(16, 185, 129, 0.45)';
+  }
+}
+
 function updateBiometricUI() {
   const bioContainer = document.getElementById('biometricUnlockContainer');
   const bioPrompt = document.getElementById('enableBiometricPrompt');
+  const defaultIcon = document.getElementById('appLockDefaultIcon');
   const drawerBioText = document.getElementById('drawerBioText') || document.getElementById('drawerBiometricText');
   const isEnabled = localStorage.getItem('srg_biometric_enabled') === 'true';
 
+  if (bioContainer) {
+    bioContainer.classList.toggle('hidden', !isEnabled);
+  }
+  if (defaultIcon) {
+    defaultIcon.classList.toggle('hidden', isEnabled);
+  }
+
   isBiometricAvailable().then(available => {
-    if (bioContainer) {
-      bioContainer.classList.toggle('hidden', !(available && isEnabled));
-    }
     if (bioPrompt) {
       bioPrompt.classList.toggle('hidden', !(available && !isEnabled));
     }
@@ -3337,14 +3365,19 @@ async function registerBiometricCredential() {
       localStorage.setItem('srg_biometric_mode', 'uv');
     }
 
-    // Save hardware-wrapped token in IndexedDB 'files' store
-    const idb = await openSRGDatabase();
-    await new Promise((resolve, reject) => {
-      const tx = idb.transaction('files', 'readwrite');
-      tx.objectStore('files').put(bioToken, 'srg_bio_key_token');
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
+    // Save hardware-wrapped token in IndexedDB 'files' store and localStorage backup
+    try {
+      localStorage.setItem('srg_bio_token_b64', bufferToBase64(bioToken));
+    } catch(e) {}
+    try {
+      const idb = await openSRGDatabase();
+      await new Promise((resolve, reject) => {
+        const tx = idb.transaction('files', 'readwrite');
+        tx.objectStore('files').put(bioToken, 'srg_bio_key_token');
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    } catch(e) {}
 
     const credIdBase64 = bufferToBase64(new Uint8Array(cred.rawId));
     localStorage.setItem('srg_biometric_cred_id', credIdBase64);
@@ -3363,7 +3396,10 @@ async function registerBiometricCredential() {
   return false;
 }
 
+let isBiometricAuthenticating = false;
+
 async function unlockAppWithBiometric(autoPrompt = false) {
+  if (isBiometricAuthenticating) return;
   const credIdBase64 = localStorage.getItem('srg_biometric_cred_id');
   if (!credIdBase64 || localStorage.getItem('srg_biometric_enabled') !== 'true') {
     if (!autoPrompt) {
@@ -3372,7 +3408,7 @@ async function unlockAppWithBiometric(autoPrompt = false) {
     return;
   }
 
-  // Load hardware-wrapped bioToken from IndexedDB
+  // Load hardware-wrapped bioToken from IndexedDB or localStorage backup
   let bioToken = null;
   try {
     const idb = await openSRGDatabase();
@@ -3386,6 +3422,15 @@ async function unlockAppWithBiometric(autoPrompt = false) {
     if (res instanceof Uint8Array) bioToken = res;
     else if (res instanceof ArrayBuffer) bioToken = new Uint8Array(res);
   } catch(e) {}
+
+  if (!bioToken) {
+    const backupB64 = localStorage.getItem('srg_bio_token_b64');
+    if (backupB64) {
+      try {
+        bioToken = base64ToBuffer(backupB64);
+      } catch(e) {}
+    }
+  }
 
   if (!bioToken || bioToken.length < 7 + 16 + 12 + 16) {
     if (!autoPrompt) {
@@ -3404,8 +3449,12 @@ async function unlockAppWithBiometric(autoPrompt = false) {
     return;
   }
 
+  isBiometricAuthenticating = true;
+  updateBiometricButtonState(true);
+
   try {
     const rawId = base64ToBuffer(credIdBase64);
+    const idBuffer = rawId.buffer.slice(rawId.byteOffset, rawId.byteOffset + rawId.byteLength);
     let decryptedMasterBuf = null;
 
     if (isPrf) {
@@ -3419,7 +3468,7 @@ async function unlockAppWithBiometric(autoPrompt = false) {
         publicKey: {
           challenge: challenge,
           allowCredentials: [{
-            id: rawId,
+            id: idBuffer,
             type: 'public-key'
           }],
           userVerification: 'required',
@@ -3463,7 +3512,7 @@ async function unlockAppWithBiometric(autoPrompt = false) {
         publicKey: {
           challenge: challenge,
           allowCredentials: [{
-            id: rawId,
+            id: idBuffer,
             type: 'public-key'
           }],
           userVerification: 'required',
@@ -3548,9 +3597,16 @@ async function unlockAppWithBiometric(autoPrompt = false) {
     migratePlaintextAttachmentsToEncrypted(masterKey);
   } catch(err) {
     console.warn('Biometric verification error:', err);
-    if (!autoPrompt && err.name !== 'NotAllowedError') {
-      showToast(err.message || 'Biometric verification cancelled or failed. Please enter PIN.', 'error', 4000);
+    if (!autoPrompt) {
+      if (err.name === 'NotAllowedError') {
+        showToast('Biometric scan cancelled. Tap to retry, or enter PIN.', 'info', 3500);
+      } else {
+        showToast(err.message || 'Biometric verification failed. Please enter PIN.', 'error', 4000);
+      }
     }
+  } finally {
+    isBiometricAuthenticating = false;
+    updateBiometricButtonState(false);
   }
 }
 
@@ -3593,15 +3649,23 @@ async function checkAppSecurityLock() {
   if (unlockWrap) unlockWrap.classList.remove('hidden');
   updateBiometricUI();
 
+  const isBioEnabled = localStorage.getItem('srg_biometric_enabled') === 'true';
   const keyInp = document.getElementById('appLockKeyInput');
   if (keyInp) {
     keyInp.value = '';
-    keyInp.focus();
+    // Only focus PIN input if biometrics is not enabled; prevents virtual keyboard from popping up on mobile
+    if (!isBioEnabled) {
+      keyInp.focus();
+    }
   }
 
-  // Auto-prompt biometrics if registered with hardware PRF
-  if (localStorage.getItem('srg_biometric_enabled') === 'true') {
-    setTimeout(() => unlockAppWithBiometric(true), 400);
+  // Auto-prompt biometrics if registered
+  if (isBioEnabled) {
+    setTimeout(async () => {
+      try {
+        await unlockAppWithBiometric(true);
+      } catch(e) {}
+    }, 350);
   }
 }
 
@@ -3867,7 +3931,7 @@ async function unlockAppWithKey(enteredKey) {
       isBiometricAvailable().then(available => {
         if (available) {
           setTimeout(() => {
-            if (confirm('Enable fingerprint / biometric unlock on this device with hardware key wrapping (WebAuthn PRF)?')) {
+            if (confirm('Enable fingerprint / biometric unlock on this device for instant secure access?')) {
               registerBiometricCredential();
             }
           }, 600);
@@ -3926,15 +3990,22 @@ async function lockAppSecurity() {
   }
 
   updateBiometricUI();
+  const isBioEnabled = localStorage.getItem('srg_biometric_enabled') === 'true';
   const keyInp = document.getElementById('appLockKeyInput');
   if (keyInp) {
     keyInp.value = '';
-    keyInp.focus();
+    if (!isBioEnabled) {
+      keyInp.focus();
+    }
   }
   showToast('Calendar Locked', 'info');
 
-  if (localStorage.getItem('srg_biometric_enabled') === 'true') {
-    setTimeout(() => unlockAppWithBiometric(true), 400);
+  if (isBioEnabled) {
+    setTimeout(async () => {
+      try {
+        await unlockAppWithBiometric(true);
+      } catch(e) {}
+    }, 350);
   }
 }
 
@@ -8984,6 +9055,31 @@ function setupUIEventListeners() {
   if (biometricUnlockBtn) {
     biometricUnlockBtn.addEventListener('click', () => {
       unlockAppWithBiometric(false);
+    });
+  }
+
+  const biometricHeroBox = document.getElementById('biometricHeroBox');
+  if (biometricHeroBox) {
+    biometricHeroBox.addEventListener('click', () => {
+      unlockAppWithBiometric(false);
+    });
+    biometricHeroBox.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        unlockAppWithBiometric(false);
+      }
+    });
+  }
+
+  const appLockUnlockContainer = document.getElementById('appLockUnlockContainer');
+  if (appLockUnlockContainer) {
+    appLockUnlockContainer.addEventListener('click', (e) => {
+      if (e.target.closest('#appUnlockForm') || e.target.closest('#forgotPinBtn') || e.target.closest('#enableBiometricBtn')) {
+        return;
+      }
+      if (localStorage.getItem('srg_biometric_enabled') === 'true') {
+        unlockAppWithBiometric(false);
+      }
     });
   }
 
