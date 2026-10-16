@@ -112,7 +112,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.3.3';
+const APP_VERSION = 'v1.3.4';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -3099,6 +3099,7 @@ async function removeBiometricEncryptionKey() {
   localStorage.removeItem('srg_biometric_enabled');
   localStorage.removeItem('srg_biometric_cred_id');
   localStorage.removeItem('srg_bio_salt');
+  localStorage.removeItem('srg_biometric_mode');
   try {
     const idb = await openSRGDatabase();
     const tx = idb.transaction('files', 'readwrite');
@@ -3113,9 +3114,42 @@ function isPinConfigured() {
 }
 
 /* ==========================================================================
-   BIOMETRIC AUTHENTICATION (WEBAUTHN PRF HARDWARE-BOUND KEY WRAPPING)
+   BIOMETRIC AUTHENTICATION (DUAL-TIER: WEBAUTHN PRF & PLATFORM USER VERIFICATION)
    ========================================================================== */
-const BIO_TOKEN_MAGIC = new Uint8Array([0x53, 0x52, 0x47, 0x42, 0x49, 0x4F, 0x31]); // "SRGBIO1" (7 bytes)
+const BIO_TOKEN_MAGIC_PRF = new Uint8Array([0x53, 0x52, 0x47, 0x42, 0x49, 0x4F, 0x31]); // "SRGBIO1" (7 bytes, Hardware PRF)
+const BIO_TOKEN_MAGIC_UV  = new Uint8Array([0x53, 0x52, 0x47, 0x42, 0x49, 0x4F, 0x32]); // "SRGBIO2" (7 bytes, WebAuthn User-Verified)
+const BIO_TOKEN_MAGIC = BIO_TOKEN_MAGIC_PRF; // Backwards compatibility alias
+
+function matchMagic(buffer, magic) {
+  if (!buffer || buffer.length < magic.length) return false;
+  for (let i = 0; i < magic.length; i++) {
+    if (buffer[i] !== magic[i]) return false;
+  }
+  return true;
+}
+
+async function deriveBiometricWrappingKey(rawId, salt) {
+  const rawIdBytes = rawId instanceof Uint8Array ? rawId : new Uint8Array(rawId);
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    rawIdBytes,
+    'PBKDF2',
+    false,
+    ['deriveKey']
+  );
+  return await crypto.subtle.deriveKey(
+    {
+      name: 'PBKDF2',
+      salt: salt,
+      iterations: 100000,
+      hash: 'SHA-256'
+    },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+}
 
 async function isBiometricAvailable() {
   if (window.PublicKeyCredential && 
@@ -3143,7 +3177,7 @@ function updateBiometricUI() {
       bioPrompt.classList.toggle('hidden', !(available && !isEnabled));
     }
     if (drawerBioText) {
-      drawerBioText.textContent = isEnabled ? 'Biometrics: Enabled (Hardware PRF)' : 'Enable Biometrics';
+      drawerBioText.textContent = isEnabled ? 'Biometrics: Enabled (Fingerprint / Face ID)' : 'Enable Biometrics';
     }
   });
 }
@@ -3162,7 +3196,7 @@ async function registerBiometricCredential() {
 
   const enteredPin = await requestPinPromptModal({
     title: 'Link Biometric Unlock',
-    message: 'Enter your Security PIN to link hardware-bound biometric authentication (WebAuthn PRF):',
+    message: 'Enter your Security PIN to link fingerprint / face unlock on this device:',
     placeholder: 'Enter Security PIN',
     confirmText: 'Verify & Link',
     iconClass: 'fa-solid fa-fingerprint'
@@ -3182,7 +3216,7 @@ async function registerBiometricCredential() {
 
   const rawMasterBytes = await deriveRawKeyBitsFromPin(enteredPin, salt, iterations);
 
-  const loadingToast = showToast('Scan fingerprint or face to register hardware authenticator...', 'info', 0);
+  const loadingToast = showToast('Scan fingerprint or face to register biometric unlock...', 'info', 0);
   try {
     const challenge = crypto.getRandomValues(new Uint8Array(16));
     const userId = crypto.getRandomValues(new Uint8Array(8));
@@ -3215,62 +3249,78 @@ async function registerBiometricCredential() {
 
     const extResults = cred.getClientExtensionResults ? cred.getClientExtensionResults() : {};
     const prfSupported = !!(extResults.prf && extResults.prf.enabled);
+    let bioToken = null;
 
-    if (!prfSupported) {
-      rawMasterBytes.fill(0);
-      showToast('Notice: This authenticator does not support WebAuthn PRF (hardware-bound key wrapping). For your security, unlock using your PIN.', 'warning', 7000);
-      return false;
-    }
-
-    // Authenticator supports PRF: evaluate PRF to derive wrapping key
-    const prfSalt = crypto.getRandomValues(new Uint8Array(32));
-    const assertion = await navigator.credentials.get({
-      publicKey: {
-        challenge: crypto.getRandomValues(new Uint8Array(16)),
-        allowCredentials: [{
-          id: cred.rawId,
-          type: 'public-key'
-        }],
-        userVerification: 'required',
-        timeout: 60000,
-        extensions: {
-          prf: {
-            eval: {
-              first: prfSalt
+    if (prfSupported) {
+      // MODE 1: Hardware-bound WebAuthn PRF key wrapping
+      const prfSalt = crypto.getRandomValues(new Uint8Array(32));
+      const assertion = await navigator.credentials.get({
+        publicKey: {
+          challenge: crypto.getRandomValues(new Uint8Array(16)),
+          allowCredentials: [{
+            id: cred.rawId,
+            type: 'public-key'
+          }],
+          userVerification: 'required',
+          timeout: 60000,
+          extensions: {
+            prf: {
+              eval: {
+                first: prfSalt
+              }
             }
           }
         }
+      });
+
+      const prfOutput = assertion.getClientExtensionResults()?.prf?.results?.first;
+      if (!prfOutput || prfOutput.byteLength !== 32) {
+        throw new Error('Failed to retrieve PRF hardware key from authenticator.');
       }
-    });
 
-    const prfOutput = assertion.getClientExtensionResults()?.prf?.results?.first;
-    if (!prfOutput || prfOutput.byteLength !== 32) {
-      rawMasterBytes.fill(0);
-      throw new Error('Failed to retrieve PRF hardware key from authenticator.');
+      const prfWrapKey = await crypto.subtle.importKey(
+        'raw',
+        prfOutput,
+        { name: 'AES-GCM' },
+        false,
+        ['encrypt', 'decrypt']
+      );
+
+      const bioIv = crypto.getRandomValues(new Uint8Array(12));
+      const cipherBuf = await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv: bioIv },
+        prfWrapKey,
+        rawMasterBytes
+      );
+      rawMasterBytes.fill(0); // Zero memory immediately
+
+      const cipher = new Uint8Array(cipherBuf);
+      bioToken = new Uint8Array(BIO_TOKEN_MAGIC_PRF.length + prfSalt.length + bioIv.length + cipher.length);
+      bioToken.set(BIO_TOKEN_MAGIC_PRF, 0);
+      bioToken.set(prfSalt, BIO_TOKEN_MAGIC_PRF.length);
+      bioToken.set(bioIv, BIO_TOKEN_MAGIC_PRF.length + prfSalt.length);
+      bioToken.set(cipher, BIO_TOKEN_MAGIC_PRF.length + prfSalt.length + bioIv.length);
+      localStorage.setItem('srg_biometric_mode', 'prf');
+    } else {
+      // MODE 2: WebAuthn Platform Authenticator User-Verified Vault (Mobile / Android / iOS)
+      const uvSalt = crypto.getRandomValues(new Uint8Array(16));
+      const uvWrapKey = await deriveBiometricWrappingKey(cred.rawId, uvSalt);
+      const bioIv = crypto.getRandomValues(new Uint8Array(12));
+      const cipherBuf = await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv: bioIv },
+        uvWrapKey,
+        rawMasterBytes
+      );
+      rawMasterBytes.fill(0); // Zero memory immediately
+
+      const cipher = new Uint8Array(cipherBuf);
+      bioToken = new Uint8Array(BIO_TOKEN_MAGIC_UV.length + uvSalt.length + bioIv.length + cipher.length);
+      bioToken.set(BIO_TOKEN_MAGIC_UV, 0);
+      bioToken.set(uvSalt, BIO_TOKEN_MAGIC_UV.length);
+      bioToken.set(bioIv, BIO_TOKEN_MAGIC_UV.length + uvSalt.length);
+      bioToken.set(cipher, BIO_TOKEN_MAGIC_UV.length + uvSalt.length + bioIv.length);
+      localStorage.setItem('srg_biometric_mode', 'uv');
     }
-
-    const prfWrapKey = await crypto.subtle.importKey(
-      'raw',
-      prfOutput,
-      { name: 'AES-GCM' },
-      false,
-      ['encrypt', 'decrypt']
-    );
-
-    const bioIv = crypto.getRandomValues(new Uint8Array(12));
-    const cipherBuf = await crypto.subtle.encrypt(
-      { name: 'AES-GCM', iv: bioIv },
-      prfWrapKey,
-      rawMasterBytes
-    );
-    rawMasterBytes.fill(0); // Zero memory immediately
-
-    const cipher = new Uint8Array(cipherBuf);
-    const bioToken = new Uint8Array(BIO_TOKEN_MAGIC.length + prfSalt.length + bioIv.length + cipher.length);
-    bioToken.set(BIO_TOKEN_MAGIC, 0);
-    bioToken.set(prfSalt, BIO_TOKEN_MAGIC.length);
-    bioToken.set(bioIv, BIO_TOKEN_MAGIC.length + prfSalt.length);
-    bioToken.set(cipher, BIO_TOKEN_MAGIC.length + prfSalt.length + bioIv.length);
 
     // Save hardware-wrapped token in IndexedDB 'files' store
     const idb = await openSRGDatabase();
@@ -3284,7 +3334,7 @@ async function registerBiometricCredential() {
     const credIdBase64 = bufferToBase64(new Uint8Array(cred.rawId));
     localStorage.setItem('srg_biometric_cred_id', credIdBase64);
     localStorage.setItem('srg_biometric_enabled', 'true');
-    showToast('✓ Hardware-bound biometric unlock enabled via WebAuthn PRF!', 'success', 4000);
+    showToast('✓ Fingerprint / Biometric unlock enabled on this device!', 'success', 4000);
     updateBiometricUI();
     return true;
   } catch(err) {
@@ -3322,7 +3372,7 @@ async function unlockAppWithBiometric(autoPrompt = false) {
     else if (res instanceof ArrayBuffer) bioToken = new Uint8Array(res);
   } catch(e) {}
 
-  if (!bioToken || bioToken.length < BIO_TOKEN_MAGIC.length + 32 + 12 + 16) {
+  if (!bioToken || bioToken.length < 7 + 16 + 12 + 16) {
     if (!autoPrompt) {
       showToast('Biometric hardware token not found. Please enter Security PIN.', 'info', 4000);
       const keyInp = document.getElementById('appLockKeyInput');
@@ -3331,59 +3381,95 @@ async function unlockAppWithBiometric(autoPrompt = false) {
     return;
   }
 
-  // Verify magic
-  for (let i = 0; i < BIO_TOKEN_MAGIC.length; i++) {
-    if (bioToken[i] !== BIO_TOKEN_MAGIC[i]) {
-      if (!autoPrompt) showToast('Incompatible biometric token. Please enter Security PIN.', 'warning', 4000);
-      return;
-    }
-  }
+  const isPrf = matchMagic(bioToken, BIO_TOKEN_MAGIC_PRF);
+  const isUv = matchMagic(bioToken, BIO_TOKEN_MAGIC_UV);
 
-  const prfSalt = bioToken.slice(BIO_TOKEN_MAGIC.length, BIO_TOKEN_MAGIC.length + 32);
-  const bioIv = bioToken.slice(BIO_TOKEN_MAGIC.length + 32, BIO_TOKEN_MAGIC.length + 32 + 12);
-  const cipher = bioToken.slice(BIO_TOKEN_MAGIC.length + 32 + 12);
+  if (!isPrf && !isUv) {
+    if (!autoPrompt) showToast('Incompatible biometric token. Please enter Security PIN.', 'warning', 4000);
+    return;
+  }
 
   try {
     const rawId = base64ToBuffer(credIdBase64);
-    const challenge = crypto.getRandomValues(new Uint8Array(16));
+    let decryptedMasterBuf = null;
 
-    const assertion = await navigator.credentials.get({
-      publicKey: {
-        challenge: challenge,
-        allowCredentials: [{
-          id: rawId,
-          type: 'public-key'
-        }],
-        userVerification: 'required',
-        timeout: 60000,
-        extensions: {
-          prf: {
-            eval: {
-              first: prfSalt
+    if (isPrf) {
+      // MODE 1: Hardware-bound WebAuthn PRF
+      const prfSalt = bioToken.slice(BIO_TOKEN_MAGIC_PRF.length, BIO_TOKEN_MAGIC_PRF.length + 32);
+      const bioIv = bioToken.slice(BIO_TOKEN_MAGIC_PRF.length + 32, BIO_TOKEN_MAGIC_PRF.length + 32 + 12);
+      const cipher = bioToken.slice(BIO_TOKEN_MAGIC_PRF.length + 32 + 12);
+
+      const challenge = crypto.getRandomValues(new Uint8Array(16));
+      const assertion = await navigator.credentials.get({
+        publicKey: {
+          challenge: challenge,
+          allowCredentials: [{
+            id: rawId,
+            type: 'public-key'
+          }],
+          userVerification: 'required',
+          timeout: 60000,
+          extensions: {
+            prf: {
+              eval: {
+                first: prfSalt
+              }
             }
           }
         }
-      }
-    });
+      });
 
-    const prfOutput = assertion.getClientExtensionResults()?.prf?.results?.first;
-    if (!prfOutput || prfOutput.byteLength !== 32) {
-      throw new Error('Authenticator did not return PRF key.');
+      const prfOutput = assertion.getClientExtensionResults()?.prf?.results?.first;
+      if (!prfOutput || prfOutput.byteLength !== 32) {
+        throw new Error('Authenticator did not return PRF key.');
+      }
+
+      const prfWrapKey = await crypto.subtle.importKey(
+        'raw',
+        prfOutput,
+        { name: 'AES-GCM' },
+        false,
+        ['decrypt']
+      );
+
+      decryptedMasterBuf = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: bioIv },
+        prfWrapKey,
+        cipher
+      );
+    } else {
+      // MODE 2: WebAuthn Platform Authenticator User-Verified Vault (Mobile / Android / iOS)
+      const uvSalt = bioToken.slice(BIO_TOKEN_MAGIC_UV.length, BIO_TOKEN_MAGIC_UV.length + 16);
+      const bioIv = bioToken.slice(BIO_TOKEN_MAGIC_UV.length + 16, BIO_TOKEN_MAGIC_UV.length + 16 + 12);
+      const cipher = bioToken.slice(BIO_TOKEN_MAGIC_UV.length + 16 + 12);
+
+      const challenge = crypto.getRandomValues(new Uint8Array(16));
+      const assertion = await navigator.credentials.get({
+        publicKey: {
+          challenge: challenge,
+          allowCredentials: [{
+            id: rawId,
+            type: 'public-key'
+          }],
+          userVerification: 'required',
+          timeout: 60000
+        }
+      });
+
+      const authData = new Uint8Array(assertion.response.authenticatorData);
+      const userVerified = !!(authData[32] & 0x04);
+      if (!userVerified) {
+        throw new Error('Biometric user verification was not confirmed.');
+      }
+
+      const uvWrapKey = await deriveBiometricWrappingKey(rawId, uvSalt);
+      decryptedMasterBuf = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: bioIv },
+        uvWrapKey,
+        cipher
+      );
     }
 
-    const prfWrapKey = await crypto.subtle.importKey(
-      'raw',
-      prfOutput,
-      { name: 'AES-GCM' },
-      false,
-      ['decrypt']
-    );
-
-    const decryptedMasterBuf = await crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv: bioIv },
-      prfWrapKey,
-      cipher
-    );
     const rawMasterBytes = new Uint8Array(decryptedMasterBuf);
 
     // Import strictly non-extractable runtime master key
@@ -3443,7 +3529,7 @@ async function unlockAppWithBiometric(autoPrompt = false) {
     switchToView(currentView, currentDate);
 
     updateBadge('Local SQLite Active');
-    showToast('✓ Unlocked via Hardware Biometrics (PRF)!', 'success', 3000);
+    showToast('✓ Unlocked via Biometrics!', 'success', 3000);
     migratePlaintextAttachmentsToEncrypted(masterKey);
   } catch(err) {
     console.warn('Biometric verification error:', err);
