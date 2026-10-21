@@ -5146,13 +5146,19 @@ async function openAttachmentViewer(att) {
     img.alt = att.name || 'Attachment Preview';
     img.style.cssText = 'max-width:100%; max-height:70vh; border-radius:var(--radius-md); box-shadow:var(--shadow-md);';
     body.appendChild(img);
-  } else if (mime.includes('pdf') || dataUrl.includes('pdf')) {
-    body.innerHTML = '';
-    const iframe = document.createElement('iframe');
-    iframe.src = dataUrl;
-    iframe.title = att.name || 'PDF Preview';
-    iframe.style.cssText = 'width:100%; height:70vh; border:none; border-radius:var(--radius-md);';
-    body.appendChild(iframe);
+  } else if (mime.includes('pdf') || dataUrl.startsWith('data:application/pdf')) {
+    // A data: URL in an iframe is blocked by the CSP (Chrome shows a sad-face icon), and Android Chrome has
+    // no in-frame PDF viewer anyway, so render the pages with the bundled PDF.js instead.
+    body.innerHTML = '<div style="padding:30px; color:var(--text-muted);"><i class="fa-solid fa-spinner fa-spin"></i> Rendering PDF…</div>';
+    let rendered = false;
+    try {
+      rendered = await renderPdfIntoContainer(dataUrlToBytes(dataUrl), body);
+    } catch (e) {
+      console.warn('PDF render failed:', e);
+    }
+    if (!rendered) {
+      body.innerHTML = '<div style="padding:40px; color:#fb7185;"><i class="fa-solid fa-triangle-exclamation fa-2x"></i><br><br>This PDF could not be displayed here. Tap <strong>Download</strong> above to open it in your PDF app.</div>';
+    }
   } else {
     body.innerHTML = '';
     const wrap = document.createElement('div');
@@ -11591,6 +11597,39 @@ async function renderPdfDataUrlToImage(dataUrl) {
     console.warn('PDF data URL render error:', err);
     return null;
   }
+}
+
+// Renders up to maxPages pages of a PDF into container as canvases scaled to its width. Returns false on failure.
+async function renderPdfIntoContainer(bytes, container, maxPages = 10) {
+  if (typeof pdfjsLib === 'undefined' || !bytes) return false;
+  pdfjsLib.GlobalWorkerOptions.workerSrc = './pdf.worker.min.js';
+  const pdf = await pdfjsLib.getDocument({ data: bytes, isEvalSupported: false }).promise;
+  if (!pdf.numPages) return false;
+  const width = Math.max(280, (container.clientWidth || 600) - 8);
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+  const pages = [];
+  for (let n = 1; n <= Math.min(pdf.numPages, maxPages); n++) {
+    const page = await pdf.getPage(n);
+    const base = page.getViewport({ scale: 1 });
+    const viewport = page.getViewport({ scale: (width / base.width) * dpr });
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.floor(viewport.width);
+    canvas.height = Math.floor(viewport.height);
+    canvas.style.cssText = 'width:100%; height:auto; display:block; margin:0 auto 10px; background:#fff; border-radius:var(--radius-sm); box-shadow:var(--shadow-md);';
+    canvas.setAttribute('role', 'img');
+    canvas.setAttribute('aria-label', `PDF page ${n} of ${pdf.numPages}`);
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+    pages.push(canvas);
+  }
+  container.innerHTML = '';
+  pages.forEach(c => container.appendChild(c));
+  if (pdf.numPages > maxPages) {
+    const note = document.createElement('div');
+    note.style.cssText = 'font-size:0.8rem; color:var(--text-muted); padding:6px;';
+    note.textContent = `Showing ${maxPages} of ${pdf.numPages} pages — use Download for the full document.`;
+    container.appendChild(note);
+  }
+  return true;
 }
 
 async function renderPdfArrayBufferToImage(arrayBuffer) {

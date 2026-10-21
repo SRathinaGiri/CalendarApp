@@ -9,6 +9,9 @@ All notable changes to this project are documented here. Versions follow the in-
 - **Fix:** all 21 `localStorage` writes now go through `lsSet()`, which logs a failure, shows a one-time warning and carries on. Everything essential is in IndexedDB; `localStorage` only holds small caches and preferences.
 - Verified: with `localStorage` filled to the last byte, the app starts, unlocks with the PIN and renders.
 
+### Fix: PDF tickets showed a sad-face icon
+- The viewer put PDFs in an `<iframe>` with a `data:` URL. The app's Content Security Policy blocks that, and Android Chrome has no in-frame PDF viewer anyway. PDFs are now rendered with the bundled PDF.js as page images (up to 10 pages, sized to the screen). If a PDF can't be rendered, the viewer points to **Download** instead.
+
 ## v1.3.11 — 2026-10-21
 
 ### Diagnostics
