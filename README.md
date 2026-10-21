@@ -1,8 +1,8 @@
-# Calendar App (Offline PWA) v1.3.7
+# Calendar App (Offline PWA) v1.3.8
 
 A standalone, local-first Personal Calendar & Daily Organizer Progressive Web App (PWA) powered by client-side **SQLite (WASM)** and **IndexedDB** local storage with **AES-256-GCM hardware-accelerated encryption at rest for both database and file attachments**.
 
-> **Production PWA (v1.3.7)**  
+> **Production PWA (v1.3.8)**  
 > Fully client-side, local-first calendar with ACID SQLite storage, Web Crypto AES-256-GCM encryption at rest for database and attachments, OWASP-compliant 600,000-iteration PBKDF2 key derivation with versioned headers (`SRGE2`), non-extractable in-memory runtime keys, dual-tier WebAuthn biometrics (Hardware PRF `SRGBIO1` & Platform User Verification `SRGBIO2` with mobile gesture tap-to-scan hero card and passkey autofill), virtual keyboard suppression on biometric lock screens, 5-minute inactivity auto-lock and progressive PIN attempt throttling, fail-closed persistence guarantees, strict Content Security Policy (CSP), safe Emergency Recovery Kit, forgot PIN reset loop, enforced 6+ character PIN/passphrase protection, SHA-256 corruption-verified backup archives, optional AES-256 encrypted backups, atomic single-transaction restore & re-encryption including the recovery vault, robust offline attachment encryption migration, and 100% offline capabilities.
 
 ---
@@ -37,7 +37,7 @@ A standalone, local-first Personal Calendar & Daily Organizer Progressive Web Ap
 - **Local Snapshots:** Save named encrypted database safety snapshots in browser storage anytime. When changing PIN, all past snapshots and attachments are atomically re-encrypted under the new key with full pre-commit verification.
 - **PWA (Progressive Web App):**
   - Installable directly to home screen or desktop from Chrome, Edge, Safari, or Brave.
-  - Version-scoped Service Worker cache cleanup (`v1.3.7`).
+  - Version-scoped Service Worker cache cleanup (`v1.3.8`).
   - In-app install and check for updates buttons.
 - **Comprehensive Calendar Views:**
   - **Calendar View:** 7-column month grid. In portrait mode, uniform square day cells with center indicator badges and a bottom day schedule agenda panel maximize usability. Long-pressing any day initiates multi-date selection for batch scheduling with single-tap date addition/removal. In landscape mode, full titles, times, and notes are shown.
@@ -52,12 +52,13 @@ A standalone, local-first Personal Calendar & Daily Organizer Progressive Web Ap
   - Supports **Landscape 7-Column Wall Calendar Grid** and **Portrait 30-Day Detailed Diary Table**.
   - Accessible via top toolbar printer icon, side menu drawer, or Statements & Reports module.
 - **Chart of Accounts & Double-Entry Vouchers:**
-  - Standardized chart of accounts with account types (Asset, Liability, Revenue, Expenditure); accounts already used in past entries are imported automatically for classification.
+  - Standardized chart of accounts with account types (Asset, Liability, Equity / Capital, Revenue, Expenditure); accounts already used in past entries are imported automatically for classification.
   - Rename accounts or merge duplicates (e.g. "SBI" into "SBI Bank"); every existing entry is updated atomically.
   - Four voucher types: Receipt, Payment, Contra (cash ↔ bank) and Journal (non-cash adjustment). Only receipts and payments count toward cash-flow totals.
 - **Statements & Accounting Reports:**
   - Free Days Report
-  - Journal & Ledger Accounts (ledger balances shown as Dr / Cr)
+  - Journal & Ledger Accounts (ledger balances shown as Dr / Cr, with opening balance b/f)
+  - Trial Balance and Balance Sheet as on any date; Income Statement for any From–To period. The books are continuous (no financial-year closing): the Balance Sheet carries revenue less expenditure to date into Equity as an accumulated surplus.
   - Schedules & Summary Reports
   - Travel Ticket Cost Statement
   - Ticket Reimbursement Claim Statement with embedded ticket copies and print-ready layout.

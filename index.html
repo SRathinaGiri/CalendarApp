@@ -41,7 +41,7 @@
               <div class="brand-logo">
                 <i class="fa-solid fa-calendar-days"></i>
               </div>
-              <span class="brand-name">Calendar App <small id="appVersionBadge" style="font-size:0.7rem; font-weight:600; color:#38bdf8; background:rgba(56,189,248,0.15); padding:1px 5px; border-radius:4px; margin-left:3px;">v1.3.7</small></span>
+              <span class="brand-name">Calendar App <small id="appVersionBadge" style="font-size:0.7rem; font-weight:600; color:#38bdf8; background:rgba(56,189,248,0.15); padding:1px 5px; border-radius:4px; margin-left:3px;">v1.3.8</small></span>
             </div>
           </div>
 
@@ -131,7 +131,7 @@
           </div>
           <div class="brand-text">
             <span class="brand-name">Calendar App</span>
-            <span class="brand-badge" id="drawerVersionBadge">v1.3.7 &bull; Encrypted Offline PWA</span>
+            <span class="brand-badge" id="drawerVersionBadge">v1.3.8 &bull; Encrypted Offline PWA</span>
           </div>
         </div>
         <button id="closeSideMenuBtn" class="btn-icon" title="Close Menu"><i class="fa-solid fa-xmark"></i></button>
@@ -148,7 +148,7 @@
               <div class="drawer-card-title" id="drawerInstallUpdateTitle">Install / Update App</div>
               <div class="drawer-card-desc" id="drawerInstallUpdateDesc">Install or check for updates</div>
             </div>
-            <span id="drawerInstallUpdateBadge" class="drawer-badge">v1.3.7</span>
+            <span id="drawerInstallUpdateBadge" class="drawer-badge">v1.3.8</span>
           </button>
         </div>
 
@@ -804,6 +804,7 @@
                   <option value="">Type…</option>
                   <option value="asset">Asset</option>
                   <option value="liability">Liability</option>
+                  <option value="equity">Equity / Capital</option>
                   <option value="revenue">Revenue</option>
                   <option value="expenditure">Expenditure</option>
                 </select>
@@ -838,7 +839,7 @@
           <button id="closeChartOfAccountsModalBtn" class="btn-icon" aria-label="Close chart of accounts"><i class="fa-solid fa-xmark"></i></button>
         </div>
         <div class="modal-body" style="padding: 16px 20px;">
-          <p class="coa-intro">Every debit/credit account you use is listed here. Set its type, rename it, or merge duplicates (e.g. "SBI" into "SBI Bank") — existing entries are updated automatically.</p>
+          <p class="coa-intro">Every debit/credit account you use is listed here. Set its type, rename it, or merge duplicates (e.g. "SBI" into "SBI Bank") — existing entries are updated automatically. The books never close: enter opening balances once as a Journal (e.g. Dr Bank, Cr Capital).</p>
 
           <form id="coaAddForm" class="coa-add-form">
             <input type="text" id="coaNewName" maxlength="60" placeholder="New account name" aria-label="New account name" required>
@@ -846,6 +847,7 @@
               <option value="">Type…</option>
               <option value="asset">Asset</option>
               <option value="liability">Liability</option>
+              <option value="equity">Equity / Capital</option>
               <option value="revenue">Revenue</option>
               <option value="expenditure">Expenditure</option>
             </select>
@@ -1023,19 +1025,22 @@
             <button class="btn-secondary report-tab-btn active" data-report="free_days"><i class="fa-solid fa-umbrella-beach"></i> 1. Free Days List</button>
             <button class="btn-secondary report-tab-btn" data-report="journal"><i class="fa-solid fa-book"></i> 2. Journal Statement</button>
             <button class="btn-secondary report-tab-btn" data-report="ledger"><i class="fa-solid fa-scale-balanced"></i> 3. Account Ledger</button>
-            <button class="btn-secondary report-tab-btn" data-report="schedules"><i class="fa-solid fa-calendar-check"></i> 4. Schedules & Travel</button>
-            <button class="btn-secondary report-tab-btn" data-report="ticket_cost"><i class="fa-solid fa-ticket"></i> 5. Ticket Cost</button>
-            <button class="btn-secondary report-tab-btn" data-report="ticket_claim"><i class="fa-solid fa-file-invoice-dollar"></i> 6. Statement of Claim (Tickets)</button>
-            <button class="btn-secondary report-tab-btn" data-report="monthly_calendar"><i class="fa-solid fa-print"></i> 7. Monthly Calendar Sheet</button>
+            <button class="btn-secondary report-tab-btn" data-report="trial_balance"><i class="fa-solid fa-list-ol"></i> 4. Trial Balance</button>
+            <button class="btn-secondary report-tab-btn" data-report="income_statement"><i class="fa-solid fa-chart-line"></i> 5. Income Statement</button>
+            <button class="btn-secondary report-tab-btn" data-report="balance_sheet"><i class="fa-solid fa-landmark"></i> 6. Balance Sheet</button>
+            <button class="btn-secondary report-tab-btn" data-report="schedules"><i class="fa-solid fa-calendar-check"></i> 7. Schedules & Travel</button>
+            <button class="btn-secondary report-tab-btn" data-report="ticket_cost"><i class="fa-solid fa-ticket"></i> 8. Ticket Cost</button>
+            <button class="btn-secondary report-tab-btn" data-report="ticket_claim"><i class="fa-solid fa-file-invoice-dollar"></i> 9. Statement of Claim (Tickets)</button>
+            <button class="btn-secondary report-tab-btn" data-report="monthly_calendar"><i class="fa-solid fa-print"></i> 10. Monthly Calendar Sheet</button>
           </div>
 
           <!-- Dynamic Filter Controls -->
           <div style="background: var(--bg-tertiary); padding: 12px 16px; border-radius: var(--radius-md); border: 1px solid var(--border-color); margin-bottom: 16px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center;">
             
             <div style="display: flex; gap: 8px; align-items: center;">
-              <label style="font-size: 0.82rem; color: var(--text-muted);">From:</label>
-              <input type="date" id="reportFromDate" style="padding: 6px; border-radius: 4px; background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color); font-size: 0.85rem;">
-              <label style="font-size: 0.82rem; color: var(--text-muted);">To:</label>
+              <span id="reportFromWrap" style="display: contents;"><label for="reportFromDate" style="font-size: 0.82rem; color: var(--text-muted);">From:</label>
+              <input type="date" id="reportFromDate" style="padding: 6px; border-radius: 4px; background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color); font-size: 0.85rem;"></span>
+              <label id="reportToLabel" for="reportToDate" style="font-size: 0.82rem; color: var(--text-muted);">To:</label>
               <input type="date" id="reportToDate" style="padding: 6px; border-radius: 4px; background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color); font-size: 0.85rem;">
             </div>
 
@@ -1113,7 +1118,7 @@
           </div>
           <h2 style="font-size: 1.45rem; font-weight: 700; margin-bottom: 4px; color: var(--text-main);">Calendar App</h2>
           <div style="display: inline-block; font-size: 0.8rem; font-weight: 600; color: #38bdf8; background: rgba(56,189,248,0.12); padding: 3px 10px; border-radius: 12px; margin-bottom: 16px; border: 1px solid rgba(56,189,248,0.3);">
-            Version <span id="aboutModalVersion">v1.3.7 (PWA)</span>
+            Version <span id="aboutModalVersion">v1.3.8 (PWA)</span>
           </div>
 
           <div style="background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 14px 16px; text-align: left; font-size: 0.88rem; line-height: 1.55; margin-bottom: 16px;">

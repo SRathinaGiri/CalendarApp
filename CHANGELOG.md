@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here. Versions follow the in-app version (`APP_VERSION` in `app.js`, `CACHE_NAME` in `sw.js`).
 
+## v1.3.8 — 2026-10-21
+
+### Financial statements (continuous books)
+- New account type **Equity / Capital**. Record opening balances once as a Journal (e.g. Dr Bank, Cr Capital).
+- The books never close: there is no financial year and no closing entries. Every balance is cumulative from the first entry.
+- **Trial Balance** (as on a date): every account's Dr/Cr balance by type, with a check that debits equal credits.
+- **Income Statement** (From–To): revenue less expenditure for the period, showing the surplus or deficit.
+- **Balance Sheet** (as on a date): Equity / Capital, Liabilities and Assets. All revenue less expenditure up to that date appears as a computed *Accumulated surplus/deficit* under Equity (a virtual closing; nothing is posted), so the statement always balances.
+- Accounts with no type still appear, flagged, on the side their balance falls, and a warning asks you to classify them.
+- The **Account Ledger** now opens each period with an *Opening balance b/f* (everything before the From date), so period ledgers continue correctly.
+- For the Trial Balance and Balance Sheet, the date filter shows a single **As on** date.
+
 ## v1.3.7 — 2026-10-21
 
 ### Chart of Accounts

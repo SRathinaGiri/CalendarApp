@@ -112,7 +112,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.3.7';
+const APP_VERSION = 'v1.3.8';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -5189,7 +5189,7 @@ const VOUCHER_TYPES = {
   receipt: { label: 'Receipt', icon: '🟢', color: 'var(--receipt-color)', hint: 'Money in. Dr: Cash/Bank (asset) · Cr: Income or the party who paid.' },
   payment: { label: 'Payment', icon: '🔴', color: 'var(--payment-color)', hint: 'Money out. Dr: Expense or the party paid · Cr: Cash/Bank (asset).' },
   contra:  { label: 'Contra',  icon: '🔁', color: 'var(--net-positive)',  hint: 'Transfer between your own cash/bank accounts. Dr: account receiving · Cr: account giving.' },
-  journal: { label: 'Journal', icon: '📝', color: 'var(--text-muted)',    hint: 'Non-cash adjustment (e.g. amount due, write-off, correction). No cash or bank involved.' }
+  journal: { label: 'Journal', icon: '📝', color: 'var(--text-muted)',    hint: 'Non-cash adjustment (e.g. opening balance: Dr Bank, Cr Capital; amount due; write-off; correction).' }
 };
 
 function voucherTypeInfo(type) {
@@ -5199,11 +5199,12 @@ function voucherTypeInfo(type) {
 const ACCOUNT_TYPES = {
   asset: 'Asset',
   liability: 'Liability',
+  equity: 'Equity / Capital',
   revenue: 'Revenue',
   expenditure: 'Expenditure',
   unclassified: 'Unclassified'
 };
-const ACCOUNT_TYPE_ORDER = ['asset', 'liability', 'revenue', 'expenditure', 'unclassified'];
+const ACCOUNT_TYPE_ORDER = ['asset', 'liability', 'equity', 'revenue', 'expenditure', 'unclassified'];
 const ACCOUNT_NAME_MAX = 60;
 const NEW_ACCOUNT_OPTION = '__new_account__';
 
@@ -10322,6 +10323,9 @@ function populateReportFilterOptions() {
   }
 }
 
+// Point-in-time statements: only the "As on" (To) date applies.
+const AS_ON_REPORTS = new Set(['trial_balance', 'balance_sheet']);
+
 function switchReportTab(reportType) {
   activeReportType = reportType;
   document.querySelectorAll('.report-tab-btn').forEach(btn => {
@@ -10332,6 +10336,11 @@ function switchReportTab(reportType) {
   const tagGroup = document.getElementById('reportTagGroup');
 
   if (acctGroup) acctGroup.classList.toggle('hidden', reportType !== 'ledger');
+  const asOn = AS_ON_REPORTS.has(reportType);
+  const fromWrap = document.getElementById('reportFromWrap');
+  const toLabel = document.getElementById('reportToLabel');
+  if (fromWrap) fromWrap.classList.toggle('hidden', asOn);
+  if (toLabel) toLabel.textContent = asOn ? 'As on:' : 'To:';
   if (tagGroup) tagGroup.classList.toggle('hidden', reportType !== 'schedules' && reportType !== 'ticket_cost' && reportType !== 'ticket_claim');
 
   generateActiveReport();
@@ -10343,6 +10352,16 @@ function generateActiveReport() {
 
   const fromDate = document.getElementById('reportFromDate').value;
   const toDate = document.getElementById('reportToDate').value;
+
+  if (AS_ON_REPORTS.has(activeReportType)) {
+    if (!toDate) {
+      container.innerHTML = '<div style="color:#fb7185; text-align:center; padding:30px;">Please select the As on date.</div>';
+      return;
+    }
+    if (activeReportType === 'trial_balance') renderTrialBalanceReport(container, toDate);
+    else renderBalanceSheetReport(container, toDate);
+    return;
+  }
 
   if (!fromDate || !toDate) {
     container.innerHTML = '<div style="color:#fb7185; text-align:center; padding:30px;">Please select both From Date and To Date.</div>';
@@ -10359,6 +10378,8 @@ function generateActiveReport() {
     renderJournalReport(container, fromDate, toDate);
   } else if (activeReportType === 'ledger') {
     renderLedgerReport(container, fromDate, toDate);
+  } else if (activeReportType === 'income_statement') {
+    renderIncomeStatementReport(container, fromDate, toDate);
   } else if (activeReportType === 'schedules') {
     renderSchedulesReport(container, fromDate, toDate);
   } else if (activeReportType === 'ticket_cost') {
@@ -10524,14 +10545,26 @@ function renderLedgerReport(container, fromDate, toDate) {
     if (res.length > 0) txns = rowsToObjects(res[0]);
   } catch(e){}
 
-  if (txns.length === 0) {
+  // Continuous books: the period opens with everything posted to this account before the From date.
+  let openingBalance = 0;
+  try {
+    const ob = db.exec(`
+      SELECT
+        COALESCE(SUM(CASE WHEN TRIM(debit_account) = ? COLLATE NOCASE THEN CAST(ROUND(amount * 100) AS INTEGER) ELSE 0 END), 0),
+        COALESCE(SUM(CASE WHEN TRIM(credit_account) = ? COLLATE NOCASE THEN CAST(ROUND(amount * 100) AS INTEGER) ELSE 0 END), 0)
+      FROM daily_transactions WHERE txn_date < ?
+    `, [targetAccount, targetAccount, fromDate]);
+    if (ob.length > 0) openingBalance = ob[0].values[0][0] - ob[0].values[0][1];
+  } catch(e){}
+
+  if (txns.length === 0 && openingBalance === 0) {
     container.innerHTML = `<div style="text-align:center; padding:40px; color:var(--text-muted);">No ledger entries found for account "${escapeHtml(targetAccount)}" between ${formatDateIndian(fromDate)} and ${formatDateIndian(toDate)}.</div>`;
     return;
   }
 
   let totalDebit = 0;
   let totalCredit = 0;
-  let runningBalance = 0;
+  let runningBalance = openingBalance;
 
   let html = `
     <div style="margin-bottom:14px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
@@ -10550,6 +10583,14 @@ function renderLedgerReport(container, fromDate, toDate) {
         </tr>
       </thead>
       <tbody>
+        <tr style="border-bottom:1px solid var(--border-color); font-style:italic;">
+          <td style="padding:8px 10px; font-weight:600;">${formatDateIndian(fromDate)}</td>
+          <td style="padding:8px 10px; font-weight:600; color:var(--text-main);">Opening balance b/f</td>
+          <td style="padding:8px 10px; text-align:right;">-</td>
+          <td style="padding:8px 10px; text-align:right;">-</td>
+          <td style="padding:8px 10px; text-align:right; font-weight:700;">${formatDrCr(openingBalance)}</td>
+          <td style="padding:8px 10px; color:var(--text-muted);">Balance of all entries before this date</td>
+        </tr>
   `;
 
   txns.forEach(t => {
@@ -10592,6 +10633,256 @@ function renderLedgerReport(container, fromDate, toDate) {
     </tbody></table>
   `;
 
+  container.innerHTML = html;
+}
+
+/* ==========================================================================
+   FINANCIAL STATEMENTS: TRIAL BALANCE, INCOME STATEMENT, BALANCE SHEET
+   The books are one continuous ledger (no financial-year closing entries). Revenue and
+   expenditure are never "closed" by posting; the Balance Sheet nets them up to its date and
+   shows the result as a computed accumulated surplus under Equity.
+   ========================================================================== */
+
+// Net balances per account, in paise. dr/cr are gross postings; net = dr - cr (positive = debit balance).
+// from is optional (inclusive); to is inclusive. Dates are ISO YYYY-MM-DD, so string comparison is chronological.
+function computeAccountBalances({ from = null, to }) {
+  const chart = new Map(getChartOfAccounts().map(a => [a.name.toLowerCase(), a]));
+  const balances = new Map();
+  const touch = (rawName) => {
+    const name = normalizeAccountName(rawName);
+    if (!name) return null;
+    const key = name.toLowerCase();
+    if (!balances.has(key)) {
+      const acct = chart.get(key);
+      const type = acct && ACCOUNT_TYPES[acct.account_type] ? acct.account_type : 'unclassified';
+      balances.set(key, { name: acct ? acct.name : name, type, dr: 0, cr: 0, net: 0 });
+    }
+    return balances.get(key);
+  };
+
+  let sql = "SELECT debit_account, credit_account, amount FROM daily_transactions WHERE txn_date <= ?";
+  const params = [to];
+  if (from) { sql += " AND txn_date >= ?"; params.push(from); }
+  try {
+    const res = db.exec(sql, params);
+    const rows = res.length > 0 ? res[0].values : [];
+    rows.forEach(([debit, credit, amount]) => {
+      const p = toPaise(amount);
+      const d = touch(debit);
+      const c = touch(credit);
+      if (d) { d.dr += p; d.net += p; }
+      if (c) { c.cr += p; c.net -= p; }
+    });
+  } catch (e) {
+    console.warn('Error computing account balances:', e);
+  }
+  return Array.from(balances.values()).sort((a, b) => a.name.localeCompare(b.name, 'en-IN', { sensitivity: 'base' }));
+}
+
+// Natural side of each type: debit-natured accounts show (Dr - Cr), credit-natured show (Cr - Dr).
+const DEBIT_NATURED_TYPES = new Set(['asset', 'expenditure']);
+
+function naturalBalance(acct) {
+  return DEBIT_NATURED_TYPES.has(acct.type) ? acct.net : -acct.net;
+}
+
+const STMT_TD = 'padding:7px 10px;';
+const STMT_TD_R = 'padding:7px 10px; text-align:right; white-space:nowrap;';
+
+function stmtHeader(icon, color, title, subtitle) {
+  return `
+    <div style="margin-bottom:14px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+      <h4 style="margin:0; font-size:1rem; color:var(--text-main);"><i class="fa-solid ${icon}" style="color:${color};"></i> ${title}</h4>
+      <span style="font-size:0.85rem; color:var(--text-muted);">${subtitle}</span>
+    </div>`;
+}
+
+function stmtUnclassifiedWarning(accounts) {
+  const list = accounts.filter(a => a.type === 'unclassified' && a.net !== 0);
+  if (list.length === 0) return '';
+  return `
+    <div style="margin-bottom:12px; padding:10px 12px; border-radius:var(--radius-md); border:1px solid var(--badge-amber-text); color:var(--badge-amber-text); font-size:0.84rem; line-height:1.45;">
+      <i class="fa-solid fa-triangle-exclamation"></i> ${list.length} account${list.length === 1 ? ' has' : 's have'} no type yet:
+      <strong>${list.map(a => escapeHtml(a.name)).join(', ')}</strong>. Set a type in <em>Chart of Accounts</em> so ${list.length === 1 ? 'it lands' : 'they land'} in the right statement.
+    </div>`;
+}
+
+function stmtFootnote(text) {
+  return `<p style="margin:12px 0 0; font-size:0.76rem; color:var(--text-muted); line-height:1.45;">${text}</p>`;
+}
+
+function stmtSection(title, rows, totalLabel, total) {
+  let html = `
+    <tr style="background:var(--bg-tertiary);"><td colspan="2" style="${STMT_TD} font-weight:700; text-transform:uppercase; font-size:0.76rem; letter-spacing:0.04em; color:var(--text-muted);">${title}</td></tr>`;
+  if (rows.length === 0) {
+    html += `<tr><td style="${STMT_TD} color:var(--text-muted); font-style:italic;">None</td><td style="${STMT_TD_R}">${formatINR(0)}</td></tr>`;
+  }
+  rows.forEach(r => {
+    html += `
+    <tr style="border-bottom:1px solid var(--border-color);">
+      <td style="${STMT_TD}${r.style || ''}">${r.label}</td>
+      <td style="${STMT_TD_R}${r.style || ''}">${formatINR(r.amount)}</td>
+    </tr>`;
+  });
+  html += `
+    <tr style="font-weight:700; border-top:2px solid var(--border-color);">
+      <td style="${STMT_TD}">${totalLabel}</td>
+      <td style="${STMT_TD_R}">${formatINR(total)}</td>
+    </tr>`;
+  return html;
+}
+
+function renderTrialBalanceReport(container, asOnDate) {
+  const accounts = computeAccountBalances({ to: asOnDate }).filter(a => a.net !== 0);
+  if (accounts.length === 0) {
+    container.innerHTML = `<div style="text-align:center; padding:40px; color:var(--text-muted);">No account balances as on ${formatDateIndian(asOnDate)}.</div>`;
+    return;
+  }
+
+  let totalDr = 0;
+  let totalCr = 0;
+  let html = stmtHeader('fa-list-ol', 'var(--accent-blue)', 'Trial Balance', `As on ${formatDateIndian(asOnDate)}`) +
+    stmtUnclassifiedWarning(accounts) + `
+    <table style="width:100%; border-collapse:collapse; font-size:0.86rem; text-align:left;">
+      <thead>
+        <tr style="background:var(--bg-tertiary); border-bottom:2px solid var(--border-color);">
+          <th style="${STMT_TD}">Account</th>
+          <th style="${STMT_TD}">Type</th>
+          <th style="${STMT_TD_R}">Debit (Dr ₹)</th>
+          <th style="${STMT_TD_R}">Credit (Cr ₹)</th>
+        </tr>
+      </thead>
+      <tbody>`;
+
+  ACCOUNT_TYPE_ORDER.forEach(type => {
+    accounts.filter(a => a.type === type).forEach(a => {
+      const dr = a.net > 0 ? a.net : 0;
+      const cr = a.net < 0 ? -a.net : 0;
+      totalDr += dr;
+      totalCr += cr;
+      html += `
+        <tr style="border-bottom:1px solid var(--border-color);">
+          <td style="${STMT_TD} font-weight:600;">${escapeHtml(a.name)}</td>
+          <td style="${STMT_TD} color:${type === 'unclassified' ? 'var(--badge-amber-text)' : 'var(--text-muted)'};">${ACCOUNT_TYPES[type]}</td>
+          <td style="${STMT_TD_R} color:var(--receipt-color);">${dr ? formatINR(dr) : '-'}</td>
+          <td style="${STMT_TD_R} color:var(--payment-color);">${cr ? formatINR(cr) : '-'}</td>
+        </tr>`;
+    });
+  });
+
+  const diff = totalDr - totalCr;
+  html += `
+        <tr style="background:var(--bg-tertiary); font-weight:700; border-top:2px solid var(--border-color);">
+          <td colspan="2" style="${STMT_TD}">TOTAL</td>
+          <td style="${STMT_TD_R}">${formatINR(totalDr)}</td>
+          <td style="${STMT_TD_R}">${formatINR(totalCr)}</td>
+        </tr>
+      </tbody>
+    </table>
+    <div style="margin-top:10px; font-size:0.86rem; font-weight:600; color:${diff === 0 ? 'var(--receipt-color)' : 'var(--payment-color)'};">
+      ${diff === 0 ? '<i class="fa-solid fa-circle-check"></i> Debits equal credits — the books agree.' : `<i class="fa-solid fa-circle-xmark"></i> Out of balance by ${formatINR(Math.abs(diff))}. Check for entries with a missing debit or credit account.`}
+    </div>` +
+    stmtFootnote('Balances are cumulative from the first entry up to the date shown — there is no financial-year closing.');
+  container.innerHTML = html;
+}
+
+function renderIncomeStatementReport(container, fromDate, toDate) {
+  const accounts = computeAccountBalances({ from: fromDate, to: toDate });
+  const revenue = accounts.filter(a => a.type === 'revenue' && a.net !== 0);
+  const expenditure = accounts.filter(a => a.type === 'expenditure' && a.net !== 0);
+  const unclassified = accounts.filter(a => a.type === 'unclassified');
+
+  if (revenue.length === 0 && expenditure.length === 0) {
+    container.innerHTML = stmtUnclassifiedWarning(unclassified) +
+      `<div style="text-align:center; padding:40px; color:var(--text-muted);">No revenue or expenditure between ${formatDateIndian(fromDate)} and ${formatDateIndian(toDate)}.</div>`;
+    return;
+  }
+
+  const totalRevenue = revenue.reduce((s, a) => s + naturalBalance(a), 0);
+  const totalExpenditure = expenditure.reduce((s, a) => s + naturalBalance(a), 0);
+  const surplus = totalRevenue - totalExpenditure;
+
+  let html = stmtHeader('fa-chart-line', 'var(--receipt-color)', 'Income Statement', `${formatDateIndian(fromDate)} to ${formatDateIndian(toDate)}`) +
+    stmtUnclassifiedWarning(unclassified) + `
+    <table style="width:100%; max-width:640px; border-collapse:collapse; font-size:0.88rem; text-align:left;">
+      <thead>
+        <tr style="border-bottom:2px solid var(--border-color);">
+          <th style="${STMT_TD}">Particulars</th>
+          <th style="${STMT_TD_R}">Amount (₹)</th>
+        </tr>
+      </thead>
+      <tbody>` +
+    stmtSection('Revenue', revenue.map(a => ({ label: escapeHtml(a.name), amount: naturalBalance(a) })), 'Total Revenue (A)', totalRevenue) +
+    stmtSection('Expenditure', expenditure.map(a => ({ label: escapeHtml(a.name), amount: naturalBalance(a) })), 'Total Expenditure (B)', totalExpenditure) + `
+        <tr style="background:var(--bg-tertiary); font-weight:800; font-size:0.95rem; border-top:2px solid var(--border-color);">
+          <td style="${STMT_TD}">${surplus >= 0 ? 'Surplus' : 'Deficit'} for the period (A − B)</td>
+          <td style="${STMT_TD_R} color:${surplus >= 0 ? 'var(--receipt-color)' : 'var(--payment-color)'};">${formatINR(Math.abs(surplus))}</td>
+        </tr>
+      </tbody>
+    </table>` +
+    stmtFootnote('Only entries dated within the period are included. The cumulative surplus is carried to Equity in the Balance Sheet.');
+  container.innerHTML = html;
+}
+
+function renderBalanceSheetReport(container, asOnDate) {
+  const accounts = computeAccountBalances({ to: asOnDate });
+  if (accounts.every(a => a.net === 0)) {
+    container.innerHTML = `<div style="text-align:center; padding:40px; color:var(--text-muted);">No balances as on ${formatDateIndian(asOnDate)}.</div>`;
+    return;
+  }
+
+  const pick = type => accounts.filter(a => a.type === type && a.net !== 0);
+  const assets = pick('asset');
+  const liabilities = pick('liability');
+  const equity = pick('equity');
+  // Virtual closing: all revenue less all expenditure up to the date becomes accumulated surplus. Nothing is posted.
+  const accumulatedSurplus = pick('revenue').reduce((s, a) => s + naturalBalance(a), 0) -
+    pick('expenditure').reduce((s, a) => s + naturalBalance(a), 0);
+  // Untyped accounts still carry money; show them on the side their balance falls so the statement stays complete.
+  const unclassified = pick('unclassified');
+  const unclassifiedDr = unclassified.filter(a => a.net > 0);
+  const unclassifiedCr = unclassified.filter(a => a.net < 0);
+  const flag = ' color:var(--badge-amber-text);';
+
+  const equityRows = equity.map(a => ({ label: escapeHtml(a.name), amount: naturalBalance(a) }));
+  equityRows.push({ label: `Accumulated ${accumulatedSurplus >= 0 ? 'surplus' : 'deficit'} (revenue less expenditure to date)`, amount: accumulatedSurplus, style: ' font-style:italic;' });
+  const totalEquity = equityRows.reduce((s, r) => s + r.amount, 0);
+
+  const liabilityRows = liabilities.map(a => ({ label: escapeHtml(a.name), amount: naturalBalance(a) }))
+    .concat(unclassifiedCr.map(a => ({ label: `${escapeHtml(a.name)} (unclassified)`, amount: -a.net, style: flag })));
+  const totalLiabilities = liabilityRows.reduce((s, r) => s + r.amount, 0);
+
+  const assetRows = assets.map(a => ({ label: escapeHtml(a.name), amount: naturalBalance(a) }))
+    .concat(unclassifiedDr.map(a => ({ label: `${escapeHtml(a.name)} (unclassified)`, amount: a.net, style: flag })));
+  const totalAssets = assetRows.reduce((s, r) => s + r.amount, 0);
+
+  const totalEquityAndLiabilities = totalEquity + totalLiabilities;
+  const diff = totalAssets - totalEquityAndLiabilities;
+
+  let html = stmtHeader('fa-landmark', 'var(--badge-amber-text)', 'Balance Sheet', `As on ${formatDateIndian(asOnDate)}`) +
+    stmtUnclassifiedWarning(accounts) + `
+    <table style="width:100%; max-width:640px; border-collapse:collapse; font-size:0.88rem; text-align:left;">
+      <thead>
+        <tr style="border-bottom:2px solid var(--border-color);">
+          <th style="${STMT_TD}">Particulars</th>
+          <th style="${STMT_TD_R}">Amount (₹)</th>
+        </tr>
+      </thead>
+      <tbody>` +
+    stmtSection('Equity / Capital', equityRows, 'Total Equity (A)', totalEquity) +
+    stmtSection('Liabilities', liabilityRows, 'Total Liabilities (B)', totalLiabilities) + `
+        <tr style="background:var(--bg-tertiary); font-weight:800; border-top:2px solid var(--border-color);">
+          <td style="${STMT_TD}">TOTAL EQUITY &amp; LIABILITIES (A + B)</td>
+          <td style="${STMT_TD_R}">${formatINR(totalEquityAndLiabilities)}</td>
+        </tr>
+        <tr><td colspan="2" style="height:10px;"></td></tr>` +
+    stmtSection('Assets', assetRows, 'TOTAL ASSETS', totalAssets) + `
+      </tbody>
+    </table>
+    <div style="margin-top:10px; font-size:0.86rem; font-weight:600; color:${diff === 0 ? 'var(--receipt-color)' : 'var(--payment-color)'};">
+      ${diff === 0 ? '<i class="fa-solid fa-circle-check"></i> Assets equal Equity + Liabilities.' : `<i class="fa-solid fa-circle-xmark"></i> Difference of ${formatINR(Math.abs(diff))}. Check for entries with a missing debit or credit account.`}
+    </div>` +
+    stmtFootnote('Continuous books: revenue and expenditure are not closed by entries — their net to this date appears as the accumulated surplus/deficit under Equity. Record opening balances as a Journal (e.g. Dr Bank, Cr Capital). A simple personal statement, not in Schedule III format.');
   container.innerHTML = html;
 }
 
