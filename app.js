@@ -112,7 +112,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.3.9';
+const APP_VERSION = 'v1.3.10';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -1091,9 +1091,15 @@ async function getAttachmentData(att) {
     });
 
     if (matchedData) {
-      att.data = matchedData;
-      if (att.id) await saveAttachmentToIndexedDB(att.id, matchedData);
-      return matchedData;
+      // The fallback match is the stored (possibly encrypted) value; only hand back something decrypted.
+      let plain = null;
+      try { plain = await decryptAttachmentData(matchedData, currentEncryptionKey); } catch (e) { plain = null; }
+      if (plain && plain !== matchedData || (typeof plain === 'string' && plain.startsWith('data:'))) {
+        att.data = plain;
+        if (att.id) await saveAttachmentToIndexedDB(att.id, plain);
+        return plain;
+      }
+      return null;
     }
   } catch(e) {
     console.warn('Fallback attachment search error:', e);
@@ -5088,9 +5094,17 @@ async function openAttachmentViewer(att) {
   body.innerHTML = '<div style="padding:40px; color:var(--text-muted);"><i class="fa-solid fa-spinner fa-spin fa-2x"></i><br><br>Loading attachment...</div>';
   modal.classList.remove('hidden');
 
-  const dataUrl = await getAttachmentData(att);
+  let dataUrl = null;
+  try {
+    const raw = await getAttachmentData(att);
+    dataUrl = raw ? attachmentPayloadToDataUrl(raw, att.type || 'application/pdf') : null;
+    if (raw && isEncryptedAttachmentBytes(raw)) dataUrl = null; // still encrypted under another key
+  } catch (e) {
+    console.warn('Attachment load error:', e);
+    dataUrl = null;
+  }
   if (!dataUrl) {
-    body.innerHTML = '<div style="padding:40px; color:#fb7185;"><i class="fa-solid fa-triangle-exclamation fa-2x"></i><br><br>Unable to load attachment file. File may not exist on server or device is offline.</div>';
+    body.innerHTML = '<div style="padding:40px; color:#fb7185;"><i class="fa-solid fa-triangle-exclamation fa-2x"></i><br><br>Unable to open this attachment. It may be encrypted under an older key: use <strong>Change Security PIN</strong> (the same PIN is fine) to re-secure your data, then try again.</div>';
     return;
   }
 

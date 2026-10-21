@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here. Versions follow the in-app version (`APP_VERSION` in `app.js`, `CACHE_NAME` in `sw.js`).
 
+## v1.3.10 — 2026-10-21
+
+### Fixes
+- The attachment viewer no longer spins forever on a ticket it can't decrypt. Its fallback search used to return the still-encrypted bytes. The viewer now shows a clear message pointing to *Change Security PIN* (re-secure).
+
 ## v1.3.9 — 2026-10-21
 
 ### Critical fix: PIN rejected while fingerprint still works
