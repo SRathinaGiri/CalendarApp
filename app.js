@@ -3,6 +3,25 @@
  * Offline-first PWA with Client-Side SQLite (WASM) & Google Drive Cloud Sync
  */
 
+// localStorage on srathinagiri.github.io is one 5 MB area shared by every app on that origin, so it can be
+// full for reasons outside this app. A failed write must never stop start-up: log it, warn once, carry on.
+// (Everything essential lives in IndexedDB; localStorage only holds small caches and preferences.)
+let storageFullWarned = false;
+function lsSet(key, value) {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch (e) {
+    console.warn(`localStorage write skipped for "${key}":`, e && e.name);
+    if (!storageFullWarned && e && e.name === 'QuotaExceededError') {
+      storageFullWarned = true;
+      const warn = () => { if (typeof showToast === 'function') showToast('⚠ Browser storage for this website is full (it is shared with your other apps on the same address). The calendar keeps working, but please free space in those apps.', 'warning', 9000); };
+      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => setTimeout(warn, 1500)); else warn();
+    }
+    return false;
+  }
+}
+
 // Global State
 let SQL = null;
 let db = null;
@@ -24,7 +43,7 @@ let currentModalAttachments = [];
 
 // Sync Provider Choice: 'local' (Pure Single-Device Offline PWA)
 let syncProvider = 'local';
-localStorage.setItem('srg_sync_provider', 'local');
+lsSet('srg_sync_provider', 'local');
 let serverApiUrl = '';
 let serverApiKey = '';
 
@@ -112,7 +131,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.3.11';
+const APP_VERSION = 'v1.3.12';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -267,7 +286,7 @@ async function handleInstallOrUpdateClick() {
 
 // Automatic cache cleanup on version update (purges all legacy/outdated caches)
 if (localStorage.getItem('srg_installed_version') !== APP_VERSION) {
-  localStorage.setItem('srg_installed_version', APP_VERSION);
+  lsSet('srg_installed_version', APP_VERSION);
   if ('caches' in window) {
     caches.keys().then(names => {
       names.forEach(name => {
@@ -664,7 +683,7 @@ function openSRGDatabase() {
 
 function saveDbToIndexedDB(updateTimestamp = true) {
   if (updateTimestamp) {
-    localStorage.setItem('srg_db_last_modified', Date.now().toString());
+    lsSet('srg_db_last_modified', Date.now().toString());
   }
   return new Promise(async (resolve, reject) => {
     if (!db) return resolve();
@@ -1784,14 +1803,14 @@ async function importFullBackupZip(file) {
 
     // 6. Transaction committed successfully: synchronize state
     cachedEncryptedDbBytes = dbBytesToStore;
-    localStorage.setItem('srg_db_last_modified', Date.now().toString());
+    lsSet('srg_db_last_modified', Date.now().toString());
 
     if (!(currentEncryptionKey && isPinConfigured()) && backupKey && backupSalt) {
       // Fresh device restoring encrypted backup: adopt backup PIN as device's security credentials
       currentEncryptionKey = backupKey;
       storeCryptoSalt(backupSalt);
       await createAuthVerificationToken(backupKey);
-      localStorage.setItem('srg_app_pin_configured', 'true');
+      lsSet('srg_app_pin_configured', 'true');
       isAppUnlocked = true;
       const overlay = document.getElementById('appLockOverlay');
       if (overlay) overlay.classList.add('hidden');
@@ -2332,7 +2351,7 @@ function renderCurrentView() {
 
 function switchToView(viewName, targetDate = null) {
   currentView = viewName;
-  localStorage.setItem('srg_current_view', viewName);
+  lsSet('srg_current_view', viewName);
   if (targetDate) {
     currentDate = (targetDate instanceof Date) ? targetDate : new Date(targetDate);
   } else if (!currentDate || isNaN(currentDate.getTime())) {
@@ -2405,7 +2424,7 @@ function initAppTheme() {
 
 function toggleAppTheme() {
   currentTheme = currentTheme === 'light' ? 'dark' : 'light';
-  localStorage.setItem('srg_theme', currentTheme);
+  lsSet('srg_theme', currentTheme);
   initAppTheme();
   showToast(`Switched to ${currentTheme.toUpperCase()} theme`, 'info');
 }
@@ -2618,7 +2637,7 @@ async function getEffectiveCryptoSalt(dbBytes = null) {
 function storeCryptoSalt(saltBytes) {
   if (!saltBytes) return;
   try {
-    localStorage.setItem('srg_crypto_salt', bufferToBase64(saltBytes));
+    lsSet('srg_crypto_salt', bufferToBase64(saltBytes));
   } catch(e) {
     console.warn('Could not cache crypto salt to localStorage:', e);
   }
@@ -2819,7 +2838,7 @@ async function createAuthVerificationToken(key, saltBytes = null) {
       });
     } catch(e) {}
     try {
-      localStorage.setItem('srg_crypto_auth_token', bufferToBase64(packed));
+      lsSet('srg_crypto_auth_token', bufferToBase64(packed));
     } catch(e) {}
     return packed;
   } catch(e) {
@@ -3352,7 +3371,7 @@ async function registerBiometricCredential() {
       bioToken.set(prfSalt, BIO_TOKEN_MAGIC_PRF.length);
       bioToken.set(bioIv, BIO_TOKEN_MAGIC_PRF.length + prfSalt.length);
       bioToken.set(cipher, BIO_TOKEN_MAGIC_PRF.length + prfSalt.length + bioIv.length);
-      localStorage.setItem('srg_biometric_mode', 'prf');
+      lsSet('srg_biometric_mode', 'prf');
     } else {
       // MODE 2: WebAuthn Platform Authenticator User-Verified Vault (Mobile / Android / iOS)
       const uvSalt = crypto.getRandomValues(new Uint8Array(16));
@@ -3371,12 +3390,12 @@ async function registerBiometricCredential() {
       bioToken.set(uvSalt, BIO_TOKEN_MAGIC_UV.length);
       bioToken.set(bioIv, BIO_TOKEN_MAGIC_UV.length + uvSalt.length);
       bioToken.set(cipher, BIO_TOKEN_MAGIC_UV.length + uvSalt.length + bioIv.length);
-      localStorage.setItem('srg_biometric_mode', 'uv');
+      lsSet('srg_biometric_mode', 'uv');
     }
 
     // Save hardware-wrapped token in IndexedDB 'files' store and localStorage backup
     try {
-      localStorage.setItem('srg_bio_token_b64', bufferToBase64(bioToken));
+      lsSet('srg_bio_token_b64', bufferToBase64(bioToken));
     } catch(e) {}
     try {
       const idb = await openSRGDatabase();
@@ -3389,8 +3408,8 @@ async function registerBiometricCredential() {
     } catch(e) {}
 
     const credIdBase64 = bufferToBase64(new Uint8Array(cred.rawId));
-    localStorage.setItem('srg_biometric_cred_id', credIdBase64);
-    localStorage.setItem('srg_biometric_enabled', 'true');
+    lsSet('srg_biometric_cred_id', credIdBase64);
+    lsSet('srg_biometric_enabled', 'true');
     showToast('✓ Fingerprint / Biometric unlock enabled on this device!', 'success', 4000);
     updateBiometricUI();
     return true;
@@ -3734,7 +3753,7 @@ async function handleSetupPinSubmit(e) {
     resetAutoLockTimer();
     purgeLegacySessionAndDiskTokens();
 
-    localStorage.setItem('srg_app_pin_configured', 'true');
+    lsSet('srg_app_pin_configured', 'true');
     localStorage.removeItem('srg_app_pin'); // Purge legacy plaintext PIN
 
     // Initialize or migrate database
@@ -4147,7 +4166,7 @@ async function saveRecoveryVault(masterKeyOrRawBytes, recoveryKey) {
   // Then update localStorage cache (gracefully ignoring quota limits since IndexedDB is primary)
   try {
     const b64 = bufferToBase64(packed);
-    localStorage.setItem('srg_recovery_vault', b64);
+    lsSet('srg_recovery_vault', b64);
   } catch(lsErr) {
     console.warn('Could not cache recovery vault to localStorage (IndexedDB copy is primary):', lsErr);
   }
@@ -4463,12 +4482,12 @@ async function handleForgotPinResetSubmit(e) {
     } catch(e) {}
     try {
       if (packedAuthToken) {
-        localStorage.setItem('srg_crypto_auth_token', bufferToBase64(packedAuthToken));
+        lsSet('srg_crypto_auth_token', bufferToBase64(packedAuthToken));
       }
     } catch(e) {}
     try {
       if (packedVault) {
-        localStorage.setItem('srg_recovery_vault', bufferToBase64(packedVault));
+        lsSet('srg_recovery_vault', bufferToBase64(packedVault));
       }
     } catch(lsErr) {
       console.warn('Could not cache recovery vault to localStorage (IndexedDB copy is primary):', lsErr);
@@ -5029,12 +5048,12 @@ async function handleChangePinSubmit(e) {
     } catch(e) {}
     try {
       if (packedAuthToken) {
-        localStorage.setItem('srg_crypto_auth_token', bufferToBase64(packedAuthToken));
+        lsSet('srg_crypto_auth_token', bufferToBase64(packedAuthToken));
       }
     } catch(e) {}
     try {
       if (packedVault) {
-        localStorage.setItem('srg_recovery_vault', bufferToBase64(packedVault));
+        lsSet('srg_recovery_vault', bufferToBase64(packedVault));
       }
     } catch(lsErr) {
       console.warn('Could not cache recovery vault to localStorage (IndexedDB copy is primary):', lsErr);
@@ -9542,7 +9561,7 @@ function importSqliteFile(e) {
         currentEncryptionKey = backupKey;
         storeCryptoSalt(backupSalt);
         await createAuthVerificationToken(backupKey);
-        localStorage.setItem('srg_app_pin_configured', 'true');
+        lsSet('srg_app_pin_configured', 'true');
         await saveDbToIndexedDB();
         isAppUnlocked = true;
         const overlay = document.getElementById('appLockOverlay');

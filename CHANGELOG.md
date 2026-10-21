@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here. Versions follow the in-app version (`APP_VERSION` in `app.js`, `CACHE_NAME` in `sw.js`).
 
+## v1.3.12 — 2026-10-21
+
+### Critical fix: app stuck at start-up when browser storage is full
+- **Cause:** every app on `srathinagiri.github.io` shares one 5 MB `localStorage`. Another app (a game's saved replay) had filled it. The calendar's start-up write of its version number then threw `QuotaExceededError`, which stopped the whole script: no unlock, no menu actions, no updates.
+- **Fix:** all 21 `localStorage` writes now go through `lsSet()`, which logs a failure, shows a one-time warning and carries on. Everything essential is in IndexedDB; `localStorage` only holds small caches and preferences.
+- Verified: with `localStorage` filled to the last byte, the app starts, unlocks with the PIN and renders.
+
 ## v1.3.11 — 2026-10-21
 
 ### Diagnostics
