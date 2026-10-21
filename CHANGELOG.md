@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented here. Versions follow the in-app version (`APP_VERSION` in `app.js`, `CACHE_NAME` in `sw.js`).
 
+## v1.3.9 — 2026-10-21
+
+### Critical fix: PIN rejected while fingerprint still works
+- **Cause:** every PIN unlock re-encrypted the database with a fresh salt, but the fingerprint token kept the old key. Over time the fingerprint path (including a silent fallback to older snapshots) saved data under a key the PIN could no longer derive, and attachments ended up under a mix of keys.
+- **Repair:** *Change Security PIN* now re-secures everything. It reads the database, snapshots and attachments under every key it can find (the in-memory key plus all PIN + salt combinations), re-encrypts them under one PIN-derived key, and resets the stale fingerprint link. Items no key can open are left untouched and reported, instead of aborting. You may enter the same PIN as the new PIN.
+- **Prevention:**
+  - PIN unlock no longer re-salts when the file is already consistent. When it must, it resets the fingerprint link instead of leaving it stale.
+  - Forgot-PIN reset also resets the fingerprint link.
+  - A fingerprint unlock that can only open an older snapshot now pauses saving, so stale data can never overwrite the main database.
+
+### Backup fixes
+- Unencrypted full backup no longer crashes with `atob … not correctly encoded` on attachments stored as raw bytes.
+- An attachment that can't be read is skipped and listed, instead of failing the whole backup.
+- Encrypted backups (full and DB-only) now ask for your PIN and use a key derived from it plus the backup's own salt, so they always restore with the PIN alone. The encrypted full backup also uses your PIN to open attachments stored under older keys.
+- Emergency Recovery Key no longer fails with `exportKey … key is not extractable`. It checks that the PIN really opens the database and says so if it doesn't.
+
 ## v1.3.8 — 2026-10-21
 
 ### Financial statements (continuous books)

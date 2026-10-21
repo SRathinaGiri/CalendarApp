@@ -112,7 +112,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.3.8';
+const APP_VERSION = 'v1.3.9';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -669,6 +669,9 @@ function saveDbToIndexedDB(updateTimestamp = true) {
   return new Promise(async (resolve, reject) => {
     if (!db) return resolve();
     try {
+      if (biometricSnapshotFallbackActive) {
+        throw new Error('Saving is paused: this session was opened from an older snapshot. Use Change Security PIN to re-secure your data first.');
+      }
       if (!currentEncryptionKey) {
         if (isPinConfigured()) {
           throw new Error('Security Error: Refusing to save unencrypted database while PIN lock is configured.');
@@ -1354,17 +1357,30 @@ async function exportFullBackupZip() {
     return;
   }
 
+  // Optional AES-256 encryption with a PIN-derived key (see requestBackupEncryptionKey)
+  const shouldEncrypt = confirm('🔒 Encrypt backup database and all attachments with your Security PIN (AES-256)?\n\nClick "OK" to encrypt (recommended for cloud storage or USB drives).\nClick "Cancel" for standard unencrypted SQLite.');
+  let backup = null;
+  if (shouldEncrypt) {
+    try {
+      backup = await requestBackupEncryptionKey();
+    } catch (e) {
+      showToast('❌ ' + e.message, 'error', 4500);
+      return;
+    }
+    if (!backup) return;
+  }
+
   const loadingToast = showToast('Creating full backup bundle (database + attachments)...', 'info', 0);
   try {
-    // Offer optional AES-256 encryption using active Security PIN
-    const shouldEncrypt = confirm('🔒 Encrypt backup database and all attachments with your Security PIN (AES-256)?\n\nClick "OK" to encrypt (recommended for cloud storage or USB drives).\nClick "Cancel" for standard unencrypted SQLite.');
-
     const zip = new JSZip();
+    // Reads attachments under whichever key encrypted them (PIN keys are only tried when a PIN was entered).
+    const keyRing = createKeyRing(backup ? backup.pin : null);
+    const skippedFiles = [];
 
     // 1. Export SQLite database binary (optionally encrypted)
     let dbBinary = db.export();
-    if (shouldEncrypt && currentEncryptionKey) {
-      dbBinary = await encryptDatabaseBytes(dbBinary);
+    if (backup) {
+      dbBinary = await encryptWithKeyAndSalt(dbBinary, backup.key, backup.salt, PBKDF2_ITERATIONS);
     }
     const dbSha256 = await getContentFingerprint(dbBinary);
     zip.file('database.db', dbBinary);
@@ -1389,68 +1405,57 @@ async function exportFullBackupZip() {
     const fingerprintToFileMap = new Map();
     const seenZipNames = new Set();
 
-    // Pass 1: Export active schedule attachments directly
+    // Adds one attachment (as a data URL) to the zip; returns false if it was a duplicate or unusable.
+    const addAttachment = async (dataUrl, id, preferredName, displayName) => {
+      const mime = dataUrlMime(dataUrl);
+      const rawBytes = dataUrlToBytes(dataUrl);
+      const fp = await getContentFingerprint(rawBytes);
+      if (fingerprintToFileMap.has(fp)) return false;
+      let zipName = preferredName;
+      if (!zipName.includes('.')) zipName += '.' + extForMime(mime);
+      if (seenZipNames.has(zipName)) return false;
+      seenZipNames.add(zipName);
+      fingerprintToFileMap.set(fp, zipName);
+
+      let filePayload;
+      let fileSha;
+      if (backup) {
+        filePayload = await encryptAttachmentData(dataUrl, backup.key);
+        fileSha = await getContentFingerprint(filePayload);
+      } else {
+        filePayload = rawBytes;
+        fileSha = fp;
+      }
+      attFolder.file(zipName, filePayload);
+      manifestAttachments.push({
+        id: id,
+        filename: zipName,
+        name: displayName || zipName,
+        path: `attachments/${zipName}`,
+        mime: mime,
+        size: filePayload.byteLength || 0,
+        sha256: fileSha,
+        encrypted: !!backup
+      });
+      return true;
+    };
+
+    // Pass 1: attachments referenced by schedules (readable with the in-memory key)
     for (const [id, att] of activeAttsMap.entries()) {
-      const data = await getAttachmentData(att);
-      if (data) {
-        const fp = await getContentFingerprint(data);
-        let zipName = fingerprintToFileMap.get(fp);
-
-        let ext = 'pdf';
-        let mime = 'application/pdf';
-        if (typeof data === 'string' && data.startsWith('data:')) {
-          const m = data.match(/data:([^;]+);/);
-          if (m) {
-            mime = m[1];
-            if (mime.includes('jpeg')) ext = 'jpg';
-            else if (mime.includes('png')) ext = 'png';
-            else if (mime.includes('gif')) ext = 'gif';
-            else if (mime.includes('webp')) ext = 'webp';
-            else if (mime.includes('pdf')) ext = 'pdf';
-          }
-        }
-
-        let baseName = (att.filename || att.name || (att.id + '.' + ext)).replace(/[^a-zA-Z0-9_\-\.]/g, '_');
-        if (!baseName.includes('.')) baseName += '.' + ext;
-
-        if (!zipName) {
-          zipName = baseName;
-          if (att.id && !zipName.startsWith(att.id)) {
-            zipName = `${att.id}_${baseName}`;
-          }
-          seenZipNames.add(zipName);
-          fingerprintToFileMap.set(fp, zipName);
-
-          let filePayload = null;
-          let fileSha = '';
-          if (shouldEncrypt && currentEncryptionKey) {
-            filePayload = await encryptAttachmentData(data, currentEncryptionKey);
-            fileSha = await getContentFingerprint(filePayload);
-            attFolder.file(zipName, filePayload);
-          } else {
-            const commaIdx = typeof data === 'string' ? data.indexOf(',') : -1;
-            const b64 = commaIdx > -1 ? data.slice(commaIdx + 1) : data;
-            const rawBytes = base64ToBuffer(b64);
-            fileSha = await getContentFingerprint(rawBytes);
-            attFolder.file(zipName, b64, { base64: true });
-            filePayload = rawBytes;
-          }
-
-          manifestAttachments.push({
-            id: att.id,
-            filename: zipName,
-            name: att.name || baseName,
-            path: `attachments/${zipName}`,
-            mime: mime,
-            size: filePayload.byteLength || 0,
-            sha256: fileSha,
-            encrypted: !!shouldEncrypt
-          });
-        }
+      try {
+        const data = await getAttachmentData(att);
+        if (!data) continue; // not readable with the in-memory key; pass 2 retries with the key ring
+        const dataUrl = attachmentPayloadToDataUrl(data);
+        if (!dataUrl) continue;
+        let baseName = (att.filename || att.name || (att.id + '.' + extForMime(dataUrlMime(dataUrl)))).replace(/[^a-zA-Z0-9_\-\.]/g, '_');
+        if (att.id && !baseName.startsWith(att.id)) baseName = `${att.id}_${baseName}`;
+        await addAttachment(dataUrl, att.id, baseName, att.name);
+      } catch (attErr) {
+        console.warn('Backup: could not export attachment', id, attErr);
       }
     }
 
-    // Pass 2: Check IndexedDB for any OTHER files with unique content not in schedules
+    // Pass 2: every stored attachment, decrypted under any known key
     const idb = await openSRGDatabase();
     const tx = idb.transaction('files', 'readonly');
     const store = tx.objectStore('files');
@@ -1475,56 +1480,23 @@ async function exportFullBackupZip() {
     });
 
     for (const item of dbFiles) {
-      let plainData = item.val;
-      if (isEncryptedAttachmentBytes(plainData)) {
-        plainData = await decryptAttachmentData(plainData, currentEncryptionKey);
-      }
-      const fp = await getContentFingerprint(plainData);
-      if (!fingerprintToFileMap.has(fp)) {
+      try {
+        const hit = await decryptAttachmentWithKeyRing(item.val, keyRing);
+        if (!hit.ok || !hit.result) {
+          skippedFiles.push(item.key);
+          continue;
+        }
+        const dataUrl = attachmentPayloadToDataUrl(hit.result);
+        if (!dataUrl) {
+          skippedFiles.push(item.key);
+          continue;
+        }
         const rawId = item.key.slice(4);
-        let ext = 'bin';
-        let mime = 'application/octet-stream';
-
-        if (typeof plainData === 'string' && plainData.startsWith('data:')) {
-          const matchMime = plainData.match(/data:([^;]+);/);
-          if (matchMime) {
-            mime = matchMime[1];
-            if (mime.includes('jpeg')) ext = 'jpg';
-            else if (mime.includes('png')) ext = 'png';
-            else if (mime.includes('pdf')) ext = 'pdf';
-          }
-        }
-
-        let zipFileName = rawId.includes('.') ? rawId : `${rawId}.${ext}`;
-        if (!seenZipNames.has(zipFileName)) {
-          seenZipNames.add(zipFileName);
-          fingerprintToFileMap.set(fp, zipFileName);
-
-          let filePayload = null;
-          let fileSha = '';
-          if (shouldEncrypt && currentEncryptionKey) {
-            filePayload = await encryptAttachmentData(plainData, currentEncryptionKey);
-            fileSha = await getContentFingerprint(filePayload);
-            attFolder.file(zipFileName, filePayload);
-          } else {
-            const commaIdx = typeof plainData === 'string' ? plainData.indexOf(',') : -1;
-            const b64 = commaIdx > -1 ? plainData.slice(commaIdx + 1) : plainData;
-            const rawBytes = typeof b64 === 'string' ? base64ToBuffer(b64) : plainData;
-            fileSha = await getContentFingerprint(rawBytes);
-            attFolder.file(zipFileName, rawBytes);
-            filePayload = rawBytes;
-          }
-
-          manifestAttachments.push({
-            id: rawId,
-            filename: zipFileName,
-            path: `attachments/${zipFileName}`,
-            mime: mime,
-            size: filePayload.byteLength || 0,
-            sha256: fileSha,
-            encrypted: !!shouldEncrypt
-          });
-        }
+        const zipFileName = rawId.includes('.') ? rawId : `${rawId}.${extForMime(dataUrlMime(dataUrl))}`;
+        await addAttachment(dataUrl, rawId, zipFileName, null);
+      } catch (attErr) {
+        console.warn('Backup: could not export attachment', item.key, attErr);
+        skippedFiles.push(item.key);
       }
     }
 
@@ -1546,7 +1518,8 @@ async function exportFullBackupZip() {
         tags_count: tagCount
       },
       attachments_count: manifestAttachments.length,
-      attachments: manifestAttachments
+      attachments: manifestAttachments,
+      skipped_attachments: skippedFiles
     };
     zip.file('manifest.json', JSON.stringify(manifest, null, 2));
 
@@ -1567,7 +1540,11 @@ async function exportFullBackupZip() {
     URL.revokeObjectURL(url);
 
     if (loadingToast) dismissToast(loadingToast);
-    showToast(`✓ Exported clean full backup (${schCount} schedules, ${manifestAttachments.length} unique files) to ${downloadFilename}!`, 'success', 5000);
+    if (skippedFiles.length) {
+      showToast(`⚠ Backup saved (${schCount} schedules, ${manifestAttachments.length} files), but ${skippedFiles.length} attachment(s) could not be opened with any known key and were left out.${backup ? '' : ' Try the encrypted option (it can use your PIN to open them), or run Change Security PIN to re-secure first.'}`, 'warning', 9000);
+    } else {
+      showToast(`✓ Exported clean full backup (${schCount} schedules, ${manifestAttachments.length} unique files) to ${downloadFilename}!`, 'success', 5000);
+    }
   } catch (err) {
     if (loadingToast) dismissToast(loadingToast);
     console.error('Error exporting full backup zip:', err);
@@ -3423,6 +3400,9 @@ async function registerBiometricCredential() {
 }
 
 let isBiometricAuthenticating = false;
+// True when a fingerprint unlock could only open an older snapshot. Saves are blocked so stale data
+// can never overwrite the live database; Change Security PIN (re-secure) clears it.
+let biometricSnapshotFallbackActive = false;
 
 async function unlockAppWithBiometric(autoPrompt = false) {
   if (isBiometricAuthenticating) return;
@@ -3587,6 +3567,7 @@ async function unlockAppWithBiometric(autoPrompt = false) {
                   const testBytes = await decryptDatabaseBytes(snap.data, masterKey, true);
                   if (isValidSqliteBinary(testBytes)) {
                     decryptedBytes = testBytes;
+                    biometricSnapshotFallbackActive = true;
                     console.info(`✓ Biometric unlock recovered database from snapshot: ${snap.id}`);
                     break;
                   }
@@ -3619,7 +3600,11 @@ async function unlockAppWithBiometric(autoPrompt = false) {
     switchToView(currentView, currentDate);
 
     updateBadge('Local SQLite Active');
-    showToast('✓ Unlocked via Biometrics!', 'success', 3000);
+    if (biometricSnapshotFallbackActive) {
+      showToast('⚠ Opened from an older snapshot because the fingerprint key is out of date. Saving is paused to protect your main database. Download DB (.db) now, then use Change Security PIN to re-secure.', 'warning', 0);
+    } else {
+      showToast('✓ Unlocked via Biometrics!', 'success', 3000);
+    }
     migratePlaintextAttachmentsToEncrypted(masterKey);
   } catch(err) {
     console.warn('Biometric verification error:', err);
@@ -3842,6 +3827,7 @@ async function unlockAppWithKey(enteredKey) {
     let decryptedBytes = null;
     let successfulKey = null;
     let matchingPin = null;
+    let matchedConfig = null; // set only when the live database (not a snapshot) was opened
 
     // 1. Primary: test candidate keys against active database bytes
     for (const pin of pinsToTry) {
@@ -3853,6 +3839,7 @@ async function unlockAppWithKey(enteredKey) {
             decryptedBytes = testBytes;
             successfulKey = testKey;
             matchingPin = pin;
+            matchedConfig = config;
             console.info(`✓ Successfully unlocked database (salt source: ${config.source}, iterations: ${config.iterations})`);
             break;
           }
@@ -3914,14 +3901,26 @@ async function unlockAppWithKey(enteredKey) {
     db = new SQL.Database(decryptedBytes);
     ensureSchemaUpToDate();
 
-    // Re-encrypt database cleanly with fresh unified salt and V2 (600k iterations)
-    // so header salt and stored salt match 100% permanently across all tiers
     const chosenPin = matchingPin || trimmedKey;
-    const freshSalt = crypto.getRandomValues(new Uint8Array(16));
-    const freshKey = await deriveKeyFromPin(chosenPin, freshSalt, PBKDF2_ITERATIONS, false);
+    const liveHeader = isEncryptedDbBytes(bytesToDecrypt) ? parseEncryptedDbHeader(bytesToDecrypt) : null;
+    // Already consistent: the PIN opened the live file using the file's own salt at the current iteration count.
+    // Re-salting here would silently invalidate the fingerprint token (it wraps the current key), so skip it.
+    const alreadyConsistent = !!(matchedConfig && liveHeader && liveHeader.iterations === PBKDF2_ITERATIONS &&
+      matchedConfig.iterations === PBKDF2_ITERATIONS &&
+      matchedConfig.salt.length === liveHeader.salt.length &&
+      matchedConfig.salt.every((b, i) => b === liveHeader.salt[i]));
+
+    // Otherwise re-encrypt with a fresh salt and V2 (600k iterations) so header salt and stored salt match.
+    const freshSalt = alreadyConsistent ? liveHeader.salt : crypto.getRandomValues(new Uint8Array(16));
+    const freshKey = alreadyConsistent ? successfulKey : await deriveKeyFromPin(chosenPin, freshSalt, PBKDF2_ITERATIONS, false);
     currentEncryptionKey = freshKey;
     currentEncryptionSalt = freshSalt;
     storeCryptoSalt(freshSalt);
+    if (!alreadyConsistent && localStorage.getItem('srg_biometric_enabled') === 'true') {
+      await removeBiometricEncryptionKey();
+      updateBiometricUI();
+      showToast('Fingerprint unlock was reset after re-securing your data. You will be asked to link it again.', 'info', 6000);
+    }
 
     // Write freshSalt to IndexedDB 'files' store 'srg_crypto_salt'
     try {
@@ -4438,6 +4437,11 @@ async function handleForgotPinResetSubmit(e) {
 
     // Atomically re-encrypt snapshots, attachments, database, and recovery vault
     const reencryptResult = await atomicReencryptAllData(recoveredMasterKey, newMasterKey, newSalt, null, stagedVaultBytes);
+    // The fingerprint token wraps the old key; it must be re-linked after a reset.
+    if (localStorage.getItem('srg_biometric_enabled') === 'true') {
+      await removeBiometricEncryptionKey();
+      updateBiometricUI();
+    }
     const packedVault = reencryptResult ? reencryptResult.stagedVaultBytes : null;
     const packedAuthToken = reencryptResult ? reencryptResult.stagedAuthTokenBytes : null;
 
@@ -4518,7 +4522,129 @@ function closeAboutModal() {
    ATOMIC RE-ENCRYPTION UTILITY
    ========================================================================== */
 // Atomically stages, validates, and re-encrypts all snapshots, attachments, active database, and recovery vault
-async function atomicReencryptAllData(oldKey, newKey, newSalt, recoveryKey = null, prebuiltVaultBytes = null) {
+/* ---------- Key ring: every key that may have encrypted data on this device ---------- */
+// Earlier versions let the PIN key, the fingerprint token and older salts drift onto different keys,
+// so the database, snapshots and attachments can be under a mix of them. A key ring reads data under
+// any of them, deriving PIN-based keys lazily (each costs a 600k-iteration PBKDF2 run).
+function createKeyRing(pin = null, extraKeys = []) {
+  const keys = [];
+  const add = k => { if (k && !keys.includes(k)) keys.push(k); };
+  add(currentEncryptionKey);
+  extraKeys.forEach(add);
+  let configs = null;
+  let nextConfig = 0;
+
+  async function deriveNext() {
+    if (!pin) return false;
+    if (!configs) configs = await getAllCandidateCryptoConfigs();
+    while (nextConfig < configs.length) {
+      const cfg = configs[nextConfig++];
+      try {
+        add(await deriveKeyFromPin(pin, cfg.salt, cfg.iterations, false));
+        return true;
+      } catch (e) {}
+    }
+    return false;
+  }
+
+  // Runs fn(key) with each key until one succeeds (fn must throw on failure). The winning key moves
+  // to the front because neighbouring items are usually under the same key.
+  async function tryEach(fn) {
+    let i = 0;
+    while (true) {
+      while (i < keys.length) {
+        const key = keys[i];
+        try {
+          const result = await fn(key);
+          if (i > 0) { keys.splice(i, 1); keys.unshift(key); }
+          return { ok: true, result, key };
+        } catch (e) {
+          i++;
+        }
+      }
+      if (!(await deriveNext())) return { ok: false };
+    }
+  }
+
+  return { tryEach };
+}
+
+async function decryptDbWithKeyRing(bytes, keyRing) {
+  return keyRing.tryEach(async k => {
+    const out = await decryptDatabaseBytes(bytes, k, false);
+    if (!isValidSqliteBinary(out)) throw new Error('Not a valid SQLite database');
+    return out;
+  });
+}
+
+async function decryptAttachmentWithKeyRing(value, keyRing) {
+  if (!isEncryptedAttachmentBytes(value)) return { ok: true, result: await decryptAttachmentData(value, null) };
+  return keyRing.tryEach(async k => {
+    const out = await decryptAttachmentData(value, k);
+    if (!out) throw new Error('Empty attachment payload');
+    return out;
+  });
+}
+
+// Normalizes a stored attachment (data URL string, or bytes holding a data URL or raw file) to a data URL.
+function attachmentPayloadToDataUrl(data, mimeHint = 'application/octet-stream') {
+  if (typeof data === 'string') {
+    if (data.startsWith('data:')) return data;
+    return `data:${mimeHint};base64,${data.replace(/\s+/g, '')}`;
+  }
+  const bytes = data instanceof Uint8Array ? data : (data instanceof ArrayBuffer ? new Uint8Array(data) : null);
+  if (!bytes) return null;
+  try {
+    const head = new TextDecoder().decode(bytes.subarray(0, 5));
+    if (head === 'data:') return new TextDecoder().decode(bytes);
+  } catch (e) {}
+  return `data:${mimeHint};base64,${bufferToBase64(bytes)}`;
+}
+
+function dataUrlToBytes(dataUrl) {
+  const comma = dataUrl.indexOf(',');
+  const meta = dataUrl.slice(0, comma);
+  const body = dataUrl.slice(comma + 1);
+  if (/;base64$/i.test(meta)) return base64ToBuffer(body.replace(/\s+/g, ''));
+  return new TextEncoder().encode(decodeURIComponent(body));
+}
+
+function dataUrlMime(dataUrl) {
+  const m = /^data:([^;,]+)/.exec(dataUrl || '');
+  return m ? m[1] : 'application/octet-stream';
+}
+
+function extForMime(mime) {
+  if (mime.includes('jpeg')) return 'jpg';
+  if (mime.includes('png')) return 'png';
+  if (mime.includes('gif')) return 'gif';
+  if (mime.includes('webp')) return 'webp';
+  if (mime.includes('pdf')) return 'pdf';
+  return 'bin';
+}
+
+// Backups are always encrypted with a key derived from the PIN and the backup's own fresh salt,
+// so they restore with the PIN alone regardless of which key the device happens to hold in memory.
+async function requestBackupEncryptionKey() {
+  const pin = await requestPinPromptModal({
+    title: 'Encrypt Backup',
+    message: 'Enter your Security PIN. The backup will be encrypted so that only this PIN can restore it:',
+    placeholder: 'Enter Security PIN',
+    confirmText: 'Encrypt Backup',
+    iconClass: 'fa-solid fa-lock'
+  });
+  if (!pin || !pin.trim()) return null;
+  if (!(await verifyPinWithAuthToken(pin.trim()))) {
+    throw new Error('Incorrect Security PIN — backup not created.');
+  }
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const key = await deriveKeyFromPin(pin.trim(), salt, PBKDF2_ITERATIONS, false);
+  return { pin: pin.trim(), key, salt };
+}
+
+async function atomicReencryptAllData(oldKey, newKey, newSalt, recoveryKey = null, prebuiltVaultBytes = null, keyRing = null) {
+  // With a key ring, items no key can open are left untouched and reported instead of aborting the repair.
+  const skipped = { snapshots: [], attachments: [] };
   if (!oldKey || !newKey || !newSalt) {
     throw new Error('Missing encryption parameters for atomic re-encryption');
   }
@@ -4544,10 +4670,16 @@ async function atomicReencryptAllData(oldKey, newKey, newSalt, recoveryKey = nul
       const snapBytes = new Uint8Array(snap.data);
       if (isEncryptedDbBytes(snapBytes)) {
         let dec;
-        try {
-          dec = await decryptDatabaseBytes(snapBytes, oldKey, false);
-        } catch(err) {
-          throw new Error(`Failed to decrypt snapshot "${snap.name || snap.id}" with current key: ${err.message}. Aborting re-encryption.`);
+        if (keyRing) {
+          const hit = await decryptDbWithKeyRing(snapBytes, keyRing);
+          if (!hit.ok) { skipped.snapshots.push(snap.name || snap.id); continue; }
+          dec = hit.result;
+        } else {
+          try {
+            dec = await decryptDatabaseBytes(snapBytes, oldKey, false);
+          } catch(err) {
+            throw new Error(`Failed to decrypt snapshot "${snap.name || snap.id}" with current key: ${err.message}. Aborting re-encryption.`);
+          }
         }
         const reEnc = await encryptWithKeyAndSalt(dec, newKey, newSalt);
         try {
@@ -4596,10 +4728,16 @@ async function atomicReencryptAllData(oldKey, newKey, newSalt, recoveryKey = nul
   for (const entry of fileEntries) {
     let plainData = null;
     if (isEncryptedAttachmentBytes(entry.value)) {
-      try {
-        plainData = await decryptAttachmentData(entry.value, oldKey);
-      } catch(err) {
-        throw new Error(`Failed to decrypt attachment ${entry.key} with current key: ${err.message}. Aborting.`);
+      if (keyRing) {
+        const hit = await decryptAttachmentWithKeyRing(entry.value, keyRing);
+        if (!hit.ok) { skipped.attachments.push(entry.key); continue; }
+        plainData = hit.result;
+      } else {
+        try {
+          plainData = await decryptAttachmentData(entry.value, oldKey);
+        } catch(err) {
+          throw new Error(`Failed to decrypt attachment ${entry.key} with current key: ${err.message}. Aborting.`);
+        }
       }
       if (!plainData) {
         throw new Error(`Empty decrypted payload for attachment ${entry.key}. Aborting.`);
@@ -4677,7 +4815,8 @@ async function atomicReencryptAllData(oldKey, newKey, newSalt, recoveryKey = nul
 
   return {
     stagedVaultBytes,
-    stagedAuthTokenBytes
+    stagedAuthTokenBytes,
+    skipped
   };
 }
 
@@ -4844,10 +4983,33 @@ async function handleChangePinSubmit(e) {
     const newKey = await importRuntimeAesGcmKey(newRawMasterBytes);
     newRawMasterBytes.fill(0); // Zero sensitive memory immediately
 
-    // Perform atomic multi-store re-encryption
-    const reencryptResult = await atomicReencryptAllData(oldKey, newKey, newSalt, null, stagedVaultBytes);
+    const keyRing = createKeyRing(currentPin, [oldKey]);
+
+    // If this session was opened from a snapshot, the stored database may be newer: use it when any key opens it.
+    if (biometricSnapshotFallbackActive) {
+      const storedBytes = await loadDbFromIndexedDB();
+      if (storedBytes) {
+        const hit = await decryptDbWithKeyRing(storedBytes, keyRing);
+        if (hit.ok) {
+          db = new SQL.Database(hit.result);
+          ensureSchemaUpToDate();
+        }
+      }
+    }
+
+    // Perform atomic multi-store re-encryption (database is re-encrypted from memory)
+    const reencryptResult = await atomicReencryptAllData(oldKey, newKey, newSalt, null, stagedVaultBytes, keyRing);
     const packedVault = reencryptResult ? reencryptResult.stagedVaultBytes : null;
     const packedAuthToken = reencryptResult ? reencryptResult.stagedAuthTokenBytes : null;
+    const skipped = reencryptResult ? reencryptResult.skipped : { snapshots: [], attachments: [] };
+
+    // The fingerprint token wraps the old key; clear it so it can be re-linked to the new one.
+    const hadBiometric = localStorage.getItem('srg_biometric_enabled') === 'true';
+    if (hadBiometric) {
+      await removeBiometricEncryptionKey();
+      updateBiometricUI();
+    }
+    biometricSnapshotFallbackActive = false;
 
     // Update in-memory active key (non-extractable)
     currentEncryptionKey = newKey;
@@ -4874,7 +5036,15 @@ async function handleChangePinSubmit(e) {
     localStorage.removeItem('srg_recovery_key_display');
 
     closeChangePinModal();
-    showToast('✓ Security PIN changed! A new Emergency Recovery Key has been generated.', 'success', 5000);
+    loadMasterDataFromDb();
+    renderCurrentView();
+    const skippedCount = skipped.snapshots.length + skipped.attachments.length;
+    showToast(
+      '✓ Security PIN set and all data re-secured.' +
+      (skippedCount ? ` ${skipped.attachments.length} attachment(s) and ${skipped.snapshots.length} snapshot(s) could not be opened with any known key and were left unchanged.` : '') +
+      (hadBiometric ? ' Fingerprint unlock was reset — re-enable it from the menu.' : ''),
+      skippedCount ? 'warning' : 'success', 9000);
+    if (skippedCount) console.warn('Re-secure skipped items:', skipped);
     setTimeout(() => {
       openRecoveryKitModal(newRecoveryKey);
     }, 500);
@@ -9111,8 +9281,16 @@ async function exportSqliteFile() {
   const shouldEncrypt = confirm('🔒 Encrypt this database backup with your Security PIN (AES-256)?\n\nClick "OK" to encrypt (recommended for cloud storage or USB).\nClick "Cancel" for standard unencrypted SQLite .db file.');
   let binaryArray = db.export();
   let ext = 'db';
-  if (shouldEncrypt && currentEncryptionKey) {
-    binaryArray = await encryptDatabaseBytes(binaryArray);
+  if (shouldEncrypt) {
+    let backup;
+    try {
+      backup = await requestBackupEncryptionKey();
+    } catch (e) {
+      showToast('❌ ' + e.message, 'error', 4500);
+      return;
+    }
+    if (!backup) return;
+    binaryArray = await encryptWithKeyAndSalt(binaryArray, backup.key, backup.salt, PBKDF2_ITERATIONS);
     ext = 'enc.db';
   }
   const blob = new Blob([binaryArray], { type: 'application/x-sqlite3' });
@@ -9333,12 +9511,25 @@ function setupUIEventListeners() {
       }
       const bytesToInspect = cachedEncryptedDbBytes || await loadDbFromIndexedDB();
       const parsed = bytesToInspect && isEncryptedDbBytes(bytesToInspect) ? parseEncryptedDbHeader(bytesToInspect) : null;
-      const iterations = parsed ? parsed.iterations : PBKDF2_ITERATIONS;
-      const derived = await deriveKeyFromPin(enteredPin.trim(), salt, iterations, false);
-      currentEncryptionKey = derived;
+      if (!parsed) {
+        showToast('Could not read the database encryption header. Please reload and try again.', 'error', 4500);
+        return;
+      }
+      // The vault must wrap the key that actually encrypts the database, derived from the file's own header.
+      const rawBits = await deriveRawKeyBitsFromPin(enteredPin.trim(), parsed.salt, parsed.iterations);
+      try {
+        const testKey = await importRuntimeAesGcmKey(new Uint8Array(rawBits));
+        const testBytes = await decryptDatabaseBytes(bytesToInspect, testKey, false);
+        if (!isValidSqliteBinary(testBytes)) throw new Error('mismatch');
+      } catch (mismatchErr) {
+        rawBits.fill(0);
+        showToast('Your PIN and the database key are out of sync. Use "Change Security PIN" (you may re-enter the same PIN as the new one) to re-secure your data, then create the recovery key.', 'warning', 9000);
+        return;
+      }
       try {
         const freshKey = generateRecoveryKey();
-        await saveRecoveryVault(derived, freshKey);
+        await saveRecoveryVault(rawBits, freshKey);
+        rawBits.fill(0);
         openRecoveryKitModal(freshKey);
       } catch (vaultErr) {
         console.error('Failed to save recovery vault:', vaultErr);
