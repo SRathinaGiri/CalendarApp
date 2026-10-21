@@ -1,8 +1,8 @@
-# Calendar App (Offline PWA) v1.4.0
+# Calendar App (Offline PWA) v1.4.1
 
 A standalone, local-first Personal Calendar & Daily Organizer Progressive Web App (PWA) powered by client-side **SQLite (WASM)** and **IndexedDB** local storage with **AES-256-GCM hardware-accelerated encryption at rest for both database and file attachments**.
 
-> **Production PWA (v1.4.0)**  
+> **Production PWA (v1.4.1)**  
 > Fully client-side, local-first calendar with ACID SQLite storage, Web Crypto AES-256-GCM encryption at rest for database and attachments, OWASP-compliant 600,000-iteration PBKDF2 key derivation with versioned headers (`SRGE3` data-key envelope; `SRGE1`/`SRGE2` still readable), non-extractable in-memory runtime keys, dual-tier WebAuthn biometrics (Hardware PRF `SRGBIO1` & Platform User Verification `SRGBIO2` with mobile gesture tap-to-scan hero card and passkey autofill), virtual keyboard suppression on biometric lock screens, 5-minute inactivity auto-lock and progressive PIN attempt throttling, fail-closed persistence guarantees, strict Content Security Policy (CSP), safe Emergency Recovery Kit, forgot PIN reset loop, enforced 6+ character PIN/passphrase protection, SHA-256 corruption-verified backup archives, optional AES-256 encrypted backups, atomic single-transaction restore & re-encryption including the recovery vault, robust offline attachment encryption migration, and 100% offline capabilities.
 
 ---
@@ -14,7 +14,7 @@ A standalone, local-first Personal Calendar & Daily Organizer Progressive Web Ap
 - **Embedded SQLite WASM Engine (`sql.js`):** Embedded relational database providing SQL queries, atomic transaction guarantees on schedule saves, and direct `.db` file exports.
 - **Hardware-Accelerated AES-256-GCM Database & Attachment Encryption at Rest:**
   - Transparently encrypts the SQLite database, all historical snapshots, and all ticket attachments stored in browser IndexedDB with authenticated **AES-256-GCM**.
-  - **Envelope encryption (v1.4.0+):** a random 256-bit **data key** encrypts the database (`SRGE3` header), snapshots and attachments once and never changes. Your PIN (PBKDF2-SHA256, 600,000 iterations, own salt), the fingerprint token and the Emergency Recovery Key each only *wrap* that same data key, so changing the PIN rewrites a 48-byte wrapper and never re-encrypts your data. Older `SRGE1`/`SRGE2` PIN-derived data is upgraded automatically at the first PIN unlock (atomic, nothing deleted; items no key opens are reported).
+  - **Envelope encryption (v1.4.1+):** a random 256-bit **data key** encrypts the database (`SRGE3` header), snapshots and attachments once and never changes. Your PIN (PBKDF2-SHA256, 600,000 iterations, own salt), the fingerprint token and the Emergency Recovery Key each only *wrap* that same data key, so changing the PIN rewrites a 48-byte wrapper and never re-encrypts your data. Older `SRGE1`/`SRGE2` PIN-derived data is upgraded automatically at the first PIN unlock (atomic, nothing deleted; items no key opens are reported).
   - Runtime master keys are imported strictly with `extractable: false` and kept in memory only—never written to `sessionStorage` or `localStorage`. Raw key bytes are zeroed out immediately after derivation.
   - Fail-closed storage guarantees: database, snapshot, and attachment persistence strictly refuse to write unencrypted data if a PIN has been configured.
   - Automatic Inactivity Lock: 5-minute idle auto-lock with progressive PIN throttling delays (3s, 10s, 30s) after consecutive failed attempts.
@@ -37,7 +37,7 @@ A standalone, local-first Personal Calendar & Daily Organizer Progressive Web Ap
 - **Local Snapshots:** Save named encrypted database safety snapshots in browser storage anytime. Snapshots use the same data key, so PIN changes never touch them.
 - **PWA (Progressive Web App):**
   - Installable directly to home screen or desktop from Chrome, Edge, Safari, or Brave.
-  - Version-scoped Service Worker cache cleanup (`v1.4.0`).
+  - Version-scoped Service Worker cache cleanup (`v1.4.1`).
   - In-app install and check for updates buttons.
 - **Comprehensive Calendar Views:**
   - **Calendar View:** 7-column month grid. In portrait mode, uniform square day cells with center indicator badges and a bottom day schedule agenda panel maximize usability. Long-pressing any day initiates multi-date selection for batch scheduling with single-tap date addition/removal. In landscape mode, full titles, times, and notes are shown.

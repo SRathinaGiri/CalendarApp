@@ -131,7 +131,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.4.0';
+const APP_VERSION = 'v1.4.1';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -3610,6 +3610,8 @@ function updateBiometricUI() {
   if (bioContainer) {
     bioContainer.classList.toggle('hidden', !isEnabled);
   }
+  const pinHint = document.getElementById('appLockPinHint');
+  if (pinHint) pinHint.classList.toggle('hidden', !isEnabled);
   if (defaultIcon) {
     defaultIcon.classList.toggle('hidden', isEnabled);
   }
@@ -3807,12 +3809,18 @@ async function registerBiometricCredential() {
 }
 
 let isBiometricAuthenticating = false;
+// Set by "Use Calendar PIN instead": stops the automatic fingerprint prompt for this session, because
+// Android's fingerprint sheet offers "Use PIN" for the phone's screen-lock PIN, which people confuse
+// with the Calendar PIN. Tapping the fingerprint card still works and clears it.
+let preferCalendarPin = false;
 // True when a fingerprint unlock could only open an older snapshot. Saves are blocked so stale data
 // can never overwrite the live database; Change Security PIN (re-secure) clears it.
 let biometricSnapshotFallbackActive = false;
 
 async function unlockAppWithBiometric(autoPrompt = false) {
   if (isBiometricAuthenticating) return;
+  if (autoPrompt && preferCalendarPin) return;
+  if (!autoPrompt) preferCalendarPin = false;
   const credIdBase64 = localStorage.getItem('srg_biometric_cred_id');
   if (!credIdBase64 || localStorage.getItem('srg_biometric_enabled') !== 'true') {
     if (!autoPrompt) {
@@ -10486,6 +10494,16 @@ function setupUIEventListeners() {
     });
   }
 
+  const usePinInsteadBtn = document.getElementById('usePinInsteadBtn');
+  if (usePinInsteadBtn) {
+    usePinInsteadBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      preferCalendarPin = true;
+      const keyInp = document.getElementById('appLockKeyInput');
+      if (keyInp) keyInp.focus();
+    });
+  }
+
   const biometricHeroBox = document.getElementById('biometricHeroBox');
   if (biometricHeroBox) {
     biometricHeroBox.addEventListener('click', () => {
@@ -10502,7 +10520,7 @@ function setupUIEventListeners() {
   const appLockUnlockContainer = document.getElementById('appLockUnlockContainer');
   if (appLockUnlockContainer) {
     appLockUnlockContainer.addEventListener('click', (e) => {
-      if (e.target.closest('#appUnlockForm') || e.target.closest('#forgotPinBtn') || e.target.closest('#enableBiometricBtn')) {
+      if (e.target.closest('#appUnlockForm') || e.target.closest('#forgotPinBtn') || e.target.closest('#enableBiometricBtn') || e.target.closest('#usePinInsteadBtn') || e.target.closest('#appLockPinHint')) {
         return;
       }
       if (localStorage.getItem('srg_biometric_enabled') === 'true') {

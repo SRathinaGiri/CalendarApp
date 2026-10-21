@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here. Versions follow the in-app version (`APP_VERSION` in `app.js`, `CACHE_NAME` in `sw.js`).
 
+## v1.4.1 — 2026-10-21
+
+### Lock screen: Calendar PIN vs. phone PIN
+- Android's fingerprint pop-up has its own **"Use PIN"** button, which opens Android's white "Verify it's you" page. That page asks for the **phone's screen-lock PIN**, so typing the Calendar PIN there fails.
+- New **Use Calendar PIN instead** button on the fingerprint card. It moves focus to the Calendar PIN box and stops the automatic fingerprint prompt for the rest of the session. Tapping the fingerprint card still works and turns automatic prompting back on.
+- A short hint under the PIN box explains the difference. It shows only when fingerprint unlock is set up.
+
 ## v1.4.0 — 2026-10-21
 
 ### Envelope encryption: the data key never changes again
