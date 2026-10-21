@@ -2,6 +2,28 @@
 
 All notable changes to this project are documented here. Versions follow the in-app version (`APP_VERSION` in `app.js`, `CACHE_NAME` in `sw.js`).
 
+## v1.3.7 — 2026-10-21
+
+### Chart of Accounts
+- New **Chart of Accounts** (side menu → Daily Tools, or "Manage chart of accounts" in the finance form). Each account has a type: Asset, Liability, Revenue or Expenditure.
+- On first load, every account name already used in your entries is added automatically as *Unclassified*, and names differing only in case or spacing ("cash ", "Cash") become one account. Stored entries are rewritten to the standard spelling.
+- Rename an account, or merge a duplicate into another (e.g. "SBI" → "SBI Bank"). All existing entries are updated in one SQL transaction. A merge is refused if it would leave an entry that debits and credits the same account.
+- Unused accounts can be deleted. Accounts that are in use can't be deleted.
+- The finance form now picks debit/credit accounts from the chart (grouped by type) instead of free text, with an inline **+ Add new account…** option.
+
+### Voucher types
+- Added **Contra** (cash ↔ bank transfers) and **Journal** (non-cash adjustments) alongside Receipt and Payment, with a hint under the type explaining which side to debit/credit.
+- Receipts/Payments/Net Flow totals now count only receipts and payments. Previously every non-receipt entry was counted as a payment.
+- Saving is blocked, with a clear message, when the debit and credit accounts are the same, an account is missing, or the amount is zero.
+
+### Ledger
+- The ledger account dropdown comes from the chart (grouped by type), and the ledger header shows the account type.
+- Ledger matching ignores case and stray spaces.
+- Balances display as `₹x Dr` / `₹x Cr` instead of a signed number.
+
+### Fixes
+- Editing a transaction keeps its original creation time, so it no longer jumps to the end of the day's list.
+
 ## v1.3.6 — 2026-10-16
 
 ### Privacy / offline

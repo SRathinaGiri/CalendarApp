@@ -41,7 +41,7 @@
               <div class="brand-logo">
                 <i class="fa-solid fa-calendar-days"></i>
               </div>
-              <span class="brand-name">Calendar App <small id="appVersionBadge" style="font-size:0.7rem; font-weight:600; color:#38bdf8; background:rgba(56,189,248,0.15); padding:1px 5px; border-radius:4px; margin-left:3px;">v1.3.6</small></span>
+              <span class="brand-name">Calendar App <small id="appVersionBadge" style="font-size:0.7rem; font-weight:600; color:#38bdf8; background:rgba(56,189,248,0.15); padding:1px 5px; border-radius:4px; margin-left:3px;">v1.3.7</small></span>
             </div>
           </div>
 
@@ -131,7 +131,7 @@
           </div>
           <div class="brand-text">
             <span class="brand-name">Calendar App</span>
-            <span class="brand-badge" id="drawerVersionBadge">v1.3.6 &bull; Encrypted Offline PWA</span>
+            <span class="brand-badge" id="drawerVersionBadge">v1.3.7 &bull; Encrypted Offline PWA</span>
           </div>
         </div>
         <button id="closeSideMenuBtn" class="btn-icon" title="Close Menu"><i class="fa-solid fa-xmark"></i></button>
@@ -148,7 +148,7 @@
               <div class="drawer-card-title" id="drawerInstallUpdateTitle">Install / Update App</div>
               <div class="drawer-card-desc" id="drawerInstallUpdateDesc">Install or check for updates</div>
             </div>
-            <span id="drawerInstallUpdateBadge" class="drawer-badge">v1.3.6</span>
+            <span id="drawerInstallUpdateBadge" class="drawer-badge">v1.3.7</span>
           </button>
         </div>
 
@@ -183,6 +183,10 @@
           <button id="drawerFinanceBtn" class="drawer-nav-item">
             <i class="fa-solid fa-coins text-emerald"></i>
             <span>Daily Receipts & Payments</span>
+          </button>
+          <button id="drawerAccountsBtn" class="drawer-nav-item">
+            <i class="fa-solid fa-sitemap text-emerald"></i>
+            <span>Chart of Accounts</span>
           </button>
         </div>
 
@@ -765,9 +769,11 @@
             <div class="form-row-2" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
               <div class="form-group">
                 <label for="financeType">Type *</label>
-                <select id="financeType" required style="width: 100%; padding: 8px; border-radius: var(--radius-md); background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color);">
-                  <option value="receipt">🟢 Receipt (Income In)</option>
-                  <option value="payment">🔴 Payment (Expense Out)</option>
+                <select id="financeType" required aria-describedby="financeTypeHint" style="width: 100%; padding: 8px; border-radius: var(--radius-md); background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color);">
+                  <option value="receipt">🟢 Receipt (Money In)</option>
+                  <option value="payment">🔴 Payment (Money Out)</option>
+                  <option value="contra">🔁 Contra (Cash ↔ Bank Transfer)</option>
+                  <option value="journal">📝 Journal (Non-cash Adjustment)</option>
                 </select>
               </div>
               <div class="form-group">
@@ -776,17 +782,38 @@
               </div>
             </div>
 
+            <p id="financeTypeHint" class="finance-type-hint"></p>
+
             <div class="form-row-2" style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
               <div class="form-group">
-                <label for="financeDebitAccount">Debit Account *</label>
-                <input type="text" id="financeDebitAccount" list="debitAccountsDatalist" required placeholder="e.g. Cash, SBI Bank" style="width: 100%; padding: 8px; border-radius: var(--radius-md); background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color);">
-                <datalist id="debitAccountsDatalist"></datalist>
+                <label for="financeDebitAccount">Debit Account (Dr) *</label>
+                <select id="financeDebitAccount" required style="width: 100%; padding: 8px; border-radius: var(--radius-md); background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color);"></select>
               </div>
               <div class="form-group">
-                <label for="financeCreditAccount">Credit Account *</label>
-                <input type="text" id="financeCreditAccount" list="creditAccountsDatalist" required placeholder="e.g. Salary, Travel Fee" style="width: 100%; padding: 8px; border-radius: var(--radius-md); background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color);">
-                <datalist id="creditAccountsDatalist"></datalist>
+                <label for="financeCreditAccount">Credit Account (Cr) *</label>
+                <select id="financeCreditAccount" required style="width: 100%; padding: 8px; border-radius: var(--radius-md); background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color);"></select>
               </div>
+            </div>
+
+            <!-- Inline quick-add for a new account (shown when "+ Add new account…" is picked) -->
+            <div id="financeNewAccountPanel" class="finance-new-account hidden" role="group" aria-labelledby="financeNewAccountHeading">
+              <div id="financeNewAccountHeading" class="finance-new-account-title">New <span id="financeNewAccountFor">Debit</span> account</div>
+              <div class="finance-new-account-row">
+                <input type="text" id="financeNewAccountName" maxlength="60" placeholder="e.g. SBI Savings A/c" aria-label="New account name">
+                <select id="financeNewAccountType" aria-label="New account type">
+                  <option value="">Type…</option>
+                  <option value="asset">Asset</option>
+                  <option value="liability">Liability</option>
+                  <option value="revenue">Revenue</option>
+                  <option value="expenditure">Expenditure</option>
+                </select>
+                <button type="button" id="financeNewAccountSaveBtn" class="btn-primary btn-sm">Add</button>
+                <button type="button" id="financeNewAccountCancelBtn" class="btn-secondary btn-sm">Cancel</button>
+              </div>
+              <small id="financeNewAccountError" class="finance-new-account-error" role="alert"></small>
+            </div>
+            <div style="margin: -4px 0 10px; text-align: right;">
+              <button type="button" id="financeManageAccountsBtn" class="btn-link-sm"><i class="fa-solid fa-sitemap"></i> Manage chart of accounts</button>
             </div>
 
             <div class="form-group" style="margin-bottom: 12px;">
@@ -799,6 +826,39 @@
               <button type="submit" class="btn-primary btn-sm"><i class="fa-solid fa-floppy-disk"></i> Save Transaction</button>
             </div>
           </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- CHART OF ACCOUNTS MODAL -->
+    <div id="chartOfAccountsModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="chartOfAccountsTitle">
+      <div class="modal-card" style="max-width: 560px;">
+        <div class="modal-header">
+          <h3 id="chartOfAccountsTitle"><i class="fa-solid fa-sitemap" style="color: var(--receipt-color);"></i> Chart of Accounts</h3>
+          <button id="closeChartOfAccountsModalBtn" class="btn-icon" aria-label="Close chart of accounts"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="modal-body" style="padding: 16px 20px;">
+          <p class="coa-intro">Every debit/credit account you use is listed here. Set its type, rename it, or merge duplicates (e.g. "SBI" into "SBI Bank") — existing entries are updated automatically.</p>
+
+          <form id="coaAddForm" class="coa-add-form">
+            <input type="text" id="coaNewName" maxlength="60" placeholder="New account name" aria-label="New account name" required>
+            <select id="coaNewType" aria-label="Account type" required>
+              <option value="">Type…</option>
+              <option value="asset">Asset</option>
+              <option value="liability">Liability</option>
+              <option value="revenue">Revenue</option>
+              <option value="expenditure">Expenditure</option>
+            </select>
+            <button type="submit" class="btn-primary btn-sm"><i class="fa-solid fa-plus"></i> Add</button>
+          </form>
+          <small id="coaAddError" class="finance-new-account-error" role="alert"></small>
+
+          <div class="coa-toolbar">
+            <span id="coaSummary" class="coa-summary"></span>
+            <input type="search" id="coaSearchInput" placeholder="Search accounts" aria-label="Search accounts">
+          </div>
+          <datalist id="coaNamesDatalist"></datalist>
+          <div id="coaList" class="coa-list"></div>
         </div>
       </div>
     </div>
@@ -1053,7 +1113,7 @@
           </div>
           <h2 style="font-size: 1.45rem; font-weight: 700; margin-bottom: 4px; color: var(--text-main);">Calendar App</h2>
           <div style="display: inline-block; font-size: 0.8rem; font-weight: 600; color: #38bdf8; background: rgba(56,189,248,0.12); padding: 3px 10px; border-radius: 12px; margin-bottom: 16px; border: 1px solid rgba(56,189,248,0.3);">
-            Version <span id="aboutModalVersion">v1.3.6 (PWA)</span>
+            Version <span id="aboutModalVersion">v1.3.7 (PWA)</span>
           </div>
 
           <div style="background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 14px 16px; text-align: left; font-size: 0.88rem; line-height: 1.55; margin-bottom: 16px;">

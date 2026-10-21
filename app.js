@@ -112,7 +112,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.3.6';
+const APP_VERSION = 'v1.3.7';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -475,6 +475,38 @@ function ensureSchemaUpToDate() {
     try { db.run("ALTER TABLE tag_field_definitions ADD COLUMN field_key TEXT;"); } catch(e) {}
     try { db.run("ALTER TABLE tag_field_definitions ADD COLUMN field_label TEXT;"); } catch(e) {}
     try { db.run("ALTER TABLE tag_field_definitions ADD COLUMN field_type TEXT;"); } catch(e) {}
+
+    // Chart of accounts: one row per standardized account name. COLLATE NOCASE so "cash" and "Cash" are one account.
+    try {
+      db.run(`
+        CREATE TABLE IF NOT EXISTS chart_of_accounts (
+          name TEXT PRIMARY KEY COLLATE NOCASE,
+          account_type TEXT NOT NULL DEFAULT 'unclassified',
+          created_at TEXT,
+          updated_at TEXT
+        );
+      `);
+      // Idempotent backfill: every account name already used in a transaction gets a row (type left for the user to set),
+      // so older databases and restored backups pick up their accounts automatically.
+      db.run(`
+        INSERT OR IGNORE INTO chart_of_accounts (name, account_type, created_at, updated_at)
+        SELECT acct, 'unclassified', datetime('now'), datetime('now') FROM (
+          SELECT TRIM(debit_account) AS acct FROM daily_transactions
+          UNION SELECT TRIM(credit_account) FROM daily_transactions
+        ) WHERE acct IS NOT NULL AND acct != ''
+      `);
+      // Standardize stored names to the chart's spelling (e.g. "cash " -> "Cash") so reports print one name per account.
+      ['debit_account', 'credit_account'].forEach(col => {
+        db.run(`
+          UPDATE daily_transactions
+          SET ${col} = (SELECT c.name FROM chart_of_accounts c WHERE c.name = TRIM(daily_transactions.${col}) COLLATE NOCASE)
+          WHERE ${col} IS NOT NULL AND TRIM(${col}) != ''
+            AND ${col} != (SELECT c.name FROM chart_of_accounts c WHERE c.name = TRIM(daily_transactions.${col}) COLLATE NOCASE)
+        `);
+      });
+    } catch (e) {
+      console.warn('Chart of accounts schema note:', e);
+    }
 
     // Auto-transition past planned/confirmed schedules to completed
     try {
@@ -4965,7 +4997,7 @@ function getDailyTransactionsMap() {
       rows.forEach(r => {
         if (!map[r.txn_date]) map[r.txn_date] = { receipts: 0, payments: 0, count: 0 };
         if (r.type === 'receipt') map[r.txn_date].receipts += toPaise(r.amount);
-        else map[r.txn_date].payments += toPaise(r.amount);
+        else if (r.type === 'payment') map[r.txn_date].payments += toPaise(r.amount);
         map[r.txn_date].count++;
       });
     }
@@ -4980,27 +5012,41 @@ async function saveDailyTransaction(txn) {
   const id = txn.id || ('txn_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6));
   const dateStr = txn.txn_date;
   const type = txn.type;
-  const debit = (txn.debit_account || '').trim();
-  const credit = (txn.credit_account || '').trim();
+  const debitAcct = findAccount(txn.debit_account);
+  const creditAcct = findAccount(txn.credit_account);
   const amount = toPaise(txn.amount) / 100; // stored as rupees, normalised to whole paise
   const desc = (txn.description || '').trim();
   const now = new Date().toISOString();
 
+  const problem =
+    !VOUCHER_TYPES[type] ? 'Choose a voucher type.' :
+    !debitAcct ? 'Choose a debit account from the chart of accounts (or add a new one).' :
+    !creditAcct ? 'Choose a credit account from the chart of accounts (or add a new one).' :
+    debitAcct.name.toLowerCase() === creditAcct.name.toLowerCase() ? 'Debit and credit accounts must be different.' :
+    !(amount > 0) ? 'Enter an amount greater than zero.' : null;
+  if (problem) {
+    showToast('⚠ ' + problem, 'error', 4500);
+    return false;
+  }
+
   try {
+    // COALESCE keeps the original created_at when an existing entry is edited (it drives display order).
     db.run(`
-      INSERT OR REPLACE INTO daily_transactions 
+      INSERT OR REPLACE INTO daily_transactions
       (id, txn_date, type, debit_account, credit_account, amount, description, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [id, dateStr, type, debit, credit, amount, desc, now, now]);
+      VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT created_at FROM daily_transactions WHERE id = ?), ?), ?)
+    `, [id, dateStr, type, debitAcct.name, creditAcct.name, amount, desc, id, now, now]);
 
     await saveDbToIndexedDB();
     renderCurrentView();
     renderFinanceTransactionsList(dateStr);
     populateFinanceAccountsDatalists();
     showToast('✓ Financial transaction saved locally!', 'success', 3000);
+    return true;
   } catch(err) {
     console.error('Error saving transaction:', err);
     showToast('❌ Error saving transaction: ' + err.message, 'error', 4000);
+    return false;
   }
 }
 
@@ -5052,6 +5098,8 @@ function resetFinanceForm() {
   document.getElementById('financeFormTitle').innerHTML = '<i class="fa-solid fa-plus"></i> Add New Transaction';
   const resetBtn = document.getElementById('resetFinanceFormBtn');
   if (resetBtn) resetBtn.style.display = 'none';
+  closeFinanceNewAccountPanel(false);
+  updateFinanceTypeHint();
 }
 
 function renderFinanceTransactionsList(dateStr) {
@@ -5073,14 +5121,14 @@ function renderFinanceTransactionsList(dateStr) {
     txns.forEach(t => {
       const amt = toPaise(t.amount);
       if (t.type === 'receipt') totalReceipts += amt;
-      else totalPayments += amt;
+      else if (t.type === 'payment') totalPayments += amt;
 
       const card = document.createElement('div');
       card.style.cssText = 'background:var(--bg-primary); border:1px solid var(--border-color); border-radius:var(--radius-md); padding:10px 12px; display:flex; justify-content:space-between; align-items:center; font-size:0.88rem;';
       card.innerHTML = `
         <div>
-          <span style="font-weight:600; color:${t.type === 'receipt' ? 'var(--receipt-color)' : 'var(--payment-color)'};">
-            ${t.type === 'receipt' ? '🟢 Receipt' : '🔴 Payment'} &mdash; ${formatINR(amt)}
+          <span style="font-weight:600; color:${voucherTypeInfo(t.type).color};">
+            ${voucherTypeInfo(t.type).icon} ${voucherTypeInfo(t.type).label} &mdash; ${formatINR(amt)}
           </span>
           <div style="font-size:0.78rem; color:var(--text-muted); margin-top:2px;">
             Dr: <strong>${escapeHtml(t.debit_account || '')}</strong> | Cr: <strong>${escapeHtml(t.credit_account || '')}</strong>
@@ -5099,8 +5147,9 @@ function renderFinanceTransactionsList(dateStr) {
           document.getElementById('financeTxnId').value = t.id;
           document.getElementById('financeType').value = t.type;
           document.getElementById('financeAmount').value = t.amount;
-          document.getElementById('financeDebitAccount').value = t.debit_account || '';
-          document.getElementById('financeCreditAccount').value = t.credit_account || '';
+          setAccountSelectValue(document.getElementById('financeDebitAccount'), t.debit_account || '');
+          setAccountSelectValue(document.getElementById('financeCreditAccount'), t.credit_account || '');
+          updateFinanceTypeHint();
           document.getElementById('financeDescription').value = t.description || '';
           document.getElementById('financeFormTitle').innerHTML = '<i class="fa-solid fa-pen-to-square"></i> Edit Transaction';
           const rBtn = document.getElementById('resetFinanceFormBtn');
@@ -5130,19 +5179,445 @@ function renderFinanceTransactionsList(dateStr) {
   }
 }
 
+/* ==========================================================================
+   CHART OF ACCOUNTS & VOUCHER TYPES
+   ========================================================================== */
+
+// Conventional Indian bookkeeping voucher types. Only receipts and payments move the cash-flow totals;
+// contra (cash <-> bank) and journal (non-cash adjustments) still post to both ledgers.
+const VOUCHER_TYPES = {
+  receipt: { label: 'Receipt', icon: '🟢', color: 'var(--receipt-color)', hint: 'Money in. Dr: Cash/Bank (asset) · Cr: Income or the party who paid.' },
+  payment: { label: 'Payment', icon: '🔴', color: 'var(--payment-color)', hint: 'Money out. Dr: Expense or the party paid · Cr: Cash/Bank (asset).' },
+  contra:  { label: 'Contra',  icon: '🔁', color: 'var(--net-positive)',  hint: 'Transfer between your own cash/bank accounts. Dr: account receiving · Cr: account giving.' },
+  journal: { label: 'Journal', icon: '📝', color: 'var(--text-muted)',    hint: 'Non-cash adjustment (e.g. amount due, write-off, correction). No cash or bank involved.' }
+};
+
+function voucherTypeInfo(type) {
+  return VOUCHER_TYPES[type] || { label: type || 'Entry', icon: '•', color: 'var(--text-muted)', hint: '' };
+}
+
+const ACCOUNT_TYPES = {
+  asset: 'Asset',
+  liability: 'Liability',
+  revenue: 'Revenue',
+  expenditure: 'Expenditure',
+  unclassified: 'Unclassified'
+};
+const ACCOUNT_TYPE_ORDER = ['asset', 'liability', 'revenue', 'expenditure', 'unclassified'];
+const ACCOUNT_NAME_MAX = 60;
+const NEW_ACCOUNT_OPTION = '__new_account__';
+
+function normalizeAccountName(name) {
+  return String(name || '').replace(/\s+/g, ' ').trim();
+}
+
+function getChartOfAccounts() {
+  if (!db) return [];
+  try {
+    const res = db.exec(`
+      SELECT c.name, c.account_type,
+        (SELECT COUNT(*) FROM daily_transactions t
+          WHERE TRIM(t.debit_account) = c.name COLLATE NOCASE OR TRIM(t.credit_account) = c.name COLLATE NOCASE) AS usage
+      FROM chart_of_accounts c
+      ORDER BY c.name COLLATE NOCASE
+    `);
+    return res.length > 0 ? rowsToObjects(res[0]) : [];
+  } catch (e) {
+    console.warn('Error reading chart of accounts:', e);
+    return [];
+  }
+}
+
+function findAccount(name) {
+  const n = normalizeAccountName(name);
+  if (!db || !n) return null;
+  const res = db.exec("SELECT name, account_type FROM chart_of_accounts WHERE name = ? COLLATE NOCASE", [n]);
+  return res.length > 0 && res[0].values.length > 0 ? { name: res[0].values[0][0], account_type: res[0].values[0][1] } : null;
+}
+
+function validateAccountInput(name, type) {
+  const n = normalizeAccountName(name);
+  if (!n) return 'Enter an account name.';
+  if (n.length > ACCOUNT_NAME_MAX) return `Account name is too long (max ${ACCOUNT_NAME_MAX} characters).`;
+  if (n === NEW_ACCOUNT_OPTION) return 'That name is reserved. Choose another.';
+  if (!ACCOUNT_TYPES[type]) return 'Choose an account type.';
+  return null;
+}
+
+// Returns the newly created account. Throws with a user-readable message.
+async function addAccount(name, type) {
+  const err = validateAccountInput(name, type);
+  if (err) throw new Error(err);
+  const n = normalizeAccountName(name);
+  const existing = findAccount(n);
+  if (existing) throw new Error(`"${existing.name}" already exists in the chart of accounts.`);
+  const now = new Date().toISOString();
+  db.run("INSERT INTO chart_of_accounts (name, account_type, created_at, updated_at) VALUES (?, ?, ?, ?)", [n, type, now, now]);
+  await saveDbToIndexedDB();
+  return { name: n, account_type: type };
+}
+
+async function setAccountType(name, type) {
+  if (!ACCOUNT_TYPES[type]) throw new Error('Unknown account type.');
+  db.run("UPDATE chart_of_accounts SET account_type = ?, updated_at = ? WHERE name = ? COLLATE NOCASE", [type, new Date().toISOString(), name]);
+  await saveDbToIndexedDB();
+}
+
+// Rename an account, or merge it into another existing account. All transactions are re-pointed in one SQL transaction.
+async function renameOrMergeAccount(oldName, newName) {
+  const from = findAccount(oldName);
+  if (!from) throw new Error(`Account "${oldName}" was not found.`);
+  const to = normalizeAccountName(newName);
+  const err = validateAccountInput(to, from.account_type);
+  if (err) throw new Error(err);
+  if (to === from.name) return { merged: false, name: to };
+
+  const target = findAccount(to);
+  const isMerge = !!target && target.name.toLowerCase() !== from.name.toLowerCase();
+
+  if (isMerge) {
+    // A merge must not turn any entry into "Dr X / Cr X".
+    const clash = db.exec(`
+      SELECT COUNT(*) FROM daily_transactions
+      WHERE (TRIM(debit_account) = ? COLLATE NOCASE AND TRIM(credit_account) = ? COLLATE NOCASE)
+         OR (TRIM(debit_account) = ? COLLATE NOCASE AND TRIM(credit_account) = ? COLLATE NOCASE)
+    `, [from.name, target.name, target.name, from.name]);
+    const clashCount = clash.length ? clash[0].values[0][0] : 0;
+    if (clashCount > 0) {
+      throw new Error(`Cannot merge: ${clashCount} transaction(s) are between "${from.name}" and "${target.name}" and would debit and credit the same account. Edit those entries first.`);
+    }
+  }
+
+  const finalName = isMerge ? target.name : to;
+  const now = new Date().toISOString();
+  db.run('BEGIN');
+  try {
+    db.run("UPDATE daily_transactions SET debit_account = ?, updated_at = ? WHERE TRIM(debit_account) = ? COLLATE NOCASE", [finalName, now, from.name]);
+    db.run("UPDATE daily_transactions SET credit_account = ?, updated_at = ? WHERE TRIM(credit_account) = ? COLLATE NOCASE", [finalName, now, from.name]);
+    if (isMerge) {
+      db.run("DELETE FROM chart_of_accounts WHERE name = ? COLLATE NOCASE", [from.name]);
+      // Keep the more informative type if the target was never classified.
+      if (target.account_type === 'unclassified' && from.account_type !== 'unclassified') {
+        db.run("UPDATE chart_of_accounts SET account_type = ?, updated_at = ? WHERE name = ?", [from.account_type, now, target.name]);
+      }
+    } else {
+      db.run("UPDATE chart_of_accounts SET name = ?, updated_at = ? WHERE name = ? COLLATE NOCASE", [finalName, now, from.name]);
+    }
+    db.run('COMMIT');
+  } catch (e) {
+    try { db.run('ROLLBACK'); } catch (_) {}
+    throw e;
+  }
+  await saveDbToIndexedDB();
+  return { merged: isMerge, name: finalName };
+}
+
+async function deleteAccount(name) {
+  const acct = getChartOfAccounts().find(a => a.name.toLowerCase() === String(name).toLowerCase());
+  if (!acct) return;
+  if (acct.usage > 0) throw new Error(`"${acct.name}" is used in ${acct.usage} transaction(s). Rename or merge it instead of deleting.`);
+  db.run("DELETE FROM chart_of_accounts WHERE name = ? COLLATE NOCASE", [acct.name]);
+  await saveDbToIndexedDB();
+}
+
+// Fills a <select> with accounts grouped by type. Keeps the current value when possible.
+function fillAccountSelect(select, { includeNew = false, placeholder = 'Select account…', selected } = {}) {
+  if (!select) return;
+  const keep = selected !== undefined ? selected : select.value;
+  const accounts = getChartOfAccounts();
+  select.innerHTML = '';
+  const ph = document.createElement('option');
+  ph.value = '';
+  ph.textContent = accounts.length ? placeholder : 'No accounts yet';
+  select.appendChild(ph);
+
+  ACCOUNT_TYPE_ORDER.forEach(type => {
+    const group = accounts.filter(a => (ACCOUNT_TYPES[a.account_type] ? a.account_type : 'unclassified') === type);
+    if (group.length === 0) return;
+    const og = document.createElement('optgroup');
+    og.label = ACCOUNT_TYPES[type];
+    group.forEach(a => {
+      const opt = document.createElement('option');
+      opt.value = a.name;
+      opt.textContent = a.name;
+      og.appendChild(opt);
+    });
+    select.appendChild(og);
+  });
+
+  if (includeNew) {
+    const opt = document.createElement('option');
+    opt.value = NEW_ACCOUNT_OPTION;
+    opt.textContent = '+ Add new account…';
+    select.appendChild(opt);
+  }
+  setAccountSelectValue(select, keep);
+}
+
+// Case-insensitive select; adds a stray option if an old entry references an account no longer in the chart.
+function setAccountSelectValue(select, name) {
+  if (!select) return;
+  const n = normalizeAccountName(name);
+  if (!n || n === NEW_ACCOUNT_OPTION) { select.value = ''; return; }
+  const match = Array.from(select.options).find(o => o.value.toLowerCase() === n.toLowerCase());
+  if (match) { select.value = match.value; return; }
+  const opt = document.createElement('option');
+  opt.value = n;
+  opt.textContent = `${n} (not in chart)`;
+  select.appendChild(opt);
+  select.value = n;
+}
+
 function populateFinanceAccountsDatalists() {
   if (!db) return;
-  const drList = document.getElementById('debitAccountsDatalist');
-  const crList = document.getElementById('creditAccountsDatalist');
-  if (!drList || !crList) return;
+  fillAccountSelect(document.getElementById('financeDebitAccount'), { includeNew: true });
+  fillAccountSelect(document.getElementById('financeCreditAccount'), { includeNew: true });
+}
 
+function updateFinanceTypeHint() {
+  const typeSel = document.getElementById('financeType');
+  const hint = document.getElementById('financeTypeHint');
+  if (typeSel && hint) hint.textContent = voucherTypeInfo(typeSel.value).hint;
+}
+
+/* ---------- Inline "add new account" panel inside the finance form ---------- */
+
+let pendingNewAccountTarget = null;
+
+function openFinanceNewAccountPanel(targetSelectId) {
+  pendingNewAccountTarget = targetSelectId;
+  const panel = document.getElementById('financeNewAccountPanel');
+  if (!panel) return;
+  document.getElementById('financeNewAccountFor').textContent = targetSelectId === 'financeDebitAccount' ? 'Debit' : 'Credit';
+  document.getElementById('financeNewAccountError').textContent = '';
+  document.getElementById('financeNewAccountName').value = '';
+  document.getElementById('financeNewAccountType').value = '';
+  panel.classList.remove('hidden');
+  document.getElementById('financeNewAccountName').focus();
+}
+
+function closeFinanceNewAccountPanel(restoreSelection = true) {
+  const panel = document.getElementById('financeNewAccountPanel');
+  if (panel) panel.classList.add('hidden');
+  if (restoreSelection && pendingNewAccountTarget) {
+    const sel = document.getElementById(pendingNewAccountTarget);
+    if (sel && sel.value === NEW_ACCOUNT_OPTION) sel.value = '';
+  }
+  pendingNewAccountTarget = null;
+}
+
+async function submitFinanceNewAccount() {
+  const name = document.getElementById('financeNewAccountName').value;
+  const type = document.getElementById('financeNewAccountType').value;
+  const err = document.getElementById('financeNewAccountError');
+  const target = pendingNewAccountTarget;
   try {
-    const drRes = db.exec("SELECT DISTINCT debit_account FROM daily_transactions WHERE debit_account IS NOT NULL AND debit_account != ''");
-    const crRes = db.exec("SELECT DISTINCT credit_account FROM daily_transactions WHERE credit_account IS NOT NULL AND credit_account != ''");
+    const acct = await addAccount(name, type);
+    populateFinanceAccountsDatalists();
+    if (target) setAccountSelectValue(document.getElementById(target), acct.name);
+    closeFinanceNewAccountPanel(false);
+    showToast(`✓ Account "${acct.name}" added as ${ACCOUNT_TYPES[acct.account_type]}`, 'success', 3000);
+  } catch (e) {
+    err.textContent = e.message;
+  }
+}
 
-    drList.innerHTML = drRes.length > 0 ? drRes[0].values.map(v => `<option value="${escapeHtml(v[0])}">`).join('') : '';
-    crList.innerHTML = crRes.length > 0 ? crRes[0].values.map(v => `<option value="${escapeHtml(v[0])}">`).join('') : '';
-  } catch (e) {}
+/* ---------- Chart of Accounts manager modal ---------- */
+
+function openChartOfAccountsModal() {
+  const modal = document.getElementById('chartOfAccountsModal');
+  if (!modal) return;
+  document.getElementById('coaAddError').textContent = '';
+  document.getElementById('coaSearchInput').value = '';
+  renderChartOfAccounts();
+  modal.classList.remove('hidden');
+  document.getElementById('coaList').scrollTop = 0;
+}
+
+function closeChartOfAccountsModal() {
+  const modal = document.getElementById('chartOfAccountsModal');
+  if (modal) modal.classList.add('hidden');
+  // Pickers elsewhere must reflect renames, merges and new types.
+  populateFinanceAccountsDatalists();
+  populateReportFilterOptions();
+  const financeModal = document.getElementById('dailyFinanceModal');
+  const financeDate = document.getElementById('financeTxnDate');
+  if (financeModal && !financeModal.classList.contains('hidden') && financeDate) renderFinanceTransactionsList(financeDate.value);
+}
+
+function renderChartOfAccounts() {
+  const list = document.getElementById('coaList');
+  const summary = document.getElementById('coaSummary');
+  if (!list) return;
+  const filter = (document.getElementById('coaSearchInput')?.value || '').trim().toLowerCase();
+  const accounts = getChartOfAccounts();
+  const unclassified = accounts.filter(a => a.account_type === 'unclassified').length;
+
+  if (summary) {
+    summary.innerHTML = `${accounts.length} account${accounts.length === 1 ? '' : 's'}` +
+      (unclassified ? ` · <strong style="color:var(--badge-amber-text);">${unclassified} unclassified — set a type for each</strong>` : (accounts.length ? ' · all classified' : ''));
+  }
+
+  list.innerHTML = '';
+  const shown = accounts.filter(a => !filter || a.name.toLowerCase().includes(filter));
+  if (shown.length === 0) {
+    list.innerHTML = `<div style="padding:16px; text-align:center; color:var(--text-muted); font-size:0.88rem;">${accounts.length ? 'No accounts match your search.' : 'No accounts yet. Add one above — accounts already used in your entries appear here automatically.'}</div>`;
+    return;
+  }
+
+  // Unclassified first so the accounts needing attention are at the top.
+  ['unclassified', ...ACCOUNT_TYPE_ORDER.filter(t => t !== 'unclassified')].forEach(type => {
+    const group = shown.filter(a => (ACCOUNT_TYPES[a.account_type] ? a.account_type : 'unclassified') === type);
+    if (group.length === 0) return;
+    const heading = document.createElement('div');
+    heading.className = 'coa-group-heading';
+    heading.textContent = `${ACCOUNT_TYPES[type]} (${group.length})`;
+    list.appendChild(heading);
+    group.forEach(a => list.appendChild(buildChartOfAccountsRow(a)));
+  });
+}
+
+function buildChartOfAccountsRow(acct) {
+  const row = document.createElement('div');
+  row.className = 'coa-row' + (acct.account_type === 'unclassified' ? ' coa-row-unclassified' : '');
+
+  const nameWrap = document.createElement('div');
+  nameWrap.className = 'coa-name';
+  const nameText = document.createElement('span');
+  nameText.textContent = acct.name;
+  const usage = document.createElement('small');
+  usage.textContent = acct.usage ? `${acct.usage} entr${acct.usage === 1 ? 'y' : 'ies'}` : 'unused';
+  nameWrap.append(nameText, usage);
+
+  const typeSel = document.createElement('select');
+  typeSel.className = 'coa-type-select';
+  typeSel.setAttribute('aria-label', `Account type for ${acct.name}`);
+  ACCOUNT_TYPE_ORDER.forEach(t => {
+    const o = document.createElement('option');
+    o.value = t;
+    o.textContent = ACCOUNT_TYPES[t];
+    typeSel.appendChild(o);
+  });
+  typeSel.value = ACCOUNT_TYPES[acct.account_type] ? acct.account_type : 'unclassified';
+  typeSel.addEventListener('change', async () => {
+    try {
+      await setAccountType(acct.name, typeSel.value);
+      renderChartOfAccounts();
+    } catch (e) {
+      showToast('❌ ' + e.message, 'error', 4000);
+    }
+  });
+
+  const actions = document.createElement('div');
+  actions.className = 'coa-actions';
+  const renameBtn = document.createElement('button');
+  renameBtn.type = 'button';
+  renameBtn.className = 'btn-xs btn-secondary';
+  renameBtn.title = 'Rename, or merge into another account';
+  renameBtn.setAttribute('aria-label', `Rename or merge ${acct.name}`);
+  renameBtn.innerHTML = '<i class="fa-solid fa-pen"></i>';
+  renameBtn.addEventListener('click', () => startChartOfAccountsRename(row, acct));
+
+  const delBtn = document.createElement('button');
+  delBtn.type = 'button';
+  delBtn.className = 'btn-xs btn-danger';
+  delBtn.title = acct.usage ? 'In use — rename or merge instead' : 'Delete unused account';
+  delBtn.setAttribute('aria-label', `Delete ${acct.name}`);
+  delBtn.disabled = acct.usage > 0;
+  delBtn.innerHTML = '<i class="fa-solid fa-trash"></i>';
+  delBtn.addEventListener('click', async () => {
+    if (!confirm(`Delete account "${acct.name}"?`)) return;
+    try {
+      await deleteAccount(acct.name);
+      renderChartOfAccounts();
+    } catch (e) {
+      showToast('❌ ' + e.message, 'error', 5000);
+    }
+  });
+  actions.append(renameBtn, delBtn);
+
+  row.append(nameWrap, typeSel, actions);
+  return row;
+}
+
+function startChartOfAccountsRename(row, acct) {
+  row.innerHTML = '';
+  row.classList.add('coa-row-editing');
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = acct.name;
+  input.maxLength = ACCOUNT_NAME_MAX;
+  input.setAttribute('list', 'coaNamesDatalist');
+  input.setAttribute('aria-label', `New name for ${acct.name}`);
+  const hint = document.createElement('small');
+  hint.className = 'coa-rename-hint';
+  hint.textContent = 'Type an existing account name to merge into it.';
+
+  const save = document.createElement('button');
+  save.type = 'button';
+  save.className = 'btn-sm btn-primary';
+  save.textContent = 'Save';
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.className = 'btn-sm btn-secondary';
+  cancel.textContent = 'Cancel';
+
+  const datalist = document.getElementById('coaNamesDatalist');
+  if (datalist) {
+    datalist.innerHTML = '';
+    getChartOfAccounts().filter(a => a.name !== acct.name).forEach(a => {
+      const o = document.createElement('option');
+      o.value = a.name;
+      datalist.appendChild(o);
+    });
+  }
+
+  const doSave = async () => {
+    const target = findAccount(input.value);
+    const isMerge = target && target.name.toLowerCase() !== acct.name.toLowerCase();
+    if (isMerge && !confirm(`Merge "${acct.name}" into "${target.name}"?\n\nAll ${acct.usage} entr${acct.usage === 1 ? 'y' : 'ies'} will move to "${target.name}" and "${acct.name}" will be removed.`)) return;
+    try {
+      const result = await renameOrMergeAccount(acct.name, input.value);
+      showToast(result.merged ? `✓ Merged into "${result.name}"` : `✓ Renamed to "${result.name}"`, 'success', 3000);
+      renderChartOfAccounts();
+    } catch (e) {
+      hint.textContent = e.message;
+      hint.style.color = 'var(--payment-color)';
+    }
+  };
+  save.addEventListener('click', doSave);
+  cancel.addEventListener('click', renderChartOfAccounts);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); doSave(); }
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); renderChartOfAccounts(); }
+  });
+
+  const wrap = document.createElement('div');
+  wrap.className = 'coa-rename-wrap';
+  wrap.append(input, hint);
+  const actions = document.createElement('div');
+  actions.className = 'coa-actions';
+  actions.append(save, cancel);
+  row.append(wrap, actions);
+  input.focus();
+  input.select();
+}
+
+async function submitChartOfAccountsAdd(e) {
+  if (e) e.preventDefault();
+  const nameEl = document.getElementById('coaNewName');
+  const typeEl = document.getElementById('coaNewType');
+  const err = document.getElementById('coaAddError');
+  try {
+    const acct = await addAccount(nameEl.value, typeEl.value);
+    nameEl.value = '';
+    err.textContent = '';
+    showToast(`✓ Account "${acct.name}" added`, 'success', 2500);
+    renderChartOfAccounts();
+    nameEl.focus();
+  } catch (ex) {
+    err.textContent = ex.message;
+  }
 }
 
 /* ==========================================================================
@@ -5425,7 +5900,7 @@ function renderPortraitMonthView() {
       let rec = 0, pay = 0;
       txns.forEach(t => {
         if (t.type === 'receipt') rec += toPaise(t.amount);
-        else pay += toPaise(t.amount);
+        else if (t.type === 'payment') pay += toPaise(t.amount);
       });
       const net = rec - pay;
       tdFin.innerHTML = `
@@ -6176,7 +6651,7 @@ function renderDayView() {
     let receipts = 0, payments = 0;
     txns.forEach(t => {
       if (t.type === 'receipt') receipts += toPaise(t.amount);
-      else payments += toPaise(t.amount);
+      else if (t.type === 'payment') payments += toPaise(t.amount);
     });
     const net = receipts - payments;
 
@@ -6623,6 +7098,13 @@ function toPaise(value) {
   let p = Math.round(Number(Math.abs(n) + 'e2'));
   if (!Number.isFinite(p)) p = Math.round(Math.abs(n) * 100);
   return n < 0 ? -p : p;
+}
+
+// Ledger balances read as "₹x Dr" (debit balance) or "₹x Cr" (credit balance) rather than a signed number.
+function formatDrCr(paise) {
+  const p = Math.round(Number(paise) || 0);
+  if (p === 0) return formatINR(0);
+  return formatINR(Math.abs(p)) + (p > 0 ? ' Dr' : ' Cr');
 }
 
 // Display rupees from paise with Indian digit grouping (₹1,23,456.78).
@@ -8793,6 +9275,13 @@ function setupUIEventListeners() {
       openServerSyncModal();
     });
   }
+  const drawerAccountsBtn = document.getElementById('drawerAccountsBtn');
+  if (drawerAccountsBtn) {
+    drawerAccountsBtn.addEventListener('click', () => {
+      closeSideMenu();
+      openChartOfAccountsModal();
+    });
+  }
   const drawerTagsBtn = document.getElementById('drawerTagsBtn');
   if (drawerTagsBtn) {
     drawerTagsBtn.addEventListener('click', () => {
@@ -9287,10 +9776,40 @@ function setupUIEventListeners() {
         credit_account: document.getElementById('financeCreditAccount').value,
         description: document.getElementById('financeDescription').value
       };
-      await saveDailyTransaction(txnData);
-      resetFinanceForm();
+      if (await saveDailyTransaction(txnData)) resetFinanceForm();
     });
   }
+
+  // Chart of accounts: voucher hint, inline quick-add, manager modal
+  const financeTypeSel = document.getElementById('financeType');
+  if (financeTypeSel) financeTypeSel.addEventListener('change', updateFinanceTypeHint);
+  ['financeDebitAccount', 'financeCreditAccount'].forEach(id => {
+    const sel = document.getElementById(id);
+    if (sel) sel.addEventListener('change', () => {
+      if (sel.value === NEW_ACCOUNT_OPTION) openFinanceNewAccountPanel(id);
+    });
+  });
+  const financeNewAccountSaveBtn = document.getElementById('financeNewAccountSaveBtn');
+  if (financeNewAccountSaveBtn) financeNewAccountSaveBtn.addEventListener('click', submitFinanceNewAccount);
+  const financeNewAccountCancelBtn = document.getElementById('financeNewAccountCancelBtn');
+  if (financeNewAccountCancelBtn) financeNewAccountCancelBtn.addEventListener('click', () => closeFinanceNewAccountPanel(true));
+  const financeNewAccountName = document.getElementById('financeNewAccountName');
+  if (financeNewAccountName) financeNewAccountName.addEventListener('keydown', e => {
+    // Enter here must add the account, not submit the transaction form.
+    if (e.key === 'Enter') { e.preventDefault(); submitFinanceNewAccount(); }
+  });
+  const financeManageAccountsBtn = document.getElementById('financeManageAccountsBtn');
+  if (financeManageAccountsBtn) financeManageAccountsBtn.addEventListener('click', openChartOfAccountsModal);
+  const closeCoaBtn = document.getElementById('closeChartOfAccountsModalBtn');
+  if (closeCoaBtn) closeCoaBtn.addEventListener('click', closeChartOfAccountsModal);
+  const coaAddForm = document.getElementById('coaAddForm');
+  if (coaAddForm) coaAddForm.addEventListener('submit', submitChartOfAccountsAdd);
+  const coaSearchInput = document.getElementById('coaSearchInput');
+  if (coaSearchInput) coaSearchInput.addEventListener('input', renderChartOfAccounts);
+  document.addEventListener('keydown', (e) => {
+    const coaModal = document.getElementById('chartOfAccountsModal');
+    if (e.key === 'Escape' && coaModal && !coaModal.classList.contains('hidden')) closeChartOfAccountsModal();
+  });
 
   document.querySelectorAll('.view-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -9784,29 +10303,10 @@ function closeReportsModal() {
 function populateReportFilterOptions() {
   if (!db) return;
 
-  // 1. Populate Account Dropdown for Ledger Report
+  // 1. Populate Account Dropdown for Ledger Report (from the chart of accounts, grouped by type)
   const acctSelect = document.getElementById('reportAccountSelect');
   if (acctSelect) {
-    acctSelect.innerHTML = '';
-    const accts = new Set();
-    try {
-      const r1 = db.exec("SELECT DISTINCT debit_account FROM daily_transactions WHERE debit_account IS NOT NULL AND debit_account != ''");
-      if (r1.length > 0) r1[0].values.forEach(v => accts.add(v[0]));
-      const r2 = db.exec("SELECT DISTINCT credit_account FROM daily_transactions WHERE credit_account IS NOT NULL AND credit_account != ''");
-      if (r2.length > 0) r2[0].values.forEach(v => accts.add(v[0]));
-    } catch(e){}
-
-    const sortedAccts = Array.from(accts).sort();
-    if (sortedAccts.length === 0) {
-      acctSelect.innerHTML = '<option value="">No Accounts Found</option>';
-    } else {
-      sortedAccts.forEach(a => {
-        const opt = document.createElement('option');
-        opt.value = a;
-        opt.textContent = a;
-        acctSelect.appendChild(opt);
-      });
-    }
+    fillAccountSelect(acctSelect, { placeholder: 'Select account…' });
   }
 
   // 2. Populate Tag Select for Reports 4 & 5
@@ -9964,7 +10464,7 @@ function renderJournalReport(container, fromDate, toDate) {
   let totalPayments = 0;
   txns.forEach(t => {
     if (t.type === 'receipt') totalReceipts += toPaise(t.amount);
-    else totalPayments += toPaise(t.amount);
+    else if (t.type === 'payment') totalPayments += toPaise(t.amount);
   });
   const netFlow = totalReceipts - totalPayments;
 
@@ -9992,14 +10492,14 @@ function renderJournalReport(container, fromDate, toDate) {
   `;
 
   txns.forEach(t => {
-    const isReceipt = t.type === 'receipt';
+    const vt = voucherTypeInfo(t.type);
     html += `
       <tr style="border-bottom:1px solid var(--border-color);">
         <td style="padding:8px 10px; font-weight:600;">${formatDateIndian(t.txn_date)}</td>
-        <td style="padding:8px 10px;"><span style="color:${isReceipt ? 'var(--receipt-color)' : 'var(--payment-color)'}; font-weight:600;">${isReceipt ? '🟢 Receipt' : '🔴 Payment'}</span></td>
+        <td style="padding:8px 10px;"><span style="color:${vt.color}; font-weight:600;">${vt.icon} ${vt.label}</span></td>
         <td style="padding:8px 10px;">${escapeHtml(t.debit_account || '-')}</td>
         <td style="padding:8px 10px;">${escapeHtml(t.credit_account || '-')}</td>
-        <td style="padding:8px 10px; text-align:right; font-weight:700; color:${isReceipt ? 'var(--receipt-color)' : 'var(--payment-color)'};">${formatINR(toPaise(t.amount))}</td>
+        <td style="padding:8px 10px; text-align:right; font-weight:700; color:${vt.color};">${formatINR(toPaise(t.amount))}</td>
         <td style="padding:8px 10px; color:var(--text-muted);">${escapeHtml(t.description || '-')}</td>
       </tr>
     `;
@@ -10020,7 +10520,7 @@ function renderLedgerReport(container, fromDate, toDate) {
 
   let txns = [];
   try {
-    const res = db.exec("SELECT * FROM daily_transactions WHERE (debit_account = ? OR credit_account = ?) AND txn_date >= ? AND txn_date <= ? ORDER BY txn_date ASC, created_at ASC", [targetAccount, targetAccount, fromDate, toDate]);
+    const res = db.exec("SELECT * FROM daily_transactions WHERE (TRIM(debit_account) = ? COLLATE NOCASE OR TRIM(credit_account) = ? COLLATE NOCASE) AND txn_date >= ? AND txn_date <= ? ORDER BY txn_date ASC, created_at ASC", [targetAccount, targetAccount, fromDate, toDate]);
     if (res.length > 0) txns = rowsToObjects(res[0]);
   } catch(e){}
 
@@ -10035,7 +10535,7 @@ function renderLedgerReport(container, fromDate, toDate) {
 
   let html = `
     <div style="margin-bottom:14px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
-      <h4 style="margin:0; font-size:1rem; color:var(--text-main);"><i class="fa-solid fa-scale-balanced" style="color:var(--badge-amber-text);"></i> Ledger Account: <strong style="color:var(--accent-blue);">${escapeHtml(targetAccount)}</strong></h4>
+      <h4 style="margin:0; font-size:1rem; color:var(--text-main);"><i class="fa-solid fa-scale-balanced" style="color:var(--badge-amber-text);"></i> Ledger Account: <strong style="color:var(--accent-blue);">${escapeHtml(targetAccount)}</strong> <small style="font-weight:600; color:var(--text-muted);">(${escapeHtml(ACCOUNT_TYPES[(findAccount(targetAccount) || {}).account_type] || 'Not in chart')})</small></h4>
       <span style="font-size:0.85rem; color:var(--text-muted);">${formatDateIndian(fromDate)} to ${formatDateIndian(toDate)}</span>
     </div>
     <table style="width:100%; border-collapse:collapse; font-size:0.86rem; text-align:left;">
@@ -10057,7 +10557,7 @@ function renderLedgerReport(container, fromDate, toDate) {
     let crAmt = 0;
     let contraAcct = '';
 
-    if (t.debit_account === targetAccount) {
+    if (normalizeAccountName(t.debit_account).toLowerCase() === targetAccount.toLowerCase()) {
       drAmt = toPaise(t.amount);
       contraAcct = 'To ' + (t.credit_account || 'Cash/Bank');
       runningBalance += drAmt;
@@ -10075,7 +10575,7 @@ function renderLedgerReport(container, fromDate, toDate) {
         <td style="padding:8px 10px; font-weight:600; color:var(--text-main);">${escapeHtml(contraAcct)}</td>
         <td style="padding:8px 10px; text-align:right; color:var(--receipt-color);">${drAmt > 0 ? formatINR(drAmt) : '-'}</td>
         <td style="padding:8px 10px; text-align:right; color:var(--payment-color);">${crAmt > 0 ? formatINR(crAmt) : '-'}</td>
-        <td style="padding:8px 10px; text-align:right; font-weight:700; color:${runningBalance >= 0 ? 'var(--net-positive)' : 'var(--payment-color)'};">${formatINR(runningBalance)}</td>
+        <td style="padding:8px 10px; text-align:right; font-weight:700; color:${runningBalance >= 0 ? 'var(--net-positive)' : 'var(--payment-color)'};">${formatDrCr(runningBalance)}</td>
         <td style="padding:8px 10px; color:var(--text-muted);">${escapeHtml(t.description || '-')}</td>
       </tr>
     `;
@@ -10086,7 +10586,7 @@ function renderLedgerReport(container, fromDate, toDate) {
         <td colspan="2" style="padding:10px;">TOTALS & CLOSING BALANCE</td>
         <td style="padding:10px; text-align:right; color:var(--receipt-color);">Dr ${formatINR(totalDebit)}</td>
         <td style="padding:10px; text-align:right; color:var(--payment-color);">Cr ${formatINR(totalCredit)}</td>
-        <td style="padding:10px; text-align:right; color:var(--net-positive);">${formatINR(runningBalance)}</td>
+        <td style="padding:10px; text-align:right; color:var(--net-positive);">${formatDrCr(runningBalance)}</td>
         <td style="padding:10px;"></td>
       </tr>
     </tbody></table>

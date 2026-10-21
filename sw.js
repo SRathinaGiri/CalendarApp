@@ -1,4 +1,4 @@
-const CACHE_NAME = 'calendar-app-v1.3.6';
+const CACHE_NAME = 'calendar-app-v1.3.7';
 const CORE_ASSETS = [
   './',
   './index.html',
