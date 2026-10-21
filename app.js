@@ -131,7 +131,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.3.12';
+const APP_VERSION = 'v1.3.13';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -1305,9 +1305,42 @@ async function scanStorageAttachments() {
     }
   }
 
-  const cleanableList = [...duplicateKeysToDelete, ...orphanKeysToDelete];
+  // Stale aliases: older versions saved each ticket a second time under a longer alias name. When the ticket's
+  // real file (att_<id>) opens with the current key but the alias does not (it was left under a lost key),
+  // the alias can never be used again. Only that exact combination is removable; plain or readable aliases stay.
+  const staleAliasKeysToDelete = [];
+  if (currentEncryptionKey) {
+    const byKey = new Map(allStored.map(it => [it.key, it]));
+    const openCache = new Map();
+    const opens = async (it) => {
+      if (openCache.has(it.key)) return openCache.get(it.key);
+      let ok;
+      try {
+        ok = !isEncryptedAttachmentBytes(it.val) || !!(await decryptAttachmentData(it.val, currentEncryptionKey));
+      } catch (e) {
+        ok = false;
+      }
+      openCache.set(it.key, ok);
+      return ok;
+    };
+    const canonicalKeys = new Set(Array.from(activeAttsMap.values()).filter(m => m && m.id).map(m => 'att_' + m.id));
+    for (const it of allStored) {
+      if (!keepKeys.has(it.key) || canonicalKeys.has(it.key)) continue;
+      const lowId = it.rawId.toLowerCase();
+      const owner = Array.from(activeAttsMap.entries()).find(([activeId]) => lowId.includes(activeId));
+      if (!owner || !owner[1].id) continue;
+      const canonical = byKey.get('att_' + owner[1].id);
+      if (canonical && await opens(canonical) && !(await opens(it))) {
+        staleAliasKeysToDelete.push({ key: it.key, size: it.size });
+        keepKeys.delete(it.key);
+      }
+    }
+  }
+
+  const cleanableList = [...duplicateKeysToDelete, ...orphanKeysToDelete, ...staleAliasKeysToDelete];
 
   return {
+    staleAliasCount: staleAliasKeysToDelete.length,
     totalFiles: allStored.length,
     totalBytes: totalBytes,
     uniqueFilesCount: groupsByFp.size,
@@ -1344,7 +1377,7 @@ async function purgeOrphanAttachments() {
   }
 
   const cleanableMb = (stats.cleanableList.reduce((acc, o) => acc + o.size, 0) / (1024 * 1024)).toFixed(2);
-  const msg = `Storage Clean Up & Deduplication:\n\nFound:\n- ${stats.duplicateCount} redundant alias duplicate keys\n- ${stats.orphanCount} unreferenced orphan files\nTotal space to free: ~${cleanableMb} MB\n\nThis will safely remove redundant copies and keep only the ${stats.activeFilesCount} canonical files for your active schedules.\n\nProceed with cleanup?`;
+  const msg = `Storage Clean Up & Deduplication:\n\nFound:\n- ${stats.duplicateCount} redundant alias duplicate keys\n- ${stats.orphanCount} unreferenced orphan files\n- ${stats.staleAliasCount || 0} unreadable old copies of tickets that now open normally\nTotal space to free: ~${cleanableMb} MB\n\nThis will safely remove redundant copies and keep only the ${stats.activeFilesCount} canonical files for your active schedules.\n\nProceed with cleanup?`;
   const ok = confirm(msg);
   if (!ok) return;
 

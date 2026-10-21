@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. Versions follow the in-app version (`APP_VERSION` in `app.js`, `CACHE_NAME` in `sw.js`).
 
+## v1.3.13 — 2026-10-21
+
+### Clean Orphan Files removes unreadable old ticket copies
+- Older versions saved each ticket a second time under a longer alias name. Copies left under a lost key were kept forever, because their names still contained the ticket's name, and every backup reported them as "could not be opened".
+- Clean Orphan Files now also removes an alias copy, but only when the ticket's real file (`att_<id>`) exists **and opens** with the current key, **and** the alias itself does not open. Readable aliases, plain aliases, and aliases whose real file is missing or unreadable are always kept. The confirmation lists these separately.
+
 ## v1.3.12 — 2026-10-21
 
 ### Critical fix: app stuck at start-up when browser storage is full
