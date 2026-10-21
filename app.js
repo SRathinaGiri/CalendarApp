@@ -131,7 +131,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.3.13';
+const APP_VERSION = 'v1.4.0';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -322,9 +322,6 @@ document.addEventListener('DOMContentLoaded', async () => {
       loadMasterDataFromDb();
       populateTitlesDatalist();
       switchToView(currentView, currentDate);
-      if (currentEncryptionKey) {
-        migratePlaintextAttachmentsToEncrypted(currentEncryptionKey);
-      }
     }
 
     // Re-render calendar view on orientation / window resize change between portrait & landscape
@@ -356,6 +353,7 @@ async function initSqliteDatabase() {
     });
 
     cachedEncryptedDbBytes = await loadDbFromIndexedDB();
+    await loadKeyEnvelope();
     updateBadge('Engine Ready');
     return true;
   } catch (err) {
@@ -831,6 +829,9 @@ async function restoreLocalDbSnapshot(snapId) {
 
     db = new SQL.Database(snapBytes);
     ensureSchemaUpToDate();
+    // With the data key, a deliberate snapshot restore is safe to save even if the session was opened
+    // from a snapshot (the old pause guarded against saving under a stale fingerprint key).
+    if (currentDekId) biometricSnapshotFallbackActive = false;
     await saveDbToIndexedDB();
     loadMasterDataFromDb();
     populateTitlesDatalist();
@@ -1683,9 +1684,13 @@ async function importFullBackupZip(file) {
 
     let backupKey = null;
     let backupSalt = null;
+    let backupPin = null;
 
     if (isEncryptedDbBytes(dbBinary)) {
       const parsedHeader = parseEncryptedDbHeader(dbBinary);
+      if (parsedHeader && parsedHeader.version === 3) {
+        throw new Error('This database file is locked with a device data key, not a PIN, so it cannot be restored here. Use a backup made with Full Backup or Download DB.');
+      }
       backupSalt = parsedHeader ? parsedHeader.salt : dbBinary.slice(CRYPTO_MAGIC.length, CRYPTO_MAGIC.length + 16);
       const backupIterations = parsedHeader ? parsedHeader.iterations : PBKDF2_ITERATIONS;
       const pin = await requestPinPromptModal({
@@ -1703,6 +1708,7 @@ async function importFullBackupZip(file) {
       try {
         backupKey = await deriveKeyFromPin(pin, backupSalt, backupIterations, false);
         dbBinary = await decryptDatabaseBytes(dbBinary, backupKey, false);
+        backupPin = pin;
       } catch(decErr) {
         if (loadingToast) dismissToast(loadingToast);
         showToast('❌ Decryption failed: Incorrect Security PIN for this backup.', 'error', 5000);
@@ -1782,7 +1788,23 @@ async function importFullBackupZip(file) {
     }
 
     // 5. Stage, encrypt, and batch-commit attachments and database in ONE atomic transaction
-    const effectiveKey = (currentEncryptionKey && isPinConfigured()) ? currentEncryptionKey : (backupKey || null);
+    const deviceKeyActive = !!(currentEncryptionKey && isPinConfigured());
+    // Fresh device restoring a PIN-encrypted backup: adopt the backup PIN by creating a new data key
+    // wrapped with it (the backup's own PIN-derived key is only for reading the archive).
+    let adopted = null;
+    if (!deviceKeyActive && backupPin) {
+      const created = await createDekEnvelope(backupPin);
+      const recoveryKey = generateRecoveryKey();
+      try {
+        created.vaultBytes = await buildRecoveryVaultPackedBytes(created.rawDek, recoveryKey);
+      } finally {
+        created.rawDek.fill(0);
+      }
+      created.recoveryKey = recoveryKey;
+      adopted = created;
+    }
+    const effectiveKey = deviceKeyActive ? currentEncryptionKey : (adopted ? adopted.dekKey : (backupKey || null));
+    const effectiveDekId = deviceKeyActive ? currentDekId : (adopted ? adopted.dekId : null);
     const filesToCommit = [];
     let importedAttachmentsCount = 0;
 
@@ -1812,14 +1834,22 @@ async function importFullBackupZip(file) {
 
     let dbBytesToStore = rawBytes;
     if (effectiveKey) {
-      const activeSalt = getStoredCryptoSalt() || backupSalt || crypto.getRandomValues(new Uint8Array(16));
-      dbBytesToStore = await encryptWithKeyAndSalt(rawBytes, effectiveKey, activeSalt);
+      if (effectiveDekId) {
+        dbBytesToStore = await encryptWithDek(rawBytes, effectiveKey, effectiveDekId);
+      } else {
+        const activeSalt = getStoredCryptoSalt() || backupSalt || crypto.getRandomValues(new Uint8Array(16));
+        dbBytesToStore = await encryptWithKeyAndSalt(rawBytes, effectiveKey, activeSalt);
+      }
       const verifyDec = await decryptDatabaseBytes(dbBytesToStore, effectiveKey, false);
       if (verifyDec.byteLength !== rawBytes.byteLength) {
         throw new Error('Database encryption verification failed before committing restore.');
       }
     }
     filesToCommit.push({ key: 'active_sqlite', value: dbBytesToStore });
+    if (adopted) {
+      filesToCommit.push({ key: 'srg_key_envelope', value: adopted.env });
+      filesToCommit.push({ key: 'srg_recovery_vault', value: adopted.vaultBytes });
+    }
 
     // Execute atomic commit on 'files' store: all attachments + database committed together
     const idb = await openSRGDatabase();
@@ -1838,15 +1868,18 @@ async function importFullBackupZip(file) {
     cachedEncryptedDbBytes = dbBytesToStore;
     lsSet('srg_db_last_modified', Date.now().toString());
 
-    if (!(currentEncryptionKey && isPinConfigured()) && backupKey && backupSalt) {
-      // Fresh device restoring encrypted backup: adopt backup PIN as device's security credentials
-      currentEncryptionKey = backupKey;
-      storeCryptoSalt(backupSalt);
-      await createAuthVerificationToken(backupKey);
+    if (adopted) {
+      // Fresh device restoring encrypted backup: the backup PIN now unlocks this device's new data key
+      keyEnvelope = adopted.env;
+      cacheKeyEnvelopeLocally(adopted.env);
+      cacheRecoveryVaultLocally(adopted.vaultBytes);
+      activateDek(adopted.dekKey, adopted.dekId);
       lsSet('srg_app_pin_configured', 'true');
       isAppUnlocked = true;
+      resetAutoLockTimer();
       const overlay = document.getElementById('appLockOverlay');
       if (overlay) overlay.classList.add('hidden');
+      setTimeout(() => openRecoveryKitModal(adopted.recoveryKey, true), 600);
     }
 
     loadMasterDataFromDb();
@@ -2468,12 +2501,22 @@ function toggleAppTheme() {
 
 const CRYPTO_MAGIC_V1 = new Uint8Array([0x53, 0x52, 0x47, 0x45, 0x31]); // "SRGE1" (Legacy v1, 100k iterations)
 const CRYPTO_MAGIC_V2 = new Uint8Array([0x53, 0x52, 0x47, 0x45, 0x32]); // "SRGE2" (Modern v2, 600k iterations + iteration count in header)
-const CRYPTO_MAGIC = CRYPTO_MAGIC_V2; // Active magic for all new encryptions
+// "SRGE3": encrypted with the random data key (DEK). Layout: MAGIC (5) + DEK ID (16) + IV (12) + CIPHERTEXT.
+// It has no salt because no PIN is involved; a distinct magic stops any code path from trying PIN keys on it.
+const CRYPTO_MAGIC_V3 = new Uint8Array([0x53, 0x52, 0x47, 0x45, 0x33]);
+const CRYPTO_MAGIC = CRYPTO_MAGIC_V2; // PIN-derived format, still used for exported backups
 const ATTACHMENT_CRYPTO_MAGIC = new Uint8Array([0x53, 0x52, 0x47, 0x41, 0x54, 0x54, 0x31]); // "SRGATT1"
 const PBKDF2_ITERATIONS = 600000; // OWASP recommendation for PBKDF2-HMAC-SHA256
 const PBKDF2_LEGACY_ITERATIONS = 100000;
-let currentEncryptionKey = null;
-let currentEncryptionSalt = null;
+let currentEncryptionKey = null; // in envelope mode this is the DEK (non-extractable)
+let currentEncryptionSalt = null; // legacy (pre-envelope) mode only
+let currentDekId = null; // set only while the DEK is the active key; selects the SRGE3 format on save
+
+// IndexedDB 'files' keys that hold keys, tokens or the database rather than attachments.
+const RESERVED_FILE_KEYS = new Set([
+  'active_sqlite', 'srg_bio_key_token', 'srg_recovery_vault', 'srg_crypto_salt', 'srg_crypto_auth_token',
+  'srg_key_envelope', 'srg_legacy_active_sqlite', 'srg_legacy_recovery_vault'
+]);
 
 const SQLITE_MAGIC = new Uint8Array([
   0x53, 0x51, 0x4c, 0x69, 0x74, 0x65, 0x20, 0x66, 0x6f, 0x72, 0x6d, 0x61, 0x74, 0x20, 0x33, 0x00
@@ -2511,6 +2554,7 @@ function isEncryptedDbBytes(data) {
     return false;
   }
   if (bytes.length < 33) return false;
+  if (matchMagic(bytes, CRYPTO_MAGIC_V3)) return bytes.length >= 33 + 16;
   // Check SRGE2 (Header: MAGIC (5) + ITERATIONS (4) + SALT (16) + IV (12) = 37 bytes)
   let isV2 = true;
   for (let i = 0; i < CRYPTO_MAGIC_V2.length; i++) {
@@ -2537,6 +2581,19 @@ function parseEncryptedDbHeader(data) {
     bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
   } else {
     return null;
+  }
+
+  if (matchMagic(bytes, CRYPTO_MAGIC_V3)) {
+    const ivStart = CRYPTO_MAGIC_V3.length + 16; // 21
+    return {
+      version: 3,
+      iterations: 0,
+      salt: null, // not PIN-derived: nothing to feed PBKDF2
+      keyId: bytes.slice(CRYPTO_MAGIC_V3.length, ivStart),
+      aad: bytes.slice(0, ivStart), // magic + key id are authenticated, so a swapped header fails to decrypt
+      iv: bytes.slice(ivStart, ivStart + 12),
+      ciphertext: bytes.slice(ivStart + 12)
+    };
   }
 
   let isV2 = true;
@@ -2904,6 +2961,17 @@ async function getStoredAuthVerificationTokenBytes() {
 
 async function verifyPinWithAuthToken(pin) {
   if (!pin) return false;
+  // Envelope mode: only the current PIN wrapper counts. The legacy token and salts stay on disk untouched
+  // (never deleted), so consulting them here would let an old PIN pass.
+  const env = await loadKeyEnvelope();
+  if (env) {
+    try {
+      (await unwrapDekWithPin(env, pin)).fill(0);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
   const dbBytes = cachedEncryptedDbBytes || await loadDbFromIndexedDB();
   const candidateConfigs = await getAllCandidateCryptoConfigs(dbBytes);
   const tokenBytes = await getStoredAuthVerificationTokenBytes();
@@ -2965,9 +3033,26 @@ async function encryptWithKeyAndSalt(rawBytes, key, salt, iterations = PBKDF2_IT
   return packed;
 }
 
+async function encryptWithDek(rawBytes, dekKey, dekId) {
+  if (!dekKey || !dekId || dekId.length !== 16) throw new Error('No data key active');
+  const header = new Uint8Array(CRYPTO_MAGIC_V3.length + 16);
+  header.set(CRYPTO_MAGIC_V3, 0);
+  header.set(dekId, CRYPTO_MAGIC_V3.length);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: header }, dekKey, rawBytes));
+  const packed = new Uint8Array(header.length + iv.length + ciphertext.length);
+  packed.set(header, 0);
+  packed.set(iv, header.length);
+  packed.set(ciphertext, header.length + iv.length);
+  return packed;
+}
+
 async function encryptDatabaseBytes(rawBytes) {
   if (!currentEncryptionKey) {
     throw new Error('No encryption key active');
+  }
+  if (currentDekId) {
+    return await encryptWithDek(rawBytes, currentEncryptionKey, currentDekId);
   }
   let salt = currentEncryptionSalt || getStoredCryptoSalt();
   if (!salt) {
@@ -2991,6 +3076,7 @@ async function decryptDatabaseBytes(encryptedBytes, pinOrKey, setActiveKey = fal
 
   let key = null;
   if (typeof pinOrKey === 'string') {
+    if (version === 3) throw new Error('This file is locked with the device data key, not directly with a PIN.');
     key = await deriveKeyFromPin(pinOrKey, salt, iterations, false);
   } else if (pinOrKey instanceof CryptoKey) {
     key = pinOrKey;
@@ -2998,11 +3084,9 @@ async function decryptDatabaseBytes(encryptedBytes, pinOrKey, setActiveKey = fal
     throw new Error('Invalid key or PIN provided for decryption');
   }
 
-  const decryptedBuffer = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: iv },
-    key,
-    ciphertext
-  );
+  const params = { name: 'AES-GCM', iv: iv };
+  if (version === 3) params.additionalData = parsed.aad;
+  const decryptedBuffer = await crypto.subtle.decrypt(params, key, ciphertext);
 
   if (setActiveKey) {
     currentEncryptionKey = key;
@@ -3065,6 +3149,259 @@ async function decryptAttachmentData(storedVal, key = currentEncryptionKey) {
     ciphertext
   );
   return new TextDecoder().decode(decryptedBuffer);
+}
+
+/* ==========================================================================
+   ENVELOPE ENCRYPTION: ONE RANDOM DATA KEY (DEK), SEVERAL WRAPPERS
+   ========================================================================== */
+// Why: when data was encrypted directly with a PIN-derived key, every re-salt or PIN change had to
+// re-encrypt everything, and the fingerprint token, database and attachments drifted onto different
+// keys (the v1.3.9-v1.3.13 lock-out). Now a random 256-bit DEK encrypts the data once and never changes.
+// The PIN, the fingerprint token and the recovery key each only wrap (encrypt) that same DEK, so changing
+// the PIN rewrites a 48-byte wrapper and nothing else.
+const KEY_ENVELOPE_FORMAT = 'SRGKEY1';
+const KEY_CHECK_PLAINTEXT = 'SRG_CALENDAR_DEK_CHECK';
+let keyEnvelope = null; // last loaded envelope (no secrets: only wrapped key material)
+
+function u8Equal(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+function toU8(v) {
+  if (v instanceof Uint8Array) return v;
+  if (v instanceof ArrayBuffer) return new Uint8Array(v);
+  if (ArrayBuffer.isView(v)) return new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+  return null;
+}
+
+function hexOf(bytes, n = 8) {
+  return Array.from(bytes || []).slice(0, n).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// localStorage can only hold strings, so the cached copy is JSON with base64 fields.
+function envelopeToJson(env) {
+  return JSON.stringify({
+    format: env.format,
+    dekId: bufferToBase64(env.dekId),
+    check: bufferToBase64(env.check),
+    pin: { salt: bufferToBase64(env.pin.salt), iterations: env.pin.iterations, iv: bufferToBase64(env.pin.iv), wrapped: bufferToBase64(env.pin.wrapped) },
+    created: env.created,
+    pinChanged: env.pinChanged
+  });
+}
+
+function envelopeFromJson(json) {
+  const o = JSON.parse(json);
+  return {
+    format: o.format,
+    dekId: base64ToBuffer(o.dekId),
+    check: base64ToBuffer(o.check),
+    pin: { salt: base64ToBuffer(o.pin.salt), iterations: o.pin.iterations, iv: base64ToBuffer(o.pin.iv), wrapped: base64ToBuffer(o.pin.wrapped) },
+    created: o.created,
+    pinChanged: o.pinChanged
+  };
+}
+
+function isValidEnvelope(env) {
+  return !!(env && env.format === KEY_ENVELOPE_FORMAT && toU8(env.dekId)?.length === 16 && env.pin &&
+    toU8(env.pin.salt)?.length === 16 && toU8(env.pin.iv)?.length === 12 && toU8(env.pin.wrapped) && toU8(env.check));
+}
+
+function normalizeEnvelope(env) {
+  return {
+    format: env.format,
+    dekId: toU8(env.dekId),
+    check: toU8(env.check),
+    pin: { salt: toU8(env.pin.salt), iterations: env.pin.iterations, iv: toU8(env.pin.iv), wrapped: toU8(env.pin.wrapped) },
+    created: env.created,
+    pinChanged: env.pinChanged
+  };
+}
+
+// IndexedDB is the primary copy; the localStorage copy is only a fallback cache.
+async function loadKeyEnvelope() {
+  let env = null;
+  try {
+    const idb = await openSRGDatabase();
+    const res = await new Promise((resolve) => {
+      const req = idb.transaction('files', 'readonly').objectStore('files').get('srg_key_envelope');
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    });
+    if (isValidEnvelope(res)) env = normalizeEnvelope(res);
+  } catch (e) {}
+  if (!env) {
+    try {
+      const json = localStorage.getItem('srg_key_envelope');
+      if (json) {
+        const parsed = envelopeFromJson(json);
+        if (isValidEnvelope(parsed)) env = parsed;
+      }
+    } catch (e) {}
+  }
+  keyEnvelope = env;
+  return env;
+}
+
+function cacheKeyEnvelopeLocally(env) {
+  // A stale cached wrapper would still open the DEK with the OLD PIN, so drop it if it can't be updated.
+  if (!lsSet('srg_key_envelope', envelopeToJson(env))) {
+    try { localStorage.removeItem('srg_key_envelope'); } catch (e) {}
+  }
+}
+
+async function saveKeyEnvelope(env) {
+  const idb = await openSRGDatabase();
+  await new Promise((resolve, reject) => {
+    const tx = idb.transaction('files', 'readwrite');
+    tx.objectStore('files').put(env, 'srg_key_envelope');
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error || new Error('Could not save the key envelope'));
+    tx.onabort = () => reject(tx.error || new Error('Key envelope transaction aborted'));
+  });
+  cacheKeyEnvelopeLocally(env);
+  keyEnvelope = env;
+}
+
+// The KEK comes from PBKDF2 with its own salt (never shared with backups). The DEK id is bound as
+// additional authenticated data so a wrapper can't be moved onto a different envelope unnoticed.
+async function wrapDekWithPin(rawDek, dekId, pin) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const kek = await deriveKeyFromPin(pin, salt, PBKDF2_ITERATIONS, false);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const wrapped = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: dekId }, kek, rawDek));
+  return { salt, iterations: PBKDF2_ITERATIONS, iv, wrapped };
+}
+
+// Returns the raw DEK bytes (caller must zero them) or throws if the PIN is wrong.
+async function unwrapDekWithPin(env, pin) {
+  const attempts = [pin];
+  if (typeof pin === 'string' && pin.trim() !== pin) attempts.unshift(pin.trim());
+  let lastErr = null;
+  for (const p of attempts) {
+    try {
+      const kek = await deriveKeyFromPin(p, env.pin.salt, env.pin.iterations || PBKDF2_ITERATIONS, false);
+      const raw = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: env.pin.iv, additionalData: env.dekId }, kek, env.pin.wrapped);
+      return new Uint8Array(raw);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error('Incorrect Security PIN');
+}
+
+async function buildDekCheck(dekKey, dekId) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: dekId }, dekKey, new TextEncoder().encode(KEY_CHECK_PLAINTEXT)));
+  const packed = new Uint8Array(iv.length + ct.length);
+  packed.set(iv, 0);
+  packed.set(ct, iv.length);
+  return packed;
+}
+
+// Proves that a key from the fingerprint token or recovery vault really is this envelope's DEK,
+// rather than an older PIN-derived key from before the upgrade.
+async function isDekForEnvelope(dekKey, env) {
+  try {
+    const out = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: env.check.slice(0, 12), additionalData: env.dekId }, dekKey, env.check.slice(12));
+    return new TextDecoder().decode(out) === KEY_CHECK_PLAINTEXT;
+  } catch (e) {
+    return false;
+  }
+}
+
+// Creates a new DEK and an envelope with a PIN wrapper. Returns the raw DEK too, because the
+// recovery vault and fingerprint token must wrap it; the caller zeroes it when done.
+async function createDekEnvelope(pin) {
+  const rawDek = crypto.getRandomValues(new Uint8Array(32));
+  const dekId = crypto.getRandomValues(new Uint8Array(16));
+  const dekKey = await importRuntimeAesGcmKey(rawDek);
+  const now = new Date().toISOString();
+  const env = {
+    format: KEY_ENVELOPE_FORMAT,
+    dekId,
+    check: await buildDekCheck(dekKey, dekId),
+    pin: await wrapDekWithPin(rawDek, dekId, pin),
+    created: now,
+    pinChanged: now
+  };
+  return { env, rawDek, dekKey, dekId };
+}
+
+function activateDek(dekKey, dekId) {
+  currentEncryptionKey = dekKey;
+  currentDekId = dekId;
+  currentEncryptionSalt = null;
+}
+
+/* ---------- Post-unlock integrity check ---------- */
+// Runs in the background after every unlock: each attachment a schedule refers to must open with the
+// key in memory. A silent mismatch is exactly how the earlier lock-out went unnoticed for weeks.
+let lastIntegrityCheck = null; // { at, checked, ok, notOpening: [], missing: [], plain }
+
+function findStoredAttachmentForRef(att, stored, byKey) {
+  const names = new Set();
+  [att.id, att.filename, att.name].filter(Boolean).forEach(n => {
+    names.add(String(n).toLowerCase());
+    names.add('att_' + String(n).toLowerCase());
+  });
+  const exact = Array.from(names).map(n => byKey.get(n)).find(Boolean);
+  if (exact) return exact;
+  const targets = [att.id, att.filename, att.name].filter(Boolean).map(s => String(s).toLowerCase()).filter(s => s.length >= 4);
+  return stored.find(f => { const k = f.key.toLowerCase(); return targets.some(t => k.includes(t) || t.includes(k.replace(/^att_/, ''))); }) || null;
+}
+
+async function runPostUnlockIntegrityCheck() {
+  if (!currentEncryptionKey || !db) return null;
+  const key = currentEncryptionKey;
+  const result = { at: new Date().toISOString(), checked: 0, ok: 0, plain: 0, notOpening: [], missing: [] };
+  try {
+    const files = (await diagReadAllFiles()).filter(f => !RESERVED_FILE_KEYS.has(f.key));
+    const byKey = new Map(files.map(f => [f.key.toLowerCase(), f]));
+    for (const att of getActiveScheduleAttachmentsMap().values()) {
+      if (key !== currentEncryptionKey) return null; // locked or re-keyed meanwhile
+      result.checked++;
+      const label = att.id || att.name || '?';
+      const hit = findStoredAttachmentForRef(att, files, byKey);
+      if (!hit) { result.missing.push(label); continue; }
+      if (!isEncryptedAttachmentBytes(hit.value)) { result.plain++; result.ok++; continue; }
+      try {
+        const out = await diagWithTimeout(decryptAttachmentData(hit.value, key), 10000, 'Decrypt');
+        if (out) result.ok++; else result.notOpening.push(label);
+      } catch (e) {
+        result.notOpening.push(label);
+      }
+    }
+  } catch (e) {
+    console.warn('Integrity check could not run:', e);
+    return null;
+  }
+  lastIntegrityCheck = result;
+  if (result.notOpening.length || result.missing.length) {
+    console.warn(`Integrity check: ${result.checked} ticket(s) checked — ${result.notOpening.length} do not open with the data key` +
+      `${result.notOpening.length ? ' [' + result.notOpening.map(diagMask).join(', ') + ']' : ''}, ${result.missing.length} missing` +
+      `${result.missing.length ? ' [' + result.missing.map(diagMask).join(', ') + ']' : ''}.`);
+    const parts = [];
+    if (result.notOpening.length) parts.push(`${result.notOpening.length} attachment(s) cannot be opened with your data key`);
+    if (result.missing.length) parts.push(`${result.missing.length} attachment(s) are missing from this device`);
+    showToast(`⚠ Integrity check: ${parts.join(' and ')}. Nothing was changed. Open Settings & Security → Diagnostics → Check attachments for details, and restore them from a backup.`, 'warning', 12000);
+  } else {
+    console.info(`Integrity check: all ${result.checked} referenced attachment(s) open with the data key.`);
+  }
+  return result;
+}
+
+// Everything that should happen in the background after any successful unlock.
+function afterUnlockBackgroundTasks() {
+  const key = currentEncryptionKey;
+  if (!key) return;
+  setTimeout(async () => {
+    if (key !== currentEncryptionKey) return;
+    try { await migratePlaintextAttachmentsToEncrypted(key); } catch (e) {}
+    await runPostUnlockIntegrityCheck();
+  }, 1200);
 }
 
 /* ==========================================================================
@@ -3186,6 +3523,7 @@ async function removeBiometricEncryptionKey() {
 
 function isPinConfigured() {
   if (localStorage.getItem('srg_app_pin_configured') === 'true') return true;
+  if (keyEnvelope) return true;
   if (cachedEncryptedDbBytes && isEncryptedDbBytes(cachedEncryptedDbBytes)) return true;
   return false;
 }
@@ -3307,18 +3645,29 @@ async function registerBiometricCredential() {
   });
   if (!enteredPin) return false;
 
-  const dbBytes = cachedEncryptedDbBytes || await loadDbFromIndexedDB();
-  const parsed = dbBytes && isEncryptedDbBytes(dbBytes) ? parseEncryptedDbHeader(dbBytes) : null;
-  const salt = parsed ? parsed.salt : await getEffectiveCryptoSalt(dbBytes);
-  const iterations = parsed ? parsed.iterations : PBKDF2_ITERATIONS;
+  let rawMasterBytes;
+  const env = await loadKeyEnvelope();
+  if (env) {
+    // The token wraps the DEK itself, so the PIN, fingerprint and recovery key all open the same key.
+    try {
+      rawMasterBytes = await unwrapDekWithPin(env, enteredPin);
+    } catch (e) {
+      showToast('Incorrect Security PIN. Biometric setup cancelled.', 'error', 4000);
+      return false;
+    }
+  } else {
+    const dbBytes = cachedEncryptedDbBytes || await loadDbFromIndexedDB();
+    const parsed = dbBytes && isEncryptedDbBytes(dbBytes) ? parseEncryptedDbHeader(dbBytes) : null;
+    const salt = parsed ? parsed.salt : await getEffectiveCryptoSalt(dbBytes);
+    const iterations = parsed ? parsed.iterations : PBKDF2_ITERATIONS;
 
-  const isValidPin = await verifyPinWithAuthToken(enteredPin);
-  if (!isValidPin) {
-    showToast('Incorrect Security PIN. Biometric setup cancelled.', 'error', 4000);
-    return false;
+    const isValidPin = await verifyPinWithAuthToken(enteredPin);
+    if (!isValidPin) {
+      showToast('Incorrect Security PIN. Biometric setup cancelled.', 'error', 4000);
+      return false;
+    }
+    rawMasterBytes = await deriveRawKeyBitsFromPin(enteredPin, salt, iterations);
   }
-
-  const rawMasterBytes = await deriveRawKeyBitsFromPin(enteredPin, salt, iterations);
 
   const loadingToast = showToast('Scan fingerprint or face to register biometric unlock...', 'info', 0);
   try {
@@ -3604,11 +3953,21 @@ async function unlockAppWithBiometric(autoPrompt = false) {
     const masterKey = await importRuntimeAesGcmKey(rawMasterBytes);
     rawMasterBytes.fill(0); // Zero memory
 
+    const env = await loadKeyEnvelope();
+    if (env && !(await isDekForEnvelope(masterKey, env))) {
+      // A token from before the upgrade wraps an old PIN-derived key, which no longer opens anything.
+      await removeBiometricEncryptionKey();
+      updateBiometricUI();
+      const msg = 'Fingerprint link is out of date. Unlock with your Security PIN, then enable fingerprint again.';
+      if (autoPrompt) showToast(msg, 'warning', 6000); // the catch below stays quiet for auto-prompts
+      throw new Error(msg);
+    }
+
     const bytesToDecrypt = cachedEncryptedDbBytes || await loadDbFromIndexedDB();
     let decryptedBytes = null;
     if (bytesToDecrypt) {
       try {
-        decryptedBytes = await decryptDatabaseBytes(bytesToDecrypt, masterKey, true);
+        decryptedBytes = await decryptDatabaseBytes(bytesToDecrypt, masterKey, !env);
       } catch (dbErr) {
         // Fallback: check local snapshots with masterKey
         try {
@@ -3622,11 +3981,11 @@ async function unlockAppWithBiometric(autoPrompt = false) {
             for (const snap of snaps) {
               if (snap && snap.data) {
                 try {
-                  const testBytes = await decryptDatabaseBytes(snap.data, masterKey, true);
+                  const testBytes = await decryptDatabaseBytes(snap.data, masterKey, !env);
                   if (isValidSqliteBinary(testBytes)) {
                     decryptedBytes = testBytes;
                     biometricSnapshotFallbackActive = true;
-                    console.info(`✓ Biometric unlock recovered database from snapshot: ${snap.id}`);
+                    console.warn(`Biometric unlock could not open the live database; opened snapshot ${snap.id} with saving paused.`);
                     break;
                   }
                 } catch(e) {}
@@ -3643,7 +4002,8 @@ async function unlockAppWithBiometric(autoPrompt = false) {
       ensureSchemaUpToDate();
     }
 
-    currentEncryptionKey = masterKey;
+    if (env) activateDek(masterKey, env.dekId);
+    else currentEncryptionKey = masterKey; // legacy data: the upgrade needs the PIN, so it waits for a PIN unlock
     isAppUnlocked = true;
     resetAutoLockTimer();
     recordSuccessfulPinAttempt();
@@ -3659,11 +4019,15 @@ async function unlockAppWithBiometric(autoPrompt = false) {
 
     updateBadge('Local SQLite Active');
     if (biometricSnapshotFallbackActive) {
-      showToast('⚠ Opened from an older snapshot because the fingerprint key is out of date. Saving is paused to protect your main database. Download DB (.db) now, then use Change Security PIN to re-secure.', 'warning', 0);
+      showToast(env
+        ? '⚠ Your main database could not be opened, so the newest readable snapshot was opened instead. Saving is paused to protect the main file. Download DB (.db) now and check Diagnostics.'
+        : '⚠ Opened from an older snapshot because the fingerprint key is out of date. Saving is paused to protect your main database. Download DB (.db) now, then use Change Security PIN to re-secure.', 'warning', 0);
+    } else if (!env) {
+      showToast('✓ Unlocked via Biometrics. Unlock once with your Security PIN to finish the encryption upgrade.', 'info', 6000);
     } else {
       showToast('✓ Unlocked via Biometrics!', 'success', 3000);
     }
-    migratePlaintextAttachmentsToEncrypted(masterKey);
+    afterUnlockBackgroundTasks();
   } catch(err) {
     console.warn('Biometric verification error:', err);
     if (!autoPrompt) {
@@ -3767,22 +4131,16 @@ async function handleSetupPinSubmit(e) {
   }
 
   try {
-    const salt = crypto.getRandomValues(new Uint8Array(16));
-    storeCryptoSalt(salt);
-
-    // Derive raw master bytes for recovery vault creation
-    const rawMasterBytes = await deriveRawKeyBitsFromPin(pin1, salt, PBKDF2_ITERATIONS);
-
-    // Generate and securely vault Emergency Recovery Key
+    // New random data key, wrapped by the PIN; the recovery vault wraps the same key.
+    const { env, rawDek, dekKey, dekId } = await createDekEnvelope(pin1);
     const recoveryKey = generateRecoveryKey();
-    await saveRecoveryVault(rawMasterBytes, recoveryKey);
-
-    // Import strictly non-extractable runtime key and wipe raw bytes
-    currentEncryptionKey = await importRuntimeAesGcmKey(rawMasterBytes);
-    currentEncryptionSalt = salt;
-    rawMasterBytes.fill(0); // Zero memory
-
-    await createAuthVerificationToken(currentEncryptionKey, salt);
+    try {
+      await saveKeyEnvelope(env);
+      await saveRecoveryVault(rawDek, recoveryKey);
+    } finally {
+      rawDek.fill(0); // Zero memory
+    }
+    activateDek(dekKey, dekId);
     resetAutoLockTimer();
     purgeLegacySessionAndDiskTokens();
 
@@ -3813,6 +4171,7 @@ async function handleSetupPinSubmit(e) {
     updateBadge('Local SQLite Active');
 
     showToast('✓ Security PIN set & Database encrypted with AES-256!', 'success', 4000);
+    afterUnlockBackgroundTasks();
 
     // Automatically prompt Emergency Recovery Kit so user can email or save their key
     setTimeout(() => {
@@ -3878,6 +4237,152 @@ async function unlockAppWithKey(enteredKey) {
       throw new Error('Database not found');
     }
 
+    const env = await loadKeyEnvelope();
+    const upgrade = env
+      ? await unlockDataWithEnvelope(env, rawKey, trimmedKey, bytesToDecrypt)
+      : await unlockLegacyDataAndUpgrade(rawKey, trimmedKey, bytesToDecrypt);
+
+    isAppUnlocked = true;
+    recordSuccessfulPinAttempt();
+    resetAutoLockTimer();
+    purgeLegacySessionAndDiskTokens();
+
+    const overlay = document.getElementById('appLockOverlay');
+    if (overlay) overlay.classList.add('hidden');
+    if (errEl) errEl.classList.add('hidden');
+
+    loadMasterDataFromDb();
+    populateTitlesDatalist();
+    switchToView(currentView, currentDate);
+    updateBadge('Local SQLite Active');
+
+    if (biometricSnapshotFallbackActive) {
+      showToast('⚠ Your main database could not be opened with this PIN, so the newest readable snapshot was opened instead. Saving is paused and the main file is kept unchanged. Download DB (.db) now and check Diagnostics.' +
+        (keyEnvelope ? '' : ' If fingerprint unlock is set up, unlock with it and then use Change Security PIN (the same PIN is fine) to finish the encryption upgrade.'), 'warning', 0);
+    } else if (upgrade) {
+      showUpgradeOutcome(upgrade);
+    } else {
+      showToast('✓ Calendar Authenticated & Decrypted', 'success', 3000);
+    }
+    afterUnlockBackgroundTasks();
+
+    // Prompt to enable biometrics if supported but not enrolled
+    if (localStorage.getItem('srg_biometric_enabled') !== 'true' && !(upgrade && upgrade.recoveryKey)) {
+      isBiometricAvailable().then(available => {
+        if (available) {
+          setTimeout(() => {
+            if (confirm('Enable fingerprint / biometric unlock on this device for instant secure access?')) {
+              registerBiometricCredential();
+            }
+          }, 600);
+        }
+      });
+    }
+  } catch(err) {
+    if (err && err.pinWasCorrect) {
+      // Don't call a correct PIN wrong: that sends people to "Forgot PIN" for no reason.
+      console.error('Unlock failed after the PIN was accepted:', err);
+      if (errEl) {
+        errEl.textContent = err.message;
+        errEl.classList.remove('hidden');
+      }
+      showToast('⚠ ' + err.message, 'error', 9000);
+      return;
+    }
+    recordFailedPinAttempt();
+    console.warn('Decryption / PIN authentication failed:', err);
+    const currentThrottle = checkPinThrottle();
+    if (errEl) {
+      errEl.textContent = currentThrottle || 'Incorrect Security PIN. Decryption failed.';
+      errEl.classList.remove('hidden');
+    }
+    showToast(currentThrottle || '❌ Authentication Failed: Invalid PIN', 'error', 3000);
+    const keyInp = document.getElementById('appLockKeyInput');
+    if (keyInp) {
+      keyInp.value = '';
+      keyInp.focus();
+    }
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = originalText;
+    }
+  }
+}
+
+function pinAcceptedError(message) {
+  const e = new Error(message);
+  e.pinWasCorrect = true;
+  return e;
+}
+
+// Opens the live database with the DEK; if that fails, the newest snapshot that opens (saving paused).
+// Returns the plaintext bytes or null.
+async function openDatabaseOrSnapshotWithKey(key, liveBytes) {
+  try {
+    const out = await decryptDatabaseBytes(liveBytes, key, false);
+    if (isValidSqliteBinary(out)) return out;
+  } catch (e) {}
+  const snaps = await listLocalDbSnapshots();
+  for (const snap of snaps) {
+    if (!snap || !snap.data || !isEncryptedDbBytes(snap.data)) continue;
+    try {
+      const out = await decryptDatabaseBytes(new Uint8Array(snap.data), key, false);
+      if (isValidSqliteBinary(out)) {
+        biometricSnapshotFallbackActive = true;
+        console.warn(`Live database did not open with the data key; opened snapshot ${snap.id} with saving paused.`);
+        return out;
+      }
+    } catch (e) {}
+  }
+  return null;
+}
+
+// Envelope mode: unwrap the DEK with the PIN and open the data. Returns an upgrade/repair report or null.
+async function unlockDataWithEnvelope(env, rawKey, trimmedKey, liveBytes) {
+  const rawDek = await unwrapDekWithPin(env, rawKey); // throws on a wrong PIN
+  const dekKey = await importRuntimeAesGcmKey(rawDek);
+  rawDek.fill(0);
+
+  // Usual case: the live file is SRGE3 under this DEK.
+  if (isEncryptedDbBytes(liveBytes) && parseEncryptedDbHeader(liveBytes).version === 3) {
+    const plain = await openDatabaseOrSnapshotWithKey(dekKey, liveBytes);
+    if (!plain) throw pinAcceptedError('Your PIN is correct, but neither the database nor any snapshot opens with your data key. Nothing was changed. Open Diagnostics and restore from a backup.');
+    db = new SQL.Database(plain);
+    ensureSchemaUpToDate();
+    activateDek(dekKey, env.dekId);
+    return null;
+  }
+
+  // The live file is in an older format (e.g. an old app version saved it after the upgrade).
+  // Read it with any key the PIN can derive and re-secure everything under the SAME DEK, so the
+  // fingerprint token and recovery key stay valid.
+  const keyRing = createKeyRing(trimmedKey || rawKey, [dekKey]);
+  let plain = null;
+  if (isEncryptedDbBytes(liveBytes)) {
+    const hit = await decryptDbWithKeyRing(liveBytes, keyRing);
+    if (hit.ok) plain = hit.result;
+  } else if (isValidSqliteBinary(liveBytes)) {
+    plain = liveBytes;
+  }
+  if (!plain) {
+    plain = await openDatabaseOrSnapshotWithKey(dekKey, liveBytes);
+    if (!plain) throw pinAcceptedError('Your PIN is correct, but the database file could not be opened with any known key. Nothing was changed. Open Diagnostics and restore from a backup.');
+    db = new SQL.Database(plain);
+    ensureSchemaUpToDate();
+    activateDek(dekKey, env.dekId);
+    return null;
+  }
+  db = new SQL.Database(plain);
+  ensureSchemaUpToDate();
+  const result = await atomicReencryptAllData({ dekKey, dekId: env.dekId, keyRing });
+  activateDek(dekKey, env.dekId);
+  return { kind: 'repair', skipped: result.skipped, counts: result.counts };
+}
+
+// Legacy mode (data encrypted directly with PIN-derived keys): find the key, open the data, then upgrade.
+async function unlockLegacyDataAndUpgrade(rawKey, trimmedKey, bytesToDecrypt) {
+  {
     const candidateConfigs = await getAllCandidateCryptoConfigs(bytesToDecrypt);
     const pinsToTry = [trimmedKey];
     if (rawKey && rawKey !== trimmedKey) pinsToTry.push(rawKey);
@@ -3959,88 +4464,83 @@ async function unlockAppWithKey(enteredKey) {
     db = new SQL.Database(decryptedBytes);
     ensureSchemaUpToDate();
 
+    if (!matchedConfig) {
+      // Only a snapshot opened. Upgrading now would replace the live file with older data, so stay in the
+      // old mode with saving paused. (The live file may be under the fingerprint key: unlocking with the
+      // fingerprint and then Change Security PIN reads it and finishes the upgrade.)
+      currentEncryptionKey = successfulKey; // null for an unencrypted snapshot: saving stays refused
+      currentDekId = null;
+      biometricSnapshotFallbackActive = true;
+      return null;
+    }
+
     const chosenPin = matchingPin || trimmedKey;
-    const liveHeader = isEncryptedDbBytes(bytesToDecrypt) ? parseEncryptedDbHeader(bytesToDecrypt) : null;
-    // Already consistent: the PIN opened the live file using the file's own salt at the current iteration count.
-    // Re-salting here would silently invalidate the fingerprint token (it wraps the current key), so skip it.
-    const alreadyConsistent = !!(matchedConfig && liveHeader && liveHeader.iterations === PBKDF2_ITERATIONS &&
-      matchedConfig.iterations === PBKDF2_ITERATIONS &&
-      matchedConfig.salt.length === liveHeader.salt.length &&
-      matchedConfig.salt.every((b, i) => b === liveHeader.salt[i]));
-
-    // Otherwise re-encrypt with a fresh salt and V2 (600k iterations) so header salt and stored salt match.
-    const freshSalt = alreadyConsistent ? liveHeader.salt : crypto.getRandomValues(new Uint8Array(16));
-    const freshKey = alreadyConsistent ? successfulKey : await deriveKeyFromPin(chosenPin, freshSalt, PBKDF2_ITERATIONS, false);
-    currentEncryptionKey = freshKey;
-    currentEncryptionSalt = freshSalt;
-    storeCryptoSalt(freshSalt);
-    if (!alreadyConsistent && localStorage.getItem('srg_biometric_enabled') === 'true') {
-      await removeBiometricEncryptionKey();
-      updateBiometricUI();
-      showToast('Fingerprint unlock was reset after re-securing your data. You will be asked to link it again.', 'info', 6000);
-    }
-
-    // Write freshSalt to IndexedDB 'files' store 'srg_crypto_salt'
+    const keyRing = createKeyRing(chosenPin, [successfulKey]);
+    const progress = showToast('Upgrading encryption to a permanent data key… please keep the app open.', 'info', 0);
     try {
-      const idb = await openSRGDatabase();
-      const tx = idb.transaction('files', 'readwrite');
-      tx.objectStore('files').put(freshSalt, 'srg_crypto_salt');
-      await new Promise(r => { tx.oncomplete = r; tx.onerror = r; });
-    } catch(e) {}
-
-    cachedEncryptedDbBytes = null; // Clear old cached bytes so encryptDatabaseBytes uses currentEncryptionSalt!
-    await saveDbToIndexedDB(false);
-    await createAuthVerificationToken(freshKey, freshSalt);
-
-    isAppUnlocked = true;
-    recordSuccessfulPinAttempt();
-    resetAutoLockTimer();
-    purgeLegacySessionAndDiskTokens();
-
-    const overlay = document.getElementById('appLockOverlay');
-    if (overlay) overlay.classList.add('hidden');
-    if (errEl) errEl.classList.add('hidden');
-
-    loadMasterDataFromDb();
-    populateTitlesDatalist();
-    switchToView(currentView, currentDate);
-    updateBadge('Local SQLite Active');
-
-    showToast('✓ Calendar Authenticated & Decrypted', 'success', 3000);
-    migratePlaintextAttachmentsToEncrypted(freshKey);
-
-    // Prompt to enable biometrics if supported but not enrolled
-    if (localStorage.getItem('srg_biometric_enabled') !== 'true') {
-      isBiometricAvailable().then(available => {
-        if (available) {
-          setTimeout(() => {
-            if (confirm('Enable fingerprint / biometric unlock on this device for instant secure access?')) {
-              registerBiometricCredential();
-            }
-          }, 600);
-        }
-      });
-    }
-  } catch(err) {
-    recordFailedPinAttempt();
-    console.warn('Decryption / PIN authentication failed:', err);
-    const currentThrottle = checkPinThrottle();
-    if (errEl) {
-      errEl.textContent = currentThrottle || 'Incorrect Security PIN. Decryption failed.';
-      errEl.classList.remove('hidden');
-    }
-    showToast(currentThrottle || '❌ Authentication Failed: Invalid PIN', 'error', 3000);
-    const keyInp = document.getElementById('appLockKeyInput');
-    if (keyInp) {
-      keyInp.value = '';
-      keyInp.focus();
-    }
-  } finally {
-    if (submitBtn) {
-      submitBtn.disabled = false;
-      submitBtn.innerHTML = originalText;
+      return await migrateLegacyDataToEnvelope({ pin: chosenPin, keyRing });
+    } catch (migErr) {
+      // The upgrade commits in one transaction, so a failure leaves storage exactly as it was.
+      console.error('Encryption upgrade failed; stored data left unchanged:', migErr);
+      currentEncryptionKey = successfulKey;
+      currentEncryptionSalt = matchedConfig.salt;
+      currentDekId = null;
+      showToast('⚠ The encryption upgrade could not be completed (' + migErr.message + '). Your data is unchanged and still opens with your PIN; the upgrade will be retried at the next unlock.', 'warning', 12000);
+      return null;
+    } finally {
+      if (progress) dismissToast(progress);
     }
   }
+}
+
+// Generates the DEK, re-encrypts everything the key ring can read under it (one transaction) and
+// re-points the PIN and recovery vault at it. The old fingerprint token wraps a legacy key, so it is reset.
+async function migrateLegacyDataToEnvelope({ pin, keyRing, recoveryKey = null }) {
+  const { env, rawDek, dekKey, dekId } = await createDekEnvelope(pin);
+  const newRecoveryKey = recoveryKey || generateRecoveryKey();
+  let vaultBytes;
+  try {
+    vaultBytes = await buildRecoveryVaultPackedBytes(rawDek, newRecoveryKey);
+  } finally {
+    rawDek.fill(0);
+  }
+  const result = await atomicReencryptAllData({ dekKey, dekId, keyRing, envelope: env, vaultBytes });
+
+  // Committed. Update the small localStorage caches and in-memory state.
+  keyEnvelope = env;
+  cacheKeyEnvelopeLocally(env);
+  cacheRecoveryVaultLocally(vaultBytes);
+  lsSet('srg_app_pin_configured', 'true');
+  activateDek(dekKey, dekId);
+  biometricSnapshotFallbackActive = false;
+  const hadBiometric = localStorage.getItem('srg_biometric_enabled') === 'true';
+  if (hadBiometric) {
+    await removeBiometricEncryptionKey();
+    updateBiometricUI();
+  }
+  console.info(`Encryption upgraded to data key ${hexOf(dekId, 4)}…: ${result.counts.attachments} attachment(s), ${result.counts.snapshots} snapshot(s) re-encrypted; skipped ${result.skipped.attachments.length} attachment(s), ${result.skipped.snapshots.length} snapshot(s).`);
+  if (result.skipped.attachments.length || result.skipped.snapshots.length) {
+    console.warn('Upgrade left these items unchanged (no known key opens them):', result.skipped);
+  }
+  return { kind: 'migrated', skipped: result.skipped, counts: result.counts, hadBiometric, recoveryKey: recoveryKey ? null : newRecoveryKey };
+}
+
+function showUpgradeOutcome(upgrade) {
+  const skippedCount = upgrade.skipped.attachments.length + upgrade.skipped.snapshots.length;
+  const skippedText = skippedCount
+    ? ` ${upgrade.skipped.attachments.length} attachment(s) and ${upgrade.skipped.snapshots.length} snapshot(s) could not be opened with any known key and were left unchanged (see Diagnostics).`
+    : '';
+  if (upgrade.kind === 'repair') {
+    showToast(`✓ Unlocked. Data saved by an older app version was re-secured under your data key.${skippedText}`, skippedCount ? 'warning' : 'success', 9000);
+    return;
+  }
+  showToast(
+    '✓ Encryption upgraded: your data now uses a permanent data key, so changing your PIN never re-encrypts it again.' +
+    skippedText +
+    (upgrade.hadBiometric ? ' Fingerprint unlock was reset — enable it again from the menu.' : '') +
+    (upgrade.recoveryKey ? ' A new Emergency Recovery Key was created; the old one no longer works.' : ''),
+    skippedCount ? 'warning' : 'success', 12000);
+  if (upgrade.recoveryKey) setTimeout(() => openRecoveryKitModal(upgrade.recoveryKey), 500);
 }
 
 async function lockAppSecurity() {
@@ -4049,6 +4549,9 @@ async function lockAppSecurity() {
   sessionStorage.removeItem('srg_session_key'); // Unconditionally wipe!
   currentEncryptionKey = null;
   currentEncryptionSalt = null;
+  currentDekId = null;
+  // The pause guarded the snapshot copy that is closed below; each unlock path sets it again if needed.
+  biometricSnapshotFallbackActive = false;
 
   if (autoLockTimer) {
     clearTimeout(autoLockTimer);
@@ -4196,19 +4699,30 @@ async function saveRecoveryVault(masterKeyOrRawBytes, recoveryKey) {
     tx.onabort = () => reject(tx.error || new Error('Recovery vault transaction aborted'));
   });
 
-  // Then update localStorage cache (gracefully ignoring quota limits since IndexedDB is primary)
-  try {
-    const b64 = bufferToBase64(packed);
-    lsSet('srg_recovery_vault', b64);
-  } catch(lsErr) {
-    console.warn('Could not cache recovery vault to localStorage (IndexedDB copy is primary):', lsErr);
-  }
+  cacheRecoveryVaultLocally(packed);
   localStorage.removeItem('srg_recovery_key_display'); // NEVER store plaintext recovery key at rest
   return packed;
 }
 
-// Get the stored packed recovery vault bytes
+// IndexedDB is primary. A cached copy that can't be updated is removed: a stale vault would wrap the wrong key.
+function cacheRecoveryVaultLocally(packed) {
+  if (!lsSet('srg_recovery_vault', bufferToBase64(packed))) {
+    try { localStorage.removeItem('srg_recovery_vault'); } catch (e) {}
+  }
+}
+
+// Get the stored packed recovery vault bytes (IndexedDB first, localStorage cache as fallback)
 async function getStoredRecoveryVaultBytes() {
+  try {
+    const idb = await openSRGDatabase();
+    const res = await new Promise((resolve) => {
+      const req = idb.transaction('files', 'readonly').objectStore('files').get('srg_recovery_vault');
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null);
+    });
+    if (res instanceof Uint8Array) return res;
+    if (res instanceof ArrayBuffer) return new Uint8Array(res);
+  } catch(e) {}
   const b64 = localStorage.getItem('srg_recovery_vault');
   if (b64) {
     try {
@@ -4339,7 +4853,7 @@ function downloadRecoveryKeyFile() {
     '2. On the lock screen, click "Forgot PIN / Passphrase?".',
     '3. Enter your Emergency Recovery Key exactly as shown above.',
     '4. Enter and confirm your new Security PIN (min 6 characters).',
-    '5. Click "Reset & Unlock". Your calendar will be unlocked and re-encrypted.',
+    '5. Click "Reset & Unlock". Your calendar unlocks; this recovery key keeps working.',
     '',
     'SECURITY ADVICE:',
     '- Never share this key with anyone.',
@@ -4458,76 +4972,57 @@ async function handleForgotPinResetSubmit(e) {
   }
 
   try {
-    // 1. Unwrap the raw master key from the vault using the recovery key
-    const recoveredRawMasterBytes = await unwrapMasterKeyWithRecoveryKey(inputRecoveryKey);
-    if (!recoveredRawMasterBytes) {
-      throw new Error('Could not unwrap encryption key with the provided Recovery Key.');
-    }
-    const recoveredMasterKey = await importRuntimeAesGcmKey(recoveredRawMasterBytes);
+    // 1. Unwrap whatever key the vault holds: the DEK, or (before the upgrade) the old PIN-derived data key
+    const recoveredRaw = await unwrapMasterKeyWithRecoveryKey(inputRecoveryKey);
+    const recoveredKey = await importRuntimeAesGcmKey(recoveredRaw);
 
-    // 2. Load the encrypted database from IndexedDB if not currently in memory
     const encryptedBytes = cachedEncryptedDbBytes || await loadDbFromIndexedDB();
     if (!encryptedBytes) {
-      recoveredRawMasterBytes.fill(0);
+      recoveredRaw.fill(0);
       throw new Error('No calendar database found on this device to recover.');
     }
 
-    // 3. Decrypt the database using the recovered master key
-    const decryptedBytes = await decryptDatabaseBytes(encryptedBytes, recoveredMasterKey, false);
-    if (!isValidSqliteBinary(decryptedBytes)) {
-      throw new Error('Database recovery failed: decrypted data is not a valid SQLite database.');
+    const env = await loadKeyEnvelope();
+    let upgrade = null;
+    if (env) {
+      if (!(await isDekForEnvelope(recoveredKey, env))) {
+        recoveredRaw.fill(0);
+        throw new Error('This recovery key belongs to an older encryption key and no longer works. Use the recovery key shown when your data was upgraded, or one created later from the menu.');
+      }
+      const plain = await openDatabaseOrSnapshotWithKey(recoveredKey, encryptedBytes);
+      if (!plain) {
+        recoveredRaw.fill(0);
+        throw new Error('The recovery key is correct, but the database could not be opened. Nothing was changed — check Diagnostics.');
+      }
+      // Only the PIN wrapper changes: the data, the fingerprint link and this recovery key stay valid.
+      let newPinWrapper;
+      try {
+        newPinWrapper = await wrapDekWithPin(recoveredRaw, env.dekId, newPin);
+      } finally {
+        recoveredRaw.fill(0);
+      }
+      await saveKeyEnvelope(Object.assign({}, env, { pin: newPinWrapper, pinChanged: new Date().toISOString() }));
+      db = new SQL.Database(plain);
+      ensureSchemaUpToDate();
+      activateDek(recoveredKey, env.dekId);
+    } else {
+      // Legacy data: open it with the recovered key, then upgrade. The recovery key just typed is kept
+      // (re-pointed at the new DEK), so the user doesn't have to store a new one.
+      recoveredRaw.fill(0);
+      const decryptedBytes = await decryptDatabaseBytes(encryptedBytes, recoveredKey, false);
+      if (!isValidSqliteBinary(decryptedBytes)) {
+        throw new Error('Database recovery failed: decrypted data is not a valid SQLite database.');
+      }
+      db = new SQL.Database(decryptedBytes);
+      ensureSchemaUpToDate();
+      upgrade = await migrateLegacyDataToEnvelope({ pin: newPin, keyRing: createKeyRing(null, [recoveredKey]), recoveryKey: inputRecoveryKey });
     }
-    db = new SQL.Database(decryptedBytes);
-    ensureSchemaUpToDate();
 
-    // 4. Derive fresh master key and salt from the new PIN
-    const newSalt = crypto.getRandomValues(new Uint8Array(16));
-    const newRawMasterBytes = await deriveRawKeyBitsFromPin(newPin, newSalt, PBKDF2_ITERATIONS);
-
-    // 5. Generate a new Emergency Recovery Key and build replacement vault
-    const newRecoveryKey = generateRecoveryKey();
-    const stagedVaultBytes = await buildRecoveryVaultPackedBytes(newRawMasterBytes, newRecoveryKey);
-
-    // Import strictly non-extractable runtime key and wipe raw bytes
-    const newMasterKey = await importRuntimeAesGcmKey(newRawMasterBytes);
-    newRawMasterBytes.fill(0); // Zero memory
-    recoveredRawMasterBytes.fill(0); // Zero memory
-
-    // Atomically re-encrypt snapshots, attachments, database, and recovery vault
-    const reencryptResult = await atomicReencryptAllData(recoveredMasterKey, newMasterKey, newSalt, null, stagedVaultBytes);
-    // The fingerprint token wraps the old key; it must be re-linked after a reset.
-    if (localStorage.getItem('srg_biometric_enabled') === 'true') {
-      await removeBiometricEncryptionKey();
-      updateBiometricUI();
-    }
-    const packedVault = reencryptResult ? reencryptResult.stagedVaultBytes : null;
-    const packedAuthToken = reencryptResult ? reencryptResult.stagedAuthTokenBytes : null;
-
-    // 6. Commit new security configuration in memory
-    currentEncryptionKey = newMasterKey;
-    currentEncryptionSalt = newSalt;
     resetAutoLockTimer();
+    recordSuccessfulPinAttempt();
     purgeLegacySessionAndDiskTokens();
-
-    // Update localStorage secondary caches safely (IndexedDB is already committed atomically)
-    try {
-      storeCryptoSalt(newSalt);
-    } catch(e) {}
-    try {
-      if (packedAuthToken) {
-        lsSet('srg_crypto_auth_token', bufferToBase64(packedAuthToken));
-      }
-    } catch(e) {}
-    try {
-      if (packedVault) {
-        lsSet('srg_recovery_vault', bufferToBase64(packedVault));
-      }
-    } catch(lsErr) {
-      console.warn('Could not cache recovery vault to localStorage (IndexedDB copy is primary):', lsErr);
-    }
     localStorage.removeItem('srg_recovery_key_display');
 
-    // 11. Unlock application
     isAppUnlocked = true;
     const overlay = document.getElementById('appLockOverlay');
     if (overlay) overlay.classList.add('hidden');
@@ -4538,12 +5033,15 @@ async function handleForgotPinResetSubmit(e) {
     switchToView(currentView, currentDate);
     updateBadge('Local SQLite Active');
 
-    showToast('✓ PIN reset successfully! Calendar restored & re-encrypted.', 'success', 5000);
-
-    // Prompt user with their new Emergency Recovery Key
-    setTimeout(() => {
-      openRecoveryKitModal(newRecoveryKey);
-    }, 450);
+    if (biometricSnapshotFallbackActive) {
+      showToast('⚠ PIN reset. Your main database could not be opened, so the newest readable snapshot was opened with saving paused. Download DB (.db) now and check Diagnostics.', 'warning', 0);
+    } else if (upgrade) {
+      showToast('✓ PIN reset.', 'success', 3000);
+      showUpgradeOutcome(upgrade);
+    } else {
+      showToast('✓ PIN reset. Your data, fingerprint unlock and this recovery key are unchanged.', 'success', 6000);
+    }
+    afterUnlockBackgroundTasks();
 
   } catch(err) {
     console.error('handleForgotPinResetSubmit error:', err);
@@ -4700,22 +5198,24 @@ async function requestBackupEncryptionKey() {
   return { pin: pin.trim(), key, salt };
 }
 
-async function atomicReencryptAllData(oldKey, newKey, newSalt, recoveryKey = null, prebuiltVaultBytes = null, keyRing = null) {
-  // With a key ring, items no key can open are left untouched and reported instead of aborting the repair.
-  const skipped = { snapshots: [], attachments: [] };
-  if (!oldKey || !newKey || !newSalt) {
+// Re-encrypts every snapshot, attachment and the live database (from memory) under the DEK, reading each
+// item with whichever key in the key ring opens it. Everything is staged and verified in memory first and
+// committed in ONE IndexedDB transaction, so a failure part-way leaves storage exactly as it was.
+// Items no key can open are left untouched and reported. Nothing is deleted: the previous live database
+// file and recovery vault are kept under srg_legacy_* keys the first time they are replaced.
+async function atomicReencryptAllData({ dekKey, dekId, keyRing, envelope = null, vaultBytes = null }) {
+  if (!dekKey || !dekId || !keyRing) {
     throw new Error('Missing encryption parameters for atomic re-encryption');
   }
-
+  const skipped = { snapshots: [], attachments: [] };
+  const counts = { snapshots: 0, attachments: 0 };
   const idb = await openSRGDatabase();
 
   // 1. Stage and verify snapshots
   const stagedSnapshots = [];
   const snapList = await new Promise((resolve, reject) => {
     try {
-      const tx = idb.transaction('snapshots', 'readonly');
-      const store = tx.objectStore('snapshots');
-      const req = store.getAll();
+      const req = idb.transaction('snapshots', 'readonly').objectStore('snapshots').getAll();
       req.onsuccess = () => resolve(req.result || []);
       req.onerror = () => reject(req.error);
     } catch(e) {
@@ -4724,143 +5224,107 @@ async function atomicReencryptAllData(oldKey, newKey, newSalt, recoveryKey = nul
   });
 
   for (const snap of snapList) {
-    if (snap && snap.data) {
-      const snapBytes = new Uint8Array(snap.data);
-      if (isEncryptedDbBytes(snapBytes)) {
-        let dec;
-        if (keyRing) {
-          const hit = await decryptDbWithKeyRing(snapBytes, keyRing);
-          if (!hit.ok) { skipped.snapshots.push(snap.name || snap.id); continue; }
-          dec = hit.result;
-        } else {
-          try {
-            dec = await decryptDatabaseBytes(snapBytes, oldKey, false);
-          } catch(err) {
-            throw new Error(`Failed to decrypt snapshot "${snap.name || snap.id}" with current key: ${err.message}. Aborting re-encryption.`);
-          }
-        }
-        const reEnc = await encryptWithKeyAndSalt(dec, newKey, newSalt);
-        try {
-          const verifyDec = await decryptDatabaseBytes(reEnc, newKey, false);
-          if (verifyDec.byteLength !== dec.byteLength) {
-            throw new Error('Byte length mismatch during snapshot verification.');
-          }
-        } catch(err) {
-          throw new Error(`Verification failed for re-encrypted snapshot "${snap.name || snap.id}": ${err.message}`);
-        }
-        const updatedSnap = Object.assign({}, snap, {
-          data: reEnc,
-          size: reEnc.byteLength
-        });
-        stagedSnapshots.push(updatedSnap);
-      }
+    if (!snap || !snap.data) continue;
+    const snapBytes = new Uint8Array(snap.data);
+    let dec = null;
+    if (isEncryptedDbBytes(snapBytes)) {
+      const hit = await decryptDbWithKeyRing(snapBytes, keyRing);
+      if (!hit.ok) { skipped.snapshots.push(snap.name || snap.id); continue; }
+      dec = hit.result;
+    } else if (isValidSqliteBinary(snapBytes)) {
+      dec = snapBytes; // an old unencrypted snapshot: encrypt it too
+    } else {
+      continue;
     }
+    const reEnc = await encryptWithDek(dec, dekKey, dekId);
+    const verifyDec = await decryptDatabaseBytes(reEnc, dekKey, false);
+    if (verifyDec.byteLength !== dec.byteLength) {
+      throw new Error(`Verification failed for re-encrypted snapshot "${snap.name || snap.id}".`);
+    }
+    stagedSnapshots.push(Object.assign({}, snap, { data: reEnc, size: reEnc.byteLength }));
+    counts.snapshots++;
   }
 
-  // 2. Stage and verify attachments
-  const stagedAttachments = [];
-  const fileEntries = await new Promise((resolve, reject) => {
+  // 2. Stage and verify attachments; also read the current live file and vault for the legacy copies
+  const fileEntries = [];
+  let oldLiveBytes = null, oldVault = null, hasLegacyLive = false, hasLegacyVault = false;
+  await new Promise((resolve, reject) => {
     try {
-      const tx = idb.transaction('files', 'readonly');
-      const store = tx.objectStore('files');
-      const entries = [];
-      const cursorReq = store.openCursor();
+      const cursorReq = idb.transaction('files', 'readonly').objectStore('files').openCursor();
       cursorReq.onsuccess = (e) => {
         const cursor = e.target.result;
-        if (cursor) {
-          const k = String(cursor.key);
-          if (k !== 'active_sqlite' && k !== 'srg_bio_key_token' && k !== 'srg_recovery_vault' && k !== 'srg_crypto_salt' && k !== 'srg_crypto_auth_token') {
-            entries.push({ key: k, value: cursor.value });
-          }
-          cursor.continue();
-        } else {
-          resolve(entries);
-        }
+        if (!cursor) return resolve();
+        const k = String(cursor.key);
+        if (k === 'active_sqlite') oldLiveBytes = cursor.value;
+        else if (k === 'srg_recovery_vault') oldVault = cursor.value;
+        else if (k === 'srg_legacy_active_sqlite') hasLegacyLive = true;
+        else if (k === 'srg_legacy_recovery_vault') hasLegacyVault = true;
+        else if (!RESERVED_FILE_KEYS.has(k)) fileEntries.push({ key: k, value: cursor.value });
+        cursor.continue();
       };
       cursorReq.onerror = () => reject(cursorReq.error);
     } catch(e) {
-      resolve([]);
+      resolve();
     }
   });
 
+  const stagedAttachments = [];
   for (const entry of fileEntries) {
     let plainData = null;
     if (isEncryptedAttachmentBytes(entry.value)) {
-      if (keyRing) {
-        const hit = await decryptAttachmentWithKeyRing(entry.value, keyRing);
-        if (!hit.ok) { skipped.attachments.push(entry.key); continue; }
-        plainData = hit.result;
-      } else {
-        try {
-          plainData = await decryptAttachmentData(entry.value, oldKey);
-        } catch(err) {
-          throw new Error(`Failed to decrypt attachment ${entry.key} with current key: ${err.message}. Aborting.`);
-        }
-      }
+      const hit = await decryptAttachmentWithKeyRing(entry.value, keyRing);
+      if (!hit.ok) { skipped.attachments.push(entry.key); continue; }
+      plainData = hit.result;
       if (!plainData) {
         throw new Error(`Empty decrypted payload for attachment ${entry.key}. Aborting.`);
       }
-    } else {
-      if (typeof entry.value === 'string') {
-        plainData = entry.value;
-      } else if (entry.value instanceof Uint8Array || entry.value instanceof ArrayBuffer) {
-        try {
-          const dec = new TextDecoder().decode(entry.value);
-          if (dec.startsWith('data:')) plainData = dec;
-        } catch(err) {}
-      }
+    } else if (typeof entry.value === 'string') {
+      plainData = entry.value;
+    } else if (entry.value instanceof Uint8Array || entry.value instanceof ArrayBuffer) {
+      try {
+        const dec = new TextDecoder().decode(entry.value);
+        if (dec.startsWith('data:')) plainData = dec;
+      } catch(err) {}
     }
 
     if (plainData) {
-      const reEnc = await encryptAttachmentData(plainData, newKey);
-      const verifyPlain = await decryptAttachmentData(reEnc, newKey);
+      const reEnc = await encryptAttachmentData(plainData, dekKey);
+      const verifyPlain = await decryptAttachmentData(reEnc, dekKey);
       if (!verifyPlain || verifyPlain.length !== plainData.length) {
         throw new Error(`Verification failed for re-encrypted attachment ${entry.key}.`);
       }
       stagedAttachments.push({ key: entry.key, value: reEnc });
+      counts.attachments++;
     }
   }
 
-  // 3. Stage and verify live active database if loaded
+  // 3. Stage and verify the live database from memory
   let stagedActiveDb = null;
   if (db) {
     const rawDbBytes = db.export();
-    stagedActiveDb = await encryptWithKeyAndSalt(rawDbBytes, newKey, newSalt);
-    const verifyDb = await decryptDatabaseBytes(stagedActiveDb, newKey, false);
+    stagedActiveDb = await encryptWithDek(rawDbBytes, dekKey, dekId);
+    const verifyDb = await decryptDatabaseBytes(stagedActiveDb, dekKey, false);
     if (verifyDb.byteLength !== rawDbBytes.byteLength) {
       throw new Error('Live database re-encryption verification failed. Aborting.');
     }
   }
+  const keepOldLive = !!(stagedActiveDb && oldLiveBytes && !hasLegacyLive &&
+    !(isEncryptedDbBytes(oldLiveBytes) && parseEncryptedDbHeader(oldLiveBytes).version === 3));
+  const keepOldVault = !!(vaultBytes && oldVault && !hasLegacyVault);
 
-  // 4. Stage and verify replacement recovery vault if provided
-  let stagedVaultBytes = prebuiltVaultBytes;
-  if (!stagedVaultBytes && recoveryKey) {
-    stagedVaultBytes = await buildRecoveryVaultPackedBytes(newKey, recoveryKey);
-  }
-
-  // 5. Stage auth verification token for new key
-  const stagedAuthTokenBytes = await buildAuthVerificationTokenPackedBytes(newKey);
-
-  // 6. Atomic Commit to IndexedDB spanning BOTH stores in a single transaction
+  // 4. Atomic commit spanning BOTH stores in a single transaction
   await new Promise((resolve, reject) => {
     const tx = idb.transaction(['snapshots', 'files'], 'readwrite');
     const snapStore = tx.objectStore('snapshots');
     const fileStore = tx.objectStore('files');
 
-    for (const snap of stagedSnapshots) {
-      snapStore.put(snap);
-    }
-    for (const att of stagedAttachments) {
-      fileStore.put(att.value, att.key);
-    }
-    if (stagedActiveDb) {
-      fileStore.put(stagedActiveDb, 'active_sqlite');
-    }
-    if (stagedVaultBytes) {
-      fileStore.put(stagedVaultBytes, 'srg_recovery_vault');
-    }
-    fileStore.put(newSalt, 'srg_crypto_salt');
-    fileStore.put(stagedAuthTokenBytes, 'srg_crypto_auth_token');
+    for (const snap of stagedSnapshots) snapStore.put(snap);
+    for (const att of stagedAttachments) fileStore.put(att.value, att.key);
+    if (keepOldLive) fileStore.put(oldLiveBytes, 'srg_legacy_active_sqlite');
+    if (keepOldVault) fileStore.put(oldVault, 'srg_legacy_recovery_vault');
+    if (stagedActiveDb) fileStore.put(stagedActiveDb, 'active_sqlite');
+    if (vaultBytes) fileStore.put(vaultBytes, 'srg_recovery_vault');
+    if (envelope) fileStore.put(envelope, 'srg_key_envelope');
 
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error || new Error('Atomic re-encryption transaction failed'));
@@ -4871,11 +5335,7 @@ async function atomicReencryptAllData(oldKey, newKey, newSalt, recoveryKey = nul
     cachedEncryptedDbBytes = stagedActiveDb;
   }
 
-  return {
-    stagedVaultBytes,
-    stagedAuthTokenBytes,
-    skipped
-  };
+  return { skipped, counts };
 }
 
 /* ==========================================================================
@@ -4992,7 +5452,7 @@ async function handleChangePinSubmit(e) {
   const confirmPin = (document.getElementById('confirmPinInput')?.value || '').trim();
   const errEl = document.getElementById('changePinErrorMsg');
 
-  // Verify current PIN using auth verification token
+  // Verify current PIN (envelope mode: it must unwrap the data key)
   const isCurrentPinValid = await verifyPinWithAuthToken(currentPin);
   if (!isCurrentPinValid) {
     if (errEl) {
@@ -5020,27 +5480,36 @@ async function handleChangePinSubmit(e) {
   const originalBtnText = saveBtn ? saveBtn.innerHTML : '';
   if (saveBtn) {
     saveBtn.disabled = true;
-    saveBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Re-encrypting...';
+    saveBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Updating...';
   }
 
   try {
+    const env = await loadKeyEnvelope();
+    if (env) {
+      // Envelope mode: re-wrap the same data key under the new PIN. No data is re-encrypted, and the
+      // fingerprint link and recovery key keep working because they wrap the same key.
+      const rawDek = await unwrapDekWithPin(env, currentPin);
+      let newPinWrapper;
+      try {
+        newPinWrapper = await wrapDekWithPin(rawDek, env.dekId, newPin);
+      } finally {
+        rawDek.fill(0);
+      }
+      await saveKeyEnvelope(Object.assign({}, env, { pin: newPinWrapper, pinChanged: new Date().toISOString() }));
+      resetAutoLockTimer();
+      closeChangePinModal();
+      showToast('✓ Security PIN changed. Your data, fingerprint unlock and recovery key are unchanged.', 'success', 6000);
+      return;
+    }
+
+    // Legacy mode (unlocked by fingerprint before the upgrade): upgrade now, reading everything under
+    // every key the current PIN and the in-memory key can open.
     let oldKey = currentEncryptionKey;
     if (!oldKey) {
       const storedSalt = await getEffectiveCryptoSalt();
       if (!storedSalt) throw new Error('Could not retrieve encryption salt to verify current PIN.');
       oldKey = await deriveKeyFromPin(currentPin, storedSalt);
     }
-    const newSalt = crypto.getRandomValues(new Uint8Array(16));
-    const newRawMasterBytes = await deriveRawKeyBitsFromPin(newPin, newSalt, PBKDF2_ITERATIONS);
-
-    // Generate replacement Emergency Recovery Key and build replacement vault
-    const newRecoveryKey = generateRecoveryKey();
-    const stagedVaultBytes = await buildRecoveryVaultPackedBytes(newRawMasterBytes, newRecoveryKey);
-
-    // Import strictly non-extractable runtime key and wipe raw bytes
-    const newKey = await importRuntimeAesGcmKey(newRawMasterBytes);
-    newRawMasterBytes.fill(0); // Zero sensitive memory immediately
-
     const keyRing = createKeyRing(currentPin, [oldKey]);
 
     // If this session was opened from a snapshot, the stored database may be newer: use it when any key opens it.
@@ -5055,57 +5524,16 @@ async function handleChangePinSubmit(e) {
       }
     }
 
-    // Perform atomic multi-store re-encryption (database is re-encrypted from memory)
-    const reencryptResult = await atomicReencryptAllData(oldKey, newKey, newSalt, null, stagedVaultBytes, keyRing);
-    const packedVault = reencryptResult ? reencryptResult.stagedVaultBytes : null;
-    const packedAuthToken = reencryptResult ? reencryptResult.stagedAuthTokenBytes : null;
-    const skipped = reencryptResult ? reencryptResult.skipped : { snapshots: [], attachments: [] };
-
-    // The fingerprint token wraps the old key; clear it so it can be re-linked to the new one.
-    const hadBiometric = localStorage.getItem('srg_biometric_enabled') === 'true';
-    if (hadBiometric) {
-      await removeBiometricEncryptionKey();
-      updateBiometricUI();
-    }
-    biometricSnapshotFallbackActive = false;
-
-    // Update in-memory active key (non-extractable)
-    currentEncryptionKey = newKey;
-    currentEncryptionSalt = newSalt;
+    const upgrade = await migrateLegacyDataToEnvelope({ pin: newPin, keyRing });
     resetAutoLockTimer();
     purgeLegacySessionAndDiskTokens();
-
-    // Update localStorage secondary caches safely (IndexedDB is already committed atomically)
-    try {
-      storeCryptoSalt(newSalt);
-    } catch(e) {}
-    try {
-      if (packedAuthToken) {
-        lsSet('srg_crypto_auth_token', bufferToBase64(packedAuthToken));
-      }
-    } catch(e) {}
-    try {
-      if (packedVault) {
-        lsSet('srg_recovery_vault', bufferToBase64(packedVault));
-      }
-    } catch(lsErr) {
-      console.warn('Could not cache recovery vault to localStorage (IndexedDB copy is primary):', lsErr);
-    }
     localStorage.removeItem('srg_recovery_key_display');
 
     closeChangePinModal();
     loadMasterDataFromDb();
     renderCurrentView();
-    const skippedCount = skipped.snapshots.length + skipped.attachments.length;
-    showToast(
-      '✓ Security PIN set and all data re-secured.' +
-      (skippedCount ? ` ${skipped.attachments.length} attachment(s) and ${skipped.snapshots.length} snapshot(s) could not be opened with any known key and were left unchanged.` : '') +
-      (hadBiometric ? ' Fingerprint unlock was reset — re-enable it from the menu.' : ''),
-      skippedCount ? 'warning' : 'success', 9000);
-    if (skippedCount) console.warn('Re-secure skipped items:', skipped);
-    setTimeout(() => {
-      openRecoveryKitModal(newRecoveryKey);
-    }, 500);
+    showToast('✓ Security PIN set.', 'success', 3000);
+    showUpgradeOutcome(upgrade);
   } catch (err) {
     console.error('Error changing PIN:', err);
     if (errEl) {
@@ -5867,7 +6295,7 @@ async function submitChartOfAccountsAdd(e) {
    DIAGNOSTICS (phone-friendly console log + read-only attachment health check)
    ========================================================================== */
 
-const DIAG_RESERVED_KEYS = new Set(['active_sqlite', 'srg_bio_key_token', 'srg_recovery_vault', 'srg_crypto_salt', 'srg_crypto_auth_token']);
+const DIAG_RESERVED_KEYS = RESERVED_FILE_KEYS;
 
 // Ticket numbers / PNRs can appear in file names, so reports show only a short prefix and the length.
 function diagMask(name) {
@@ -5982,7 +6410,12 @@ async function buildDiagnosticsReport(includeAttachmentCheck = false) {
   try {
     const b = cachedEncryptedDbBytes || await diagWithTimeout(loadDbFromIndexedDB(), 8000, 'Loading database file');
     const h = b && isEncryptedDbBytes(b) ? parseEncryptedDbHeader(b) : null;
-    lines.push(`Database file: ${b ? b.byteLength + ' bytes' : 'missing'}, ${h ? `encrypted, ${h.iterations} iterations` : 'not encrypted'}`);
+    const env = await loadKeyEnvelope();
+    lines.push(env
+      ? `Encryption: data key ${hexOf(env.dekId, 4)}… (created ${env.created}, PIN wrapper ${env.pin.iterations} iterations, PIN last changed ${env.pinChanged})`
+      : 'Encryption: legacy PIN-derived key (upgrades to a data key at the next PIN unlock)');
+    lines.push(`Recovery vault: ${(await getStoredRecoveryVaultBytes()) ? 'present' : 'missing'}`);
+    lines.push(`Database file: ${b ? b.byteLength + ' bytes' : 'missing'}, ${h ? (h.version === 3 ? `encrypted with data key ${hexOf(h.keyId, 4)}…${env && !u8Equal(h.keyId, env.dekId) ? ' (DIFFERENT from the envelope!)' : ''}` : `encrypted (legacy SRGE${h.version}), ${h.iterations} iterations`) : 'not encrypted'}`);
     if (h && currentEncryptionKey) {
       try {
         const d = await decryptDatabaseBytes(b, currentEncryptionKey, false);
@@ -6000,6 +6433,10 @@ async function buildDiagnosticsReport(includeAttachmentCheck = false) {
       lines.push(`Records: ${n('SELECT COUNT(*) FROM schedules')} schedules, ${n('SELECT COUNT(*) FROM daily_transactions')} transactions, ${n('SELECT COUNT(*) FROM chart_of_accounts')} accounts`);
     } catch (e) {}
   }
+  const ic = lastIntegrityCheck;
+  lines.push(ic
+    ? `Integrity check after unlock (${ic.at}): ${ic.checked} referenced attachment(s), ${ic.ok} open, ${ic.notOpening.length} do NOT open${ic.notOpening.length ? ' [' + ic.notOpening.map(diagMask).join(', ') + ']' : ''}, ${ic.missing.length} missing${ic.missing.length ? ' [' + ic.missing.map(diagMask).join(', ') + ']' : ''}`
+    : 'Integrity check after unlock: not run yet');
   if (includeAttachmentCheck) {
     lines.push('--- Attachment check ---');
     await runAttachmentHealthCheck(lines);
@@ -9560,9 +9997,13 @@ function importSqliteFile(e) {
     try {
       let backupKey = null;
       let backupSalt = null;
+      let backupPin = null;
 
       if (isEncryptedDbBytes(u8)) {
         const parsedHeader = parseEncryptedDbHeader(u8);
+        if (parsedHeader && parsedHeader.version === 3) {
+          throw new Error('This database file is locked with a device data key, not a PIN, so it cannot be imported. Use a backup made with Download DB or Full Backup.');
+        }
         backupSalt = parsedHeader ? parsedHeader.salt : u8.slice(CRYPTO_MAGIC.length, CRYPTO_MAGIC.length + 16);
         const backupIterations = parsedHeader ? parsedHeader.iterations : PBKDF2_ITERATIONS;
         const pin = await requestPinPromptModal({
@@ -9578,6 +10019,7 @@ function importSqliteFile(e) {
         }
         backupKey = await deriveKeyFromPin(pin, backupSalt, backupIterations, false);
         u8 = await decryptDatabaseBytes(u8, backupKey, false);
+        backupPin = pin;
       }
 
       if (!isValidSqliteBinary(u8)) {
@@ -9595,16 +10037,24 @@ function importSqliteFile(e) {
       if (currentEncryptionKey && isPinConfigured()) {
         // Device already has active PIN: re-encrypt restored database with device's active key
         await saveDbToIndexedDB();
-      } else if (backupKey && backupSalt) {
-        // Fresh device setup: adopt backup PIN
-        currentEncryptionKey = backupKey;
-        storeCryptoSalt(backupSalt);
-        await createAuthVerificationToken(backupKey);
+      } else if (backupPin) {
+        // Fresh device setup: adopt the backup PIN, wrapping a new data key with it
+        const { env, rawDek, dekKey, dekId } = await createDekEnvelope(backupPin);
+        const recoveryKey = generateRecoveryKey();
+        try {
+          await saveKeyEnvelope(env);
+          await saveRecoveryVault(rawDek, recoveryKey);
+        } finally {
+          rawDek.fill(0);
+        }
+        activateDek(dekKey, dekId);
         lsSet('srg_app_pin_configured', 'true');
         await saveDbToIndexedDB();
         isAppUnlocked = true;
+        resetAutoLockTimer();
         const overlay = document.getElementById('appLockOverlay');
         if (overlay) overlay.classList.add('hidden');
+        setTimeout(() => openRecoveryKitModal(recoveryKey, true), 600);
       } else {
         await saveDbToIndexedDB();
       }
@@ -9748,6 +10198,28 @@ function setupUIEventListeners() {
         iconClass: 'fa-solid fa-life-ring'
       });
       if (!enteredPin || !enteredPin.trim()) return;
+      const env = await loadKeyEnvelope();
+      if (env) {
+        // The new vault wraps the same data key; the previous recovery key stops working once replaced.
+        let rawDek;
+        try {
+          rawDek = await unwrapDekWithPin(env, enteredPin);
+        } catch (e) {
+          showToast('❌ Incorrect Security PIN. Access denied.', 'error', 3500);
+          return;
+        }
+        try {
+          const freshKey = generateRecoveryKey();
+          await saveRecoveryVault(rawDek, freshKey);
+          openRecoveryKitModal(freshKey);
+        } catch (vaultErr) {
+          console.error('Failed to save recovery vault:', vaultErr);
+          showToast('❌ Failed to save recovery vault: ' + vaultErr.message, 'error', 4500);
+        } finally {
+          rawDek.fill(0);
+        }
+        return;
+      }
       const salt = getStoredCryptoSalt();
       if (!salt) {
         showToast('Security configuration missing. Please reload.', 'error');

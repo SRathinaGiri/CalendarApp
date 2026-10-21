@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented here. Versions follow the in-app version (`APP_VERSION` in `app.js`, `CACHE_NAME` in `sw.js`).
 
+## v1.4.0 — 2026-10-21
+
+### Envelope encryption: the data key never changes again
+- **Why:** until now the database, snapshots and attachments were encrypted directly with a key derived from the PIN. Every PIN change or re-salt had to re-encrypt everything, and the fingerprint token, database and attachments could drift onto different keys (the v1.3.9–v1.3.13 lock-out).
+- **Now:** a random 256-bit **data key** encrypts the data once (new database header `SRGE3`). The PIN (PBKDF2-SHA256, 600,000 iterations, its own salt), the fingerprint token and the Emergency Recovery Key each only **wrap** that same key. The wrapped keys live in IndexedDB (`srg_key_envelope`, `srg_recovery_vault`), with a small localStorage cache that is dropped if it can't be kept current.
+- **Change Security PIN** re-wraps the data key only. No data is re-encrypted; fingerprint unlock and the recovery key keep working.
+- **Forgot PIN** (recovery key) sets a new PIN the same way. Data, fingerprint link and the recovery key itself are unchanged.
+- **Automatic upgrade** at the first PIN unlock: a data key is created and everything readable under any key the PIN (or the key in memory) can derive is re-encrypted under it in **one transaction**. Items no key opens are left untouched and reported. Nothing is deleted: the previous database file and recovery vault are kept as `srg_legacy_active_sqlite` / `srg_legacy_recovery_vault`. A new recovery key is shown (the old vault wrapped an old key), and fingerprint unlock must be enabled once more.
+  - If the PIN only opens a snapshot (the live file is under the fingerprint key), the upgrade waits instead of replacing newer data with older: saving is paused, and unlocking with the fingerprint then **Change Security PIN** (the same PIN is fine) completes it.
+  - Fingerprint unlock of not-yet-upgraded data still works; the upgrade happens at the next PIN unlock.
+- **Integrity check after every unlock:** in the background, each attachment referenced by a schedule must open with the data key. Otherwise a warning names the count, and Diagnostics lists the items. Nothing is changed.
+- **Backups unchanged:** encrypted exports still use a key derived from the PIN and the backup's own salt, so they restore with the PIN alone. Old `SRGE1`/`SRGE2` backups and `.db` files restore as before. Restoring an encrypted backup on a fresh device creates a new data key wrapped by the backup PIN, plus a new recovery key.
+- Diagnostics shows the encryption scheme, data key id, recovery vault presence and the last integrity check.
+- Locking the app now clears the "opened from snapshot, saving paused" state, which previously survived into the next unlock.
+
 ## v1.3.13 — 2026-10-21
 
 ### Clean Orphan Files removes unreadable old ticket copies

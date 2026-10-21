@@ -1,9 +1,9 @@
-# Calendar App (Offline PWA) v1.3.13
+# Calendar App (Offline PWA) v1.4.0
 
 A standalone, local-first Personal Calendar & Daily Organizer Progressive Web App (PWA) powered by client-side **SQLite (WASM)** and **IndexedDB** local storage with **AES-256-GCM hardware-accelerated encryption at rest for both database and file attachments**.
 
-> **Production PWA (v1.3.13)**  
-> Fully client-side, local-first calendar with ACID SQLite storage, Web Crypto AES-256-GCM encryption at rest for database and attachments, OWASP-compliant 600,000-iteration PBKDF2 key derivation with versioned headers (`SRGE2`), non-extractable in-memory runtime keys, dual-tier WebAuthn biometrics (Hardware PRF `SRGBIO1` & Platform User Verification `SRGBIO2` with mobile gesture tap-to-scan hero card and passkey autofill), virtual keyboard suppression on biometric lock screens, 5-minute inactivity auto-lock and progressive PIN attempt throttling, fail-closed persistence guarantees, strict Content Security Policy (CSP), safe Emergency Recovery Kit, forgot PIN reset loop, enforced 6+ character PIN/passphrase protection, SHA-256 corruption-verified backup archives, optional AES-256 encrypted backups, atomic single-transaction restore & re-encryption including the recovery vault, robust offline attachment encryption migration, and 100% offline capabilities.
+> **Production PWA (v1.4.0)**  
+> Fully client-side, local-first calendar with ACID SQLite storage, Web Crypto AES-256-GCM encryption at rest for database and attachments, OWASP-compliant 600,000-iteration PBKDF2 key derivation with versioned headers (`SRGE3` data-key envelope; `SRGE1`/`SRGE2` still readable), non-extractable in-memory runtime keys, dual-tier WebAuthn biometrics (Hardware PRF `SRGBIO1` & Platform User Verification `SRGBIO2` with mobile gesture tap-to-scan hero card and passkey autofill), virtual keyboard suppression on biometric lock screens, 5-minute inactivity auto-lock and progressive PIN attempt throttling, fail-closed persistence guarantees, strict Content Security Policy (CSP), safe Emergency Recovery Kit, forgot PIN reset loop, enforced 6+ character PIN/passphrase protection, SHA-256 corruption-verified backup archives, optional AES-256 encrypted backups, atomic single-transaction restore & re-encryption including the recovery vault, robust offline attachment encryption migration, and 100% offline capabilities.
 
 ---
 
@@ -14,30 +14,30 @@ A standalone, local-first Personal Calendar & Daily Organizer Progressive Web Ap
 - **Embedded SQLite WASM Engine (`sql.js`):** Embedded relational database providing SQL queries, atomic transaction guarantees on schedule saves, and direct `.db` file exports.
 - **Hardware-Accelerated AES-256-GCM Database & Attachment Encryption at Rest:**
   - Transparently encrypts the SQLite database, all historical snapshots, and all ticket attachments stored in browser IndexedDB with authenticated **AES-256-GCM**.
-  - Keys derived via **PBKDF2** (600,000 iterations, SHA-256, OWASP Password Storage standard) with cryptographic salts from the user's private PIN / Passphrase (minimum 6 characters, up to 64 characters). Backward-compatible with v1 headers (`SRGE1`, 100k iterations).
+  - **Envelope encryption (v1.4.0+):** a random 256-bit **data key** encrypts the database (`SRGE3` header), snapshots and attachments once and never changes. Your PIN (PBKDF2-SHA256, 600,000 iterations, own salt), the fingerprint token and the Emergency Recovery Key each only *wrap* that same data key, so changing the PIN rewrites a 48-byte wrapper and never re-encrypts your data. Older `SRGE1`/`SRGE2` PIN-derived data is upgraded automatically at the first PIN unlock (atomic, nothing deleted; items no key opens are reported).
   - Runtime master keys are imported strictly with `extractable: false` and kept in memory only—never written to `sessionStorage` or `localStorage`. Raw key bytes are zeroed out immediately after derivation.
   - Fail-closed storage guarantees: database, snapshot, and attachment persistence strictly refuse to write unencrypted data if a PIN has been configured.
   - Automatic Inactivity Lock: 5-minute idle auto-lock with progressive PIN throttling delays (3s, 10s, 30s) after consecutive failed attempts.
-  - Cryptographic salt and iteration count are derived directly from the encrypted database header (`SRGE2` + 4-byte iteration count + 16-byte salt payload), completely decoupling unlock operations from fragile browser `localStorage` durability.
-  - All security metadata (`srg_crypto_salt`, `srg_crypto_auth_token`, and `srg_recovery_vault`) are committed atomically in the exact same IndexedDB transaction as the database and attachments.
+  - After every unlock a background **integrity check** confirms that each attachment referenced by a schedule opens with the data key, and warns (and logs to Diagnostics) if any does not.
+  - The key envelope (`srg_key_envelope`) and recovery vault are stored in IndexedDB (localStorage holds only a cache) and are committed in the same transaction as the data during the upgrade.
   - Interactive first-time PIN setup prompts the user to choose their own Security PIN (no hardcoded defaults).
   - Secure **Fingerprint & Face ID** biometric unlock via WebAuthn Level 3 `prf` extension (hardware-backed key wrapping) with zero fallback to plaintext key storage.
   - Private Client-Side Architecture: data is encrypted exclusively inside your device browser and never sent to any server.
   - Automatic post-unlock migration automatically detects and upgrades any legacy plaintext attachments to AES-256-GCM encryption at rest.
 - **Emergency Recovery Key (Zero-Disk Cryptographic Recovery Kit):**
-  - High-entropy 20-character Emergency Recovery Key (`SRG-XXXX-XXXX-XXXX-XXXX`) generated during PIN setup and PIN changes.
-  - Secure PBKDF2 (600,000 iterations) + AES-GCM recovery vault unlocks and unwraps the master key if you forget your PIN.
+  - High-entropy 20-character Emergency Recovery Key (`SRG-XXXX-XXXX-XXXX-XXXX`) generated during PIN setup (and once more when older data is upgraded). It stays valid across PIN changes.
+  - Secure PBKDF2 (600,000 iterations) + AES-GCM recovery vault unwraps the data key if you forget your PIN.
   - Never stored on disk or in browser storage: shown only ephemerally on creation or explicit PIN verification. Download file names are generic (`CalendarApp-Recovery-Kit.txt`) to prevent key leakage in sync logs.
   - 1-click **"Email to Myself"** (`mailto:`) with security warning, **"Download (.txt)"**, and **"Copy"** options so you never lose access.
-  - **"Forgot PIN / Passphrase?"** recovery loop on the lock screen resets your PIN, restores your calendar, and atomically re-encrypts all database records, snapshots, and attachments with your new key.
+  - **"Forgot PIN / Passphrase?"** recovery loop on the lock screen sets a new PIN by re-wrapping the data key. Your data, fingerprint unlock and the recovery key itself are unchanged.
 - **IndexedDB Persistence (`SRGCalendarDB`):** Automatically persists edits, schedules, daily notes, financial entries, and file attachments in browser storage.
 - **Atomic 1-Click Complete Backup & Restore (`.zip`):**
   - **Full Export:** Creates an archive containing your SQLite database, an integrity manifest with per-file SHA-256 hashes for corruption detection, and deduplicated ticket attachments (PDFs & images). Supports optional **AES-256 PIN encryption** for both database and all attachments so exported archives are cryptographically protected against eavesdropping and tampering when stored on cloud drives (Google Drive, OneDrive, iCloud) or USB drives.
-  - **Atomic Restore & Smart Re-Encryption:** Verifies SHA-256 file hashes to detect accidental archive corruption before committing changes. Automatically detects whether the backup archive or `.db` file is encrypted or unencrypted. When restoring on a device with an existing PIN, decrypts using the backup PIN and immediately re-encrypts using this device's current PIN so keys and tokens stay in sync. Pre-validates the archive and stages all attachments in memory before activating the new database. Automatically rolls back to the previous database if restoration fails.
-- **Local Snapshots:** Save named encrypted database safety snapshots in browser storage anytime. When changing PIN, all past snapshots and attachments are atomically re-encrypted under the new key with full pre-commit verification.
+  - **Atomic Restore & Smart Re-Encryption:** Verifies SHA-256 file hashes to detect accidental archive corruption before committing changes. Automatically detects whether the backup archive or `.db` file is encrypted or unencrypted (old `SRGE1`/`SRGE2` backups stay restorable). Encrypted backups use a key derived from your PIN and the backup's own salt, so they restore with the PIN alone; on this device the restored data is re-encrypted under the data key. On a fresh device, the backup PIN becomes the device PIN and a new data key and recovery key are created. Pre-validates the archive and stages all attachments in memory before activating the new database. Automatically rolls back to the previous database if restoration fails.
+- **Local Snapshots:** Save named encrypted database safety snapshots in browser storage anytime. Snapshots use the same data key, so PIN changes never touch them.
 - **PWA (Progressive Web App):**
   - Installable directly to home screen or desktop from Chrome, Edge, Safari, or Brave.
-  - Version-scoped Service Worker cache cleanup (`v1.3.13`).
+  - Version-scoped Service Worker cache cleanup (`v1.4.0`).
   - In-app install and check for updates buttons.
 - **Comprehensive Calendar Views:**
   - **Calendar View:** 7-column month grid. In portrait mode, uniform square day cells with center indicator badges and a bottom day schedule agenda panel maximize usability. Long-pressing any day initiates multi-date selection for batch scheduling with single-tap date addition/removal. In landscape mode, full titles, times, and notes are shown.
@@ -114,7 +114,7 @@ The web app is deployed directly at:
 - **Hardware-Bound Biometrics (WebAuthn PRF):** Biometric unlock leverages the WebAuthn Level 3 HMAC-secret / PRF (`pseudo-random function`) extension to cryptographically wrap the master key with authenticator-derived entropy. No plaintext master keys are ever cached in browser session or local storage.
 - **Inactivity Auto-Lock & Attempt Throttling:** 5-minute idle auto-lock engages on user inactivity or tab switching. PIN verification enforces progressive delays (3s, 10s, 30s) after consecutive failed attempts to thwart automated brute-force attacks.
 - **Emergency Recovery Kit & Forgot PIN Loop:** Generate a 20-character cryptographic recovery key during PIN setup. Email it to yourself via `mailto:` with explicit security warning, download it as a generic text file (`CalendarApp-Recovery-Kit.txt`), or copy it. The recovery key is never stored on disk or in browser storage. If you forget your PIN, tap "Forgot PIN / Passphrase?" to unwrap the vault and set a new PIN without data loss.
-- **Atomic Change PIN & Re-Encryption:** Open the side drawer -> tap **"Change Security PIN"** to derive a new key with a fresh salt. Snapshots, attachments, database, and recovery vault are verified and staged in memory before committing changes in a single atomic transaction.
+- **Change PIN without re-encryption:** Open the side drawer -> tap **"Change Security PIN"**. Only the PIN wrapper of the data key is replaced; the database, snapshots, attachments, fingerprint link and recovery key are untouched.
 - **Private Client-Side Encryption:** Your PIN, database, and attachments are encrypted strictly inside your browser. No data or keys are ever transmitted to any external server.
 - **Strict Content Security Policy (CSP):** Enforced via meta tags with `'wasm-unsafe-eval'` scoped exclusively to WebAssembly runtime execution without allowing arbitrary JavaScript `eval()`. PDF.js runs with `isEvalSupported: false`.
 
