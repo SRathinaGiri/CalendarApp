@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here. Versions follow the in-app version (`APP_VERSION` in `app.js`, `CACHE_NAME` in `sw.js`).
 
+## v1.3.11 — 2026-10-21
+
+### Diagnostics
+- New **Diagnostics** screen (side menu → Settings & Security). It shows the app version, offline cache, whether the database opens with the key in memory, and every error or warning from the session, captured from start-up (`diagnostics.js`). Phones have no visible console, so this replaces it.
+- **Check attachments** lists each stored file (encrypted or not, and whether it opens) and how each ticket reference resolves (exact name, partial name, or not found). It is read-only, and each step has a timeout, so a hang shows up as a named step instead of a frozen screen.
+- **Copy report** for sharing. File names are shortened so ticket numbers aren't exposed in full.
+
 ## v1.3.10 — 2026-10-21
 
 ### Fixes

@@ -112,7 +112,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.3.10';
+const APP_VERSION = 'v1.3.11';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -5806,6 +5806,183 @@ async function submitChartOfAccountsAdd(e) {
 }
 
 /* ==========================================================================
+   DIAGNOSTICS (phone-friendly console log + read-only attachment health check)
+   ========================================================================== */
+
+const DIAG_RESERVED_KEYS = new Set(['active_sqlite', 'srg_bio_key_token', 'srg_recovery_vault', 'srg_crypto_salt', 'srg_crypto_auth_token']);
+
+// Ticket numbers / PNRs can appear in file names, so reports show only a short prefix and the length.
+function diagMask(name) {
+  const s = String(name);
+  return s.length <= 9 ? s : `${s.slice(0, 9)}…(${s.length})`;
+}
+
+function diagWithTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms))
+  ]);
+}
+
+function diagDescribeValue(v) {
+  if (v instanceof Uint8Array) return `bytes(${v.byteLength})`;
+  if (v instanceof ArrayBuffer) return `arraybuffer(${v.byteLength})`;
+  if (typeof v === 'string') return v.startsWith('data:') ? `dataurl(${v.length})` : `string(${v.length})`;
+  if (v && typeof v === 'object') return `object(${Object.keys(v).slice(0, 4).join(',')})`;
+  return typeof v;
+}
+
+async function diagReadAllFiles() {
+  const idb = await diagWithTimeout(openSRGDatabase(), 8000, 'Opening IndexedDB');
+  return diagWithTimeout(new Promise((resolve, reject) => {
+    const out = [];
+    const req = idb.transaction('files', 'readonly').objectStore('files').openCursor();
+    req.onsuccess = e => {
+      const c = e.target.result;
+      if (c) { out.push({ key: String(c.key), value: c.value }); c.continue(); } else resolve(out);
+    };
+    req.onerror = () => reject(req.error);
+  }), 15000, 'Reading attachment store');
+}
+
+async function runAttachmentHealthCheck(lines) {
+  let files;
+  try {
+    files = await diagReadAllFiles();
+  } catch (e) {
+    lines.push(`Attachment store: FAILED (${e.message})`);
+    return;
+  }
+  const stored = files.filter(f => !DIAG_RESERVED_KEYS.has(f.key));
+  const byKey = new Map(stored.map(f => [f.key.toLowerCase(), f]));
+  let ok = 0, failed = 0, plain = 0;
+  const fileLines = [];
+  for (const f of stored) {
+    let status;
+    if (!isEncryptedAttachmentBytes(f.value)) {
+      plain++;
+      status = 'not encrypted';
+    } else {
+      try {
+        const out = await diagWithTimeout(decryptAttachmentData(f.value, currentEncryptionKey), 10000, 'Decrypt');
+        status = out ? 'opens ✓' : 'empty';
+        if (out) ok++; else failed++;
+      } catch (e) {
+        failed++;
+        status = `does NOT open (${e.name || e.message})`;
+      }
+    }
+    fileLines.push(`  ${diagMask(f.key)}  ${diagDescribeValue(f.value)}  ${status}`);
+  }
+  lines.push(`Stored files: ${stored.length} — open with current key: ${ok}, do not open: ${failed}, unencrypted: ${plain}`);
+  lines.push(...fileLines);
+
+  // How each ticket referenced by a schedule resolves (same name rules as the viewer, read-only).
+  const refs = Array.from(getActiveScheduleAttachmentsMap().values());
+  let direct = 0, fuzzy = 0, missing = 0;
+  const refLines = [];
+  for (const att of refs.slice(0, 60)) {
+    const names = new Set();
+    [att.id, att.filename, att.name].filter(Boolean).forEach(n => { names.add(String(n).toLowerCase()); names.add('att_' + String(n).toLowerCase()); });
+    const hit = Array.from(names).map(n => byKey.get(n)).find(Boolean);
+    let how;
+    if (hit) {
+      direct++;
+      how = `exact → ${diagMask(hit.key)}`;
+    } else {
+      const targets = [att.id, att.filename, att.name].filter(Boolean).map(s => String(s).toLowerCase()).filter(s => s.length >= 4);
+      const match = stored.find(f => { const k = f.key.toLowerCase(); return targets.some(t => k.includes(t) || t.includes(k.replace(/^att_/, ''))); });
+      if (match) { fuzzy++; how = `partial-name → ${diagMask(match.key)}`; }
+      else { missing++; how = 'NOT FOUND'; }
+    }
+    refLines.push(`  ${diagMask(att.id || att.name || '?')}  ${how}`);
+  }
+  lines.push(`Ticket references: ${refs.length} — exact name: ${direct}, partial name: ${fuzzy}, not found: ${missing}${refs.length > 60 ? ' (first 60 listed)' : ''}`);
+  lines.push(...refLines);
+
+  // End-to-end: what the viewer actually gets for the first few tickets.
+  for (const att of refs.slice(0, 5)) {
+    const probe = Object.assign({}, att);
+    delete probe.data;
+    try {
+      const v = await diagWithTimeout(getAttachmentData(probe), 15000, 'Viewer load');
+      lines.push(`  viewer load ${diagMask(att.id || att.name || '?')}: ${v ? diagDescribeValue(v) : 'nothing returned'}`);
+    } catch (e) {
+      lines.push(`  viewer load ${diagMask(att.id || att.name || '?')}: ${e.message}`);
+    }
+  }
+}
+
+async function buildDiagnosticsReport(includeAttachmentCheck = false) {
+  const lines = [];
+  lines.push(`Calendar App ${APP_VERSION} — ${new Date().toISOString()}`);
+  lines.push(`Browser: ${navigator.userAgent}`);
+  try { lines.push(`Offline caches: ${(await caches.keys()).join(', ') || 'none'}`); } catch (e) {}
+  lines.push(`Service worker active: ${!!(navigator.serviceWorker && navigator.serviceWorker.controller)}`);
+  lines.push(`Unlocked: ${isAppUnlocked} · key in memory: ${!!currentEncryptionKey} · snapshot-fallback mode: ${biometricSnapshotFallbackActive}`);
+  lines.push(`Fingerprint: ${localStorage.getItem('srg_biometric_enabled') === 'true' ? (localStorage.getItem('srg_biometric_mode') || 'on') : 'off'}`);
+  try {
+    const b = cachedEncryptedDbBytes || await diagWithTimeout(loadDbFromIndexedDB(), 8000, 'Loading database file');
+    const h = b && isEncryptedDbBytes(b) ? parseEncryptedDbHeader(b) : null;
+    lines.push(`Database file: ${b ? b.byteLength + ' bytes' : 'missing'}, ${h ? `encrypted, ${h.iterations} iterations` : 'not encrypted'}`);
+    if (h && currentEncryptionKey) {
+      try {
+        const d = await decryptDatabaseBytes(b, currentEncryptionKey, false);
+        lines.push(`Database opens with key in memory: ${isValidSqliteBinary(d) ? 'yes' : 'NO'}`);
+      } catch (e) {
+        lines.push(`Database opens with key in memory: NO (${e.name})`);
+      }
+    }
+  } catch (e) {
+    lines.push(`Database check failed: ${e.message}`);
+  }
+  if (db) {
+    try {
+      const n = q => db.exec(q)[0].values[0][0];
+      lines.push(`Records: ${n('SELECT COUNT(*) FROM schedules')} schedules, ${n('SELECT COUNT(*) FROM daily_transactions')} transactions, ${n('SELECT COUNT(*) FROM chart_of_accounts')} accounts`);
+    } catch (e) {}
+  }
+  if (includeAttachmentCheck) {
+    lines.push('--- Attachment check ---');
+    await runAttachmentHealthCheck(lines);
+  }
+  lines.push('--- Errors & warnings (this session) ---');
+  const log = window.SRGDiagnostics ? window.SRGDiagnostics.entries().filter(e => e.level !== 'info') : [];
+  if (log.length === 0) lines.push('  none');
+  log.forEach(e => lines.push(`  [${e.t}s] ${e.level.toUpperCase()}: ${e.text}`));
+  return lines.join('\n');
+}
+
+async function openDiagnosticsModal(includeAttachmentCheck = false) {
+  const modal = document.getElementById('diagnosticsModal');
+  const out = document.getElementById('diagnosticsOutput');
+  if (!modal || !out) return;
+  modal.classList.remove('hidden');
+  out.textContent = includeAttachmentCheck ? 'Checking every stored file… (can take a minute)' : 'Collecting…';
+  try {
+    out.textContent = await buildDiagnosticsReport(includeAttachmentCheck);
+  } catch (e) {
+    out.textContent = 'Diagnostics failed: ' + e.message;
+  }
+}
+
+async function copyDiagnosticsReport() {
+  const text = document.getElementById('diagnosticsOutput')?.textContent || '';
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast('✓ Diagnostics copied — paste it into your message', 'success', 3000);
+  } catch (e) {
+    // Clipboard API can be unavailable; fall back to selecting the text for manual copy.
+    const range = document.createRange();
+    range.selectNodeContents(document.getElementById('diagnosticsOutput'));
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    showToast('Text selected — use Copy from your phone menu', 'info', 4000);
+  }
+}
+
+/* ==========================================================================
    DAILY DIARY NOTES FUNCTIONS
    ========================================================================== */
 
@@ -9586,6 +9763,19 @@ function setupUIEventListeners() {
       purgeAppCaches();
     });
   }
+  const drawerDiagnosticsBtn = document.getElementById('drawerDiagnosticsBtn');
+  if (drawerDiagnosticsBtn) {
+    drawerDiagnosticsBtn.addEventListener('click', () => {
+      closeSideMenu();
+      openDiagnosticsModal(false);
+    });
+  }
+  const diagRunCheckBtn = document.getElementById('diagRunCheckBtn');
+  if (diagRunCheckBtn) diagRunCheckBtn.addEventListener('click', () => openDiagnosticsModal(true));
+  const diagCopyBtn = document.getElementById('diagCopyBtn');
+  if (diagCopyBtn) diagCopyBtn.addEventListener('click', copyDiagnosticsReport);
+  const closeDiagnosticsBtn = document.getElementById('closeDiagnosticsModalBtn');
+  if (closeDiagnosticsBtn) closeDiagnosticsBtn.addEventListener('click', () => document.getElementById('diagnosticsModal').classList.add('hidden'));
   const drawerAboutBtn = document.getElementById('drawerAboutBtn');
   if (drawerAboutBtn) {
     drawerAboutBtn.addEventListener('click', () => {
