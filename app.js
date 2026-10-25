@@ -131,7 +131,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.4.1';
+const APP_VERSION = 'v1.4.2';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -6033,8 +6033,14 @@ function fillAccountSelect(select, { includeNew = false, placeholder = 'Select a
   setAccountSelectValue(select, keep);
 }
 
-// Case-insensitive select; adds a stray option if an old entry references an account no longer in the chart.
+// Case-insensitive select that also refreshes the field's search box (if it has one).
 function setAccountSelectValue(select, name) {
+  setAccountSelectValueRaw(select, name);
+  syncAccountComboInput(select);
+}
+
+// Case-insensitive select; adds a stray option if an old entry references an account no longer in the chart.
+function setAccountSelectValueRaw(select, name) {
   if (!select) return;
   const n = normalizeAccountName(name);
   if (!n || n === NEW_ACCOUNT_OPTION) { select.value = ''; return; }
@@ -6045,6 +6051,161 @@ function setAccountSelectValue(select, name) {
   opt.textContent = `${n} (not in chart)`;
   select.appendChild(opt);
   select.value = n;
+}
+
+/* ---------- Searchable account picker (finance form) ---------- */
+// A native <select> listing the whole chart of accounts is unusable on a phone, so each account field is a
+// search box with an "anywhere in the name" suggestion list. The hidden <select> stays the single source of
+// truth that saving, editing and validation already read, so none of those paths change.
+const ACCOUNT_COMBO_MAX = 50;
+
+function syncAccountComboInput(select) {
+  if (!select) return;
+  const input = document.getElementById(select.id + 'Search');
+  if (!input) return;
+  input.value = select.value && select.value !== NEW_ACCOUNT_OPTION ? select.value : '';
+}
+
+// Resolves what is typed in the search box: an exact account name (any case/spacing) is selected, an empty
+// box clears the choice, and anything else keeps the previous choice. Returns 'unmatched' in that last case
+// when the text differs from the current choice, so Save can ask the user to pick instead of guessing.
+function commitAccountCombo(selectId) {
+  const select = document.getElementById(selectId);
+  const input = document.getElementById(selectId + 'Search');
+  if (!select || !input) return 'ok';
+  const typed = normalizeAccountName(input.value);
+  if (!typed) { select.value = ''; return 'ok'; }
+  const acct = findAccount(typed);
+  if (acct) { setAccountSelectValue(select, acct.name); return 'ok'; }
+  const unmatched = typed.toLowerCase() !== String(select.value || '').toLowerCase();
+  syncAccountComboInput(select);
+  return unmatched ? 'unmatched' : 'ok';
+}
+
+// Appends text to el with every occurrence of query wrapped in <mark>, using text nodes only (no innerHTML).
+function appendHighlighted(el, text, query) {
+  if (!query) { el.textContent = text; return; }
+  const lower = text.toLowerCase();
+  let i = 0;
+  while (i < text.length) {
+    const hit = lower.indexOf(query, i);
+    if (hit === -1) { el.appendChild(document.createTextNode(text.slice(i))); break; }
+    if (hit > i) el.appendChild(document.createTextNode(text.slice(i, hit)));
+    const mark = document.createElement('mark');
+    mark.textContent = text.slice(hit, hit + query.length);
+    el.appendChild(mark);
+    i = hit + query.length;
+  }
+}
+
+function initAccountCombo(selectId) {
+  const select = document.getElementById(selectId);
+  const input = document.getElementById(selectId + 'Search');
+  const list = document.getElementById(selectId + 'List');
+  if (!select || !input || !list || input.dataset.comboReady) return;
+  input.dataset.comboReady = '1';
+  let items = [];
+  let active = -1;
+
+  const setActive = (i) => {
+    const opts = list.querySelectorAll('[role="option"]');
+    opts.forEach(o => o.classList.remove('active'));
+    active = i;
+    if (i >= 0 && opts[i]) {
+      opts[i].classList.add('active');
+      opts[i].scrollIntoView({ block: 'nearest' });
+      input.setAttribute('aria-activedescendant', opts[i].id);
+    } else {
+      input.removeAttribute('aria-activedescendant');
+    }
+  };
+
+  const close = () => {
+    list.classList.add('hidden');
+    input.setAttribute('aria-expanded', 'false');
+    setActive(-1);
+  };
+
+  const choose = (item) => {
+    close();
+    if (item.isNew) {
+      select.value = '';
+      input.value = '';
+      openFinanceNewAccountPanel(selectId, item.prefill);
+      return;
+    }
+    setAccountSelectValue(select, item.name);
+  };
+
+  const render = () => {
+    const q = input.value.trim().toLowerCase();
+    const accounts = getChartOfAccounts();
+    const matches = accounts.filter(a => !q || a.name.toLowerCase().includes(q) ||
+      (ACCOUNT_TYPES[a.account_type] || '').toLowerCase().includes(q));
+    // Names that start with the query come first, then alphabetical.
+    matches.sort((a, b) => (Number(b.name.toLowerCase().startsWith(q)) - Number(a.name.toLowerCase().startsWith(q))) ||
+      a.name.localeCompare(b.name, 'en-IN', { sensitivity: 'base' }));
+    const exact = q && accounts.some(a => a.name.toLowerCase() === q);
+    items = matches.slice(0, ACCOUNT_COMBO_MAX).map(a => ({ name: a.name, type: a.account_type }));
+    items.push({ isNew: true, prefill: exact ? '' : input.value.trim() });
+
+    list.innerHTML = '';
+    if (q && matches.length === 0) {
+      const none = document.createElement('li');
+      none.className = 'account-combo-empty';
+      none.textContent = 'No account matches';
+      list.appendChild(none);
+    }
+    items.forEach((it, i) => {
+      const li = document.createElement('li');
+      li.id = `${selectId}-opt-${i}`;
+      li.setAttribute('role', 'option');
+      li.className = 'account-combo-option' + (it.isNew ? ' account-combo-new' : '');
+      if (it.isNew) {
+        li.textContent = it.prefill ? `+ Add "${it.prefill}" as a new account` : '+ Add new account…';
+      } else {
+        const name = document.createElement('span');
+        name.className = 'account-combo-name';
+        appendHighlighted(name, it.name, q);
+        const type = document.createElement('span');
+        type.className = 'account-combo-type' + (it.type === 'unclassified' ? ' unclassified' : '');
+        type.textContent = ACCOUNT_TYPES[it.type] || ACCOUNT_TYPES.unclassified;
+        li.append(name, type);
+        if (select.value && it.name === select.value) li.setAttribute('aria-selected', 'true');
+      }
+      // Keep focus in the input so blur doesn't close the list before the tap registers.
+      li.addEventListener('mousedown', e => e.preventDefault());
+      li.addEventListener('click', () => choose(it));
+      list.appendChild(li);
+    });
+    if (matches.length > ACCOUNT_COMBO_MAX) {
+      const more = document.createElement('li');
+      more.className = 'account-combo-empty';
+      more.textContent = `${matches.length - ACCOUNT_COMBO_MAX} more — keep typing to narrow down`;
+      list.insertBefore(more, list.lastChild);
+    }
+    list.classList.remove('hidden');
+    input.setAttribute('aria-expanded', 'true');
+    setActive(-1);
+  };
+
+  input.addEventListener('focus', () => { input.select(); render(); });
+  input.addEventListener('input', render); // the choice only changes when a suggestion is picked or committed
+  input.addEventListener('keydown', (e) => {
+    const open = !list.classList.contains('hidden');
+    if (e.key === 'ArrowDown') { e.preventDefault(); if (!open) render(); setActive(Math.min(active + 1, items.length - 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setActive(Math.max(active - 1, 0)); }
+    else if (e.key === 'Enter') {
+      // Enter picks the highlighted suggestion; it must never submit the transaction form from here.
+      e.preventDefault();
+      if (open && active >= 0 && items[active]) choose(items[active]);
+      else if (open && input.value.trim() && items.length > 1) choose(items[0]); // Enter alone takes the top match
+      else { commitAccountCombo(selectId); close(); }
+    } else if (e.key === 'Escape') {
+      if (open) { e.preventDefault(); e.stopPropagation(); close(); syncAccountComboInput(select); }
+    }
+  });
+  input.addEventListener('blur', () => setTimeout(() => { close(); commitAccountCombo(selectId); }, 120));
 }
 
 function populateFinanceAccountsDatalists() {
@@ -6063,13 +6224,13 @@ function updateFinanceTypeHint() {
 
 let pendingNewAccountTarget = null;
 
-function openFinanceNewAccountPanel(targetSelectId) {
+function openFinanceNewAccountPanel(targetSelectId, prefillName = '') {
   pendingNewAccountTarget = targetSelectId;
   const panel = document.getElementById('financeNewAccountPanel');
   if (!panel) return;
   document.getElementById('financeNewAccountFor').textContent = targetSelectId === 'financeDebitAccount' ? 'Debit' : 'Credit';
   document.getElementById('financeNewAccountError').textContent = '';
-  document.getElementById('financeNewAccountName').value = '';
+  document.getElementById('financeNewAccountName').value = prefillName || '';
   document.getElementById('financeNewAccountType').value = '';
   panel.classList.remove('hidden');
   document.getElementById('financeNewAccountName').focus();
@@ -6081,6 +6242,7 @@ function closeFinanceNewAccountPanel(restoreSelection = true) {
   if (restoreSelection && pendingNewAccountTarget) {
     const sel = document.getElementById(pendingNewAccountTarget);
     if (sel && sel.value === NEW_ACCOUNT_OPTION) sel.value = '';
+    syncAccountComboInput(sel);
   }
   pendingNewAccountTarget = null;
 }
@@ -10711,6 +10873,14 @@ function setupUIEventListeners() {
   if (financeForm) {
     financeForm.addEventListener('submit', async (e) => {
       e.preventDefault();
+      // Tapping Save blurs the search box before its own handler runs, so resolve typed names here too.
+      const drState = commitAccountCombo('financeDebitAccount');
+      const crState = commitAccountCombo('financeCreditAccount');
+      if (drState === 'unmatched' || crState === 'unmatched') {
+        showToast('⚠ Pick the ' + (drState === 'unmatched' ? 'debit' : 'credit') + ' account from the suggestion list (or add it as a new account).', 'warning', 5000);
+        document.getElementById(drState === 'unmatched' ? 'financeDebitAccountSearch' : 'financeCreditAccountSearch').focus();
+        return;
+      }
       const txnData = {
         id: document.getElementById('financeTxnId').value,
         txn_date: document.getElementById('financeTxnDate').value,
@@ -10732,6 +10902,7 @@ function setupUIEventListeners() {
     if (sel) sel.addEventListener('change', () => {
       if (sel.value === NEW_ACCOUNT_OPTION) openFinanceNewAccountPanel(id);
     });
+    initAccountCombo(id);
   });
   const financeNewAccountSaveBtn = document.getElementById('financeNewAccountSaveBtn');
   if (financeNewAccountSaveBtn) financeNewAccountSaveBtn.addEventListener('click', submitFinanceNewAccount);

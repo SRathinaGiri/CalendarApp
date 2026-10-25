@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented here. Versions follow the in-app version (`APP_VERSION` in `app.js`, `CACHE_NAME` in `sw.js`).
 
+## v1.4.2 — 2026-10-25
+
+### Searchable account picker in the finance form
+- The Debit and Credit account fields are now search boxes instead of a long drop-down. Type any part of a name ("sbi", "bank", "fee") or a type ("asset", "expend"), and the matching accounts appear instantly with the matched letters highlighted and each account's type shown. Names that start with what you typed come first.
+- Tap a suggestion, or use ↑/↓ and Enter (Enter alone takes the top match; Esc cancels). **+ Add new account** is always at the end, pre-filled with what you typed.
+- Your current choice only changes when you pick something. Esc or tapping away keeps it. If you tap Save with half-typed text that matches no account, the app asks you to pick from the list instead of guessing. An exactly typed name is accepted without picking.
+- On phones, Debit and Credit stack vertically so the list uses the full width. The input uses a 16 px font so the browser doesn't zoom in on focus.
+
 ## v1.4.1 — 2026-10-21
 
 ### Lock screen: Calendar PIN vs. phone PIN

@@ -4514,3 +4514,58 @@ input:focus, select:focus, textarea:focus {
   .coa-row .coa-type-select { grid-column: 1; }
   .coa-row .coa-actions { grid-column: 2; grid-row: 1 / span 2; }
 }
+
+/* SEARCHABLE ACCOUNT PICKER (finance form) */
+.account-combo { position: relative; }
+.account-combo-select { display: none; }
+.account-combo-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 10px;
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  color: var(--text-main);
+  border: 1px solid var(--border-color);
+  font-family: inherit;
+  font-size: 16px; /* 16px stops mobile browsers zooming in on focus */
+}
+.account-combo-input:focus { outline: 2px solid var(--accent-blue); outline-offset: 1px; }
+.account-combo-list {
+  position: absolute;
+  z-index: 20;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  max-height: 260px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px 0;
+  list-style: none;
+  background: var(--bg-secondary, var(--bg-primary));
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+}
+.account-combo-option {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+.account-combo-option.active,
+.account-combo-option:hover { background: var(--bg-tertiary); }
+.account-combo-option[aria-selected="true"] .account-combo-name { font-weight: 700; }
+.account-combo-name { overflow-wrap: anywhere; }
+.account-combo-name mark { background: rgba(250, 204, 21, 0.35); color: inherit; border-radius: 2px; padding: 0 1px; }
+.account-combo-type { flex: none; font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.03em; }
+.account-combo-type.unclassified { color: var(--badge-amber-text); }
+.account-combo-new { color: var(--accent-blue); font-weight: 600; border-top: 1px solid var(--border-color); }
+.account-combo-empty { padding: 8px 10px; font-size: 0.8rem; color: var(--text-muted); }
+@media (max-width: 520px) {
+  /* Stack Dr/Cr on phones so each suggestion list has the full width */
+  .form-row-2.account-row { grid-template-columns: 1fr !important; }
+}
