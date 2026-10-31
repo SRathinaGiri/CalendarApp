@@ -105,6 +105,19 @@ The web app is deployed directly at:
 
 ---
 
+## 🤖 Android App (recommended for daily use)
+
+Browser storage can be cleared by the browser itself (low phone storage, "clear site data", cleaner apps). The Android app keeps the same features but stores data in the app's own storage, plus:
+
+- a private copy of every change, restored automatically if app storage is ever found empty;
+- a daily backup file in **Documents › SRGCalendar** that survives uninstalling (copy it to Drive now and then).
+
+**Install:** open the repository's **Releases** page on your phone, download the latest `CalendarApp-v…apk`, and allow installing from your browser when asked. Later builds install over it and keep your data.
+
+**Move from the PWA:** in the PWA, *Backup & Restore → Export Full (.zip)*; in the app, set a PIN, then *Restore Full (.zip)* with the PIN the backup was made with.
+
+**Build it yourself:** `npm install`, `npm run sync`, then open `android/` in Android Studio. CI builds need the repository secrets `ANDROID_KEYSTORE_BASE64` and `ANDROID_KEYSTORE_PASSWORD` (alias `srgcalendar`). Every release must be signed with that same key.
+
 ## 🔐 App Security & Privacy
 
 - **Hardware-Accelerated AES-256-GCM Encryption:** All SQLite database records, daily notes, transactions, snapshots, and file attachments stored in browser IndexedDB are encrypted at rest using AES-256-GCM via the browser's native Web Crypto API.

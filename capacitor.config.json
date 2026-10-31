@@ -1,0 +1,15 @@
+{
+  "appId": "com.srathinagiri.calendar",
+  "appName": "Calendar App",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": false,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": false
+  },
+  "plugins": {
+    "SystemBars": {
+      "insetsHandling": "native"
+    }
+  }
+}

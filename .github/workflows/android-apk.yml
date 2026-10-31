@@ -1,0 +1,93 @@
+name: Android APK
+
+on:
+  push:
+    branches: [capacitor, main]
+    paths-ignore: ['**.md']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # to publish the APK as a GitHub release
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+    steps:
+      - name: Require the permanent signing key
+        run: |
+          if [ -z "$KEYSTORE_B64" ] || [ -z "$KEYSTORE_PASSWORD" ]; then
+            echo "::error::Add the repository secrets ANDROID_KEYSTORE_BASE64 and ANDROID_KEYSTORE_PASSWORD (Settings → Secrets and variables → Actions). Every APK must be signed with the same key, or Android will refuse to update the app without uninstalling it (which deletes its data)."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install
+        run: npm ci
+
+      - name: Test storage layer
+        run: npm run test:native-store
+
+      - name: Copy web app into the Android project
+        run: npm run build:web && npx cap sync android
+
+      - name: Read version
+        run: |
+          VERSION=$(grep -oP "APP_VERSION = 'v\K[0-9.]+" app.js)
+          test -n "$VERSION"
+          echo "APP_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "VERSION_CODE=$((100 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
+
+      - name: Build signed APK
+        working-directory: android
+        run: |
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          export ANDROID_KEYSTORE_PATH="$RUNNER_TEMP/release.keystore"
+          export ANDROID_KEYSTORE_PASSWORD="$KEYSTORE_PASSWORD"
+          export ANDROID_KEY_ALIAS=srgcalendar
+          export ANDROID_KEY_PASSWORD="$KEYSTORE_PASSWORD"
+          ./gradlew --no-daemon assembleRelease -PappVersionCode="$VERSION_CODE" -PappVersionName="$APP_VERSION"
+          rm -f "$RUNNER_TEMP/release.keystore"
+
+      - name: Verify signature
+        run: |
+          APK=android/app/build/outputs/apk/release/app-release.apk
+          APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          "$APKSIGNER" verify --print-certs "$APK" | tee signature.txt
+          grep -q "SHA-256 digest" signature.txt
+          OUT="CalendarApp-v${APP_VERSION}-build${VERSION_CODE}.apk"
+          cp "$APK" "$OUT"
+          echo "APK_FILE=$OUT" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APK_FILE }}
+          path: ${{ env.APK_FILE }}
+
+      - name: Publish release (download the APK from the Releases page on your phone)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "android-v${APP_VERSION}-build${VERSION_CODE}" "$APK_FILE" \
+            --target "$GITHUB_SHA" --prerelease \
+            --title "Calendar App ${APP_VERSION} (Android build ${VERSION_CODE})" \
+            --notes "Built from ${GITHUB_REF_NAME} @ ${GITHUB_SHA::7}. Install over the previous build; your data is kept."

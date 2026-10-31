@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented here. Versions follow the in-app version (`APP_VERSION` in `app.js`, `CACHE_NAME` in `sw.js`).
 
+## v1.5.0 — 2026-10-31
+
+### Android app (Capacitor) with storage the browser can't wipe
+- **Why:** on 31 Oct the browser cleared the PWA's storage (most likely low phone storage; the app had not asked for persistent storage). Every schedule and transaction since the last manual backup was lost, together with the local snapshots, which lived in the same storage.
+- **Android app:** the same web app, packaged with Capacitor (`com.srathinagiri.calendar`). Its storage belongs to the app, not to Chrome, so clearing Chrome or low disk space no longer touches it.
+- **Private copy:** `native-store.js` copies every committed IndexedDB write to app-private files. If IndexedDB is ever found empty while the copy has data, it is put back **before** the app starts, and a notice says so after unlock.
+- **Phone backup folder:** a few seconds after changes, and when the app goes to the background, a single-file backup is written to **Documents › SRGCalendar** (`SRGCalendar-latest.srgbak` plus one per day, last 14 kept). It survives uninstalling the app. An empty database is never written as a backup.
+- **Backup & Restore** has a new *Automatic phone backup* card: last backup time, **Back up now**, **Restore from .srgbak file**.
+- **Exports** (.zip, .db, recovery kit) are saved to **Documents › SRGCalendar › Exports**, because the Android WebView ignores browser downloads.
+- Everything copied is the app's already-encrypted data; nothing is decrypted to make the copies.
+- **PWA:** now asks the browser for persistent storage (`navigator.storage.persist()`). The Android app does not register the service worker.
+- **Fingerprint unlock is not available in the Android app yet** (the WebView has no WebAuthn). Unlock with the PIN.
+- Build: `npm run sync`, then Android Studio, or push and let *Android APK* (GitHub Actions) build a signed APK and publish it as a release. The release key lives only in repository secrets.
+
 ## v1.4.2 — 2026-10-25
 
 ### Searchable account picker in the finance form

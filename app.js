@@ -131,7 +131,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.4.2';
+const APP_VERSION = 'v1.5.0';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -149,7 +149,8 @@ window.addEventListener('appinstalled', () => {
   showToast('Calendar App installed successfully!', 'success');
 });
 
-if ('serviceWorker' in navigator) {
+// The Android app ships its files inside the APK; a service worker would only serve stale copies.
+if ('serviceWorker' in navigator && !window.SRG_NATIVE) {
   navigator.serviceWorker.register(`sw.js?v=${APP_VERSION}`).then((reg) => {
     swRegistration = reg;
     console.log('Calendar App SW Registered');
@@ -301,6 +302,8 @@ if (localStorage.getItem('srg_installed_version') !== APP_VERSION) {
 // Initialization on DOM Loaded
 document.addEventListener('DOMContentLoaded', async () => {
   try {
+    // Android app: wait until a wiped IndexedDB has been refilled from the phone's private copy.
+    if (window.srgNativeReady) { try { await window.srgNativeReady; } catch (e) { console.error('Native storage start-up:', e); } }
     const vBadge = document.getElementById('appVersionBadge');
     if (vBadge) vBadge.textContent = APP_VERSION;
     initAppTheme();
