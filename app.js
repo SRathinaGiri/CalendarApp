@@ -131,7 +131,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.5.0';
+const APP_VERSION = 'v1.5.1';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;

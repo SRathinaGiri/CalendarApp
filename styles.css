@@ -1495,6 +1495,15 @@ button {
   max-width: 850px;
 }
 
+/* Long modals (Backup & Restore, Diagnostics) must scroll inside the card. */
+.modal-card > .modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
 .modal-header {
   padding: 16px 20px;
   border-bottom: 1px solid var(--border-color);

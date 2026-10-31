@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here. Versions follow the in-app version (`APP_VERSION` in `app.js`, `CACHE_NAME` in `sw.js`).
 
+## v1.5.1 — 2026-10-31
+
+### Fix: Backup & Restore window could not scroll
+- The window body had no scroll rule, so on a phone everything below the first screen (Full Backup, Restore, .db, snapshots) was unreachable. Modal bodies now scroll inside the card.
+
 ## v1.5.0 — 2026-10-31
 
 ### Android app (Capacitor) with storage the browser can't wipe
