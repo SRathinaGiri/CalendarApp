@@ -131,7 +131,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.5.1';
+const APP_VERSION = 'v1.5.2';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -185,6 +185,20 @@ if ('serviceWorker' in navigator && !window.SRG_NATIVE) {
       window.location.reload();
     }
   });
+}
+
+// Every version/platform label comes from APP_VERSION, so the screens can never disagree.
+function applyVersionLabels() {
+  const native = !!window.SRG_NATIVE;
+  const set = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
+  set('appVersionBadge', APP_VERSION);
+  set('drawerVersionBadge', `${APP_VERSION} \u2022 Encrypted`);
+  set('drawerInstallUpdateBadge', APP_VERSION);
+  set('aboutModalVersion', APP_VERSION);
+  set('aboutPlatform', native ? 'Android app (single device)' : 'Browser app (single device)');
+  // In the Android app, updates come as a new APK, not through the browser.
+  const drawerBtn = document.getElementById('drawerInstallUpdateBtn');
+  if (drawerBtn && native) drawerBtn.classList.add('hidden');
 }
 
 function updateInstallButtonState() {
@@ -304,8 +318,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   try {
     // Android app: wait until a wiped IndexedDB has been refilled from the phone's private copy.
     if (window.srgNativeReady) { try { await window.srgNativeReady; } catch (e) { console.error('Native storage start-up:', e); } }
-    const vBadge = document.getElementById('appVersionBadge');
-    if (vBadge) vBadge.textContent = APP_VERSION;
+    applyVersionLabels();
     initAppTheme();
     setupUIEventListeners(); // Set up all UI event listeners FIRST so form submission and clicks always work
     initAutoLockListeners();
@@ -3569,7 +3582,145 @@ async function deriveBiometricWrappingKey(rawId, salt) {
   );
 }
 
+/* --------------------------------------------------------------------------
+   Android app: fingerprint unlock through the phone's hardware keystore.
+   The Android WebView has no WebAuthn, so the Calendar PIN is stored encrypted
+   by a Keystore key that only a live fingerprint scan can use (BiometricPrompt
+   bound to a CryptoObject). Adding or removing fingerprints on the phone
+   invalidates it. A fingerprint unlock then runs the normal PIN unlock, so the
+   data key, envelope and recovery key are untouched.
+   -------------------------------------------------------------------------- */
+const NATIVE_BIO_SERVER = 'srg-calendar-pin';
+const NATIVE_BIO = { NOT_FOUND: 21, CANCELS: [10, 11, 13, 15, 16, 17] };
+
+function nativeBio() {
+  return (window.SRG_NATIVE && window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.NativeBiometric) || null;
+}
+
+function nativeBioErrorCode(e) {
+  const c = e && (e.code !== undefined ? e.code : (e.data && e.data.code));
+  const n = Number(c);
+  return Number.isFinite(n) ? n : -1;
+}
+
+async function nativeBioStorePin(pin, title) {
+  await nativeBio().setCredentials({
+    username: 'calendar',
+    password: pin,
+    server: NATIVE_BIO_SERVER,
+    accessControl: 1, // BIOMETRY_CURRENT_SET: invalidated when fingerprints on the phone change
+    title: title || 'Link fingerprint unlock',
+    negativeButtonText: 'Cancel'
+  });
+  lsSet('srg_biometric_mode', 'native');
+  lsSet('srg_biometric_cred_id', 'native');
+  lsSet('srg_biometric_enabled', 'true');
+}
+
+async function nativeBioForget() {
+  try { await nativeBio().deleteCredentials({ server: NATIVE_BIO_SERVER }); } catch (e) {}
+  ['srg_biometric_enabled', 'srg_biometric_cred_id', 'srg_biometric_mode'].forEach(k => localStorage.removeItem(k));
+  updateBiometricUI();
+}
+
+async function registerNativeBiometric() {
+  try {
+    const r = await nativeBio().isAvailable({ useFallback: false });
+    if (!r || !r.isAvailable) {
+      showToast('No fingerprint is set up on this phone. Add one in the phone\'s Settings → Security first.', 'warning', 6000);
+      return false;
+    }
+  } catch (e) {
+    showToast('Fingerprint sensor is not available on this phone.', 'warning', 4000);
+    return false;
+  }
+  if (!currentEncryptionKey) {
+    showToast('Please enter your Security PIN to unlock the calendar first.', 'info', 4000);
+    return false;
+  }
+  const enteredPin = await requestPinPromptModal({
+    title: 'Link Fingerprint Unlock',
+    message: 'Enter your Security PIN. It is stored on this phone, locked by your fingerprint:',
+    placeholder: 'Enter Security PIN',
+    confirmText: 'Verify & Link',
+    iconClass: 'fa-solid fa-fingerprint'
+  });
+  if (!enteredPin) return false;
+  const env = await loadKeyEnvelope();
+  try {
+    if (env) {
+      const raw = await unwrapDekWithPin(env, enteredPin);
+      if (raw && raw.fill) raw.fill(0);
+    } else if (!(await verifyPinWithAuthToken(enteredPin))) {
+      throw new Error('bad pin');
+    }
+  } catch (e) {
+    showToast('Incorrect Security PIN. Fingerprint setup cancelled.', 'error', 4000);
+    return false;
+  }
+  try {
+    await nativeBioStorePin(enteredPin);
+  } catch (e) {
+    if (!NATIVE_BIO.CANCELS.includes(nativeBioErrorCode(e))) {
+      showToast('Could not link fingerprint: ' + (e.message || e), 'error', 5000);
+    }
+    return false;
+  }
+  showToast('✓ Fingerprint unlock enabled on this phone.', 'success', 4000);
+  updateBiometricUI();
+  return true;
+}
+
+async function unlockWithNativeBiometric(autoPrompt) {
+  if (localStorage.getItem('srg_biometric_enabled') !== 'true') {
+    if (!autoPrompt) await registerNativeBiometric();
+    return;
+  }
+  isBiometricAuthenticating = true;
+  updateBiometricButtonState(true);
+  let pin = null;
+  try {
+    const c = await nativeBio().getSecureCredentials({
+      server: NATIVE_BIO_SERVER,
+      title: 'Unlock Calendar App',
+      negativeButtonText: 'Use Calendar PIN'
+    });
+    pin = c && c.password;
+  } catch (e) {
+    const code = nativeBioErrorCode(e);
+    if (code === NATIVE_BIO.NOT_FOUND) {
+      await nativeBioForget();
+      showToast('Fingerprints on this phone changed, so fingerprint unlock was turned off. Unlock with your PIN, then turn it on again.', 'warning', 8000);
+    } else if (NATIVE_BIO.CANCELS.includes(code)) {
+      preferCalendarPin = true; // "Use Calendar PIN" or back: don't keep re-prompting
+    } else if (!autoPrompt) {
+      showToast('Fingerprint unlock failed: ' + (e.message || e), 'error', 5000);
+    }
+  } finally {
+    isBiometricAuthenticating = false;
+    updateBiometricButtonState(false);
+  }
+  if (!pin) {
+    const keyInp = document.getElementById('appLockKeyInput');
+    if (keyInp && !autoPrompt) keyInp.focus();
+    return;
+  }
+  await unlockAppWithKey(pin);
+  if (!isAppUnlocked) {
+    await nativeBioForget();
+    showToast('The PIN saved for fingerprint unlock no longer works, so fingerprint unlock was turned off. Unlock with your current PIN, then turn it on again.', 'warning', 8000);
+  }
+}
+
 async function isBiometricAvailable() {
+  if (nativeBio()) {
+    try {
+      const r = await nativeBio().isAvailable({ useFallback: false });
+      return !!(r && r.isAvailable);
+    } catch (e) {
+      return false;
+    }
+  }
   if (window.PublicKeyCredential && 
       typeof PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable === 'function') {
     try {
@@ -3630,6 +3781,7 @@ function updateBiometricUI() {
 }
 
 async function registerBiometricCredential() {
+  if (nativeBio()) return registerNativeBiometric();
   if (!(await isBiometricAvailable())) {
     showToast('Biometric sensor is not available on this device.', 'warning', 4000);
     return false;
@@ -3824,6 +3976,7 @@ async function unlockAppWithBiometric(autoPrompt = false) {
   if (isBiometricAuthenticating) return;
   if (autoPrompt && preferCalendarPin) return;
   if (!autoPrompt) preferCalendarPin = false;
+  if (nativeBio()) return unlockWithNativeBiometric(autoPrompt);
   const credIdBase64 = localStorage.getItem('srg_biometric_cred_id');
   if (!credIdBase64 || localStorage.getItem('srg_biometric_enabled') !== 'true') {
     if (!autoPrompt) {
@@ -4057,6 +4210,11 @@ async function unlockAppWithBiometric(autoPrompt = false) {
 async function toggleBiometricSetting() {
   const isEnabled = localStorage.getItem('srg_biometric_enabled') === 'true';
   if (isEnabled) {
+    if (nativeBio()) {
+      await nativeBioForget();
+      showToast('Fingerprint unlock disabled.', 'info');
+      return;
+    }
     localStorage.removeItem('srg_biometric_enabled');
     localStorage.removeItem('srg_biometric_cred_id');
     await removeBiometricEncryptionKey();
@@ -5033,6 +5191,7 @@ async function handleForgotPinResetSubmit(e) {
     recordSuccessfulPinAttempt();
     purgeLegacySessionAndDiskTokens();
     localStorage.removeItem('srg_recovery_key_display');
+    if (nativeBio()) await nativeBioForget(); // the PIN saved behind the fingerprint is the old one
 
     isAppUnlocked = true;
     const overlay = document.getElementById('appLockOverlay');
@@ -5509,6 +5668,15 @@ async function handleChangePinSubmit(e) {
       await saveKeyEnvelope(Object.assign({}, env, { pin: newPinWrapper, pinChanged: new Date().toISOString() }));
       resetAutoLockTimer();
       closeChangePinModal();
+      if (nativeBio() && localStorage.getItem('srg_biometric_enabled') === 'true') {
+        try {
+          await nativeBioStorePin(newPin, 'Confirm fingerprint for the new PIN');
+        } catch (e) {
+          await nativeBioForget();
+          showToast('✓ Security PIN changed. Fingerprint unlock was turned off; turn it on again from the menu.', 'success', 7000);
+          return;
+        }
+      }
       showToast('✓ Security PIN changed. Your data, fingerprint unlock and recovery key are unchanged.', 'success', 6000);
       return;
     }

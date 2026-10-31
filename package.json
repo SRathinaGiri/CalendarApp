@@ -11,7 +11,8 @@
   "dependencies": {
     "@capacitor/android": "^8.6.0",
     "@capacitor/core": "^8.6.0",
-    "@capacitor/filesystem": "^8.1.5"
+    "@capacitor/filesystem": "^8.1.5",
+    "@capgo/capacitor-native-biometric": "^8.9.1"
   },
   "devDependencies": {
     "@capacitor/cli": "^8.6.0",

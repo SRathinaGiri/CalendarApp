@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented here. Versions follow the in-app version (`APP_VERSION` in `app.js`, `CACHE_NAME` in `sw.js`).
 
+## v1.5.2 — 2026-10-31
+
+### Fingerprint unlock in the Android app
+- The Android WebView has no WebAuthn, so the app now uses the phone's own fingerprint prompt (`@capgo/capacitor-native-biometric`).
+- Turning it on asks for the Calendar PIN once and stores it encrypted by an Android Keystore key that only a live fingerprint scan can use (BiometricPrompt bound to a CryptoObject). A fingerprint unlock then runs the normal PIN unlock; the data key, envelope and recovery key are unchanged.
+- **Use Calendar PIN** on the fingerprint sheet goes straight to the PIN box without prompting again.
+- Change Security PIN asks for one fingerprint to re-link the new PIN. Forgot PIN turns fingerprint unlock off.
+- If fingerprints on the phone are added or removed, Android discards the key: the app turns fingerprint unlock off and asks for the PIN.
+
+### Labels
+- The side menu said "v1.4.2 • Encrypted Offline PWA" and the About screen "v1.4.2 (PWA)" while the header showed the real version. Every version label now comes from `APP_VERSION`; the menu shows "v1.5.2 • Encrypted" and About shows Android app or Browser app.
+- The Android app hides **Install / Update App**: updates come as a new APK.
+
 ## v1.5.1 — 2026-10-31
 
 ### Fix: Backup & Restore window could not scroll
