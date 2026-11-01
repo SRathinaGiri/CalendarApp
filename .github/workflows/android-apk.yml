@@ -62,7 +62,7 @@ jobs:
           echo "APP_VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "VERSION_CODE=$((100 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
 
-      - name: Build signed APK
+      - name: Build signed APK and App Bundle (.aab for Google Play)
         working-directory: android
         run: |
           echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
@@ -70,7 +70,7 @@ jobs:
           export ANDROID_KEYSTORE_PASSWORD="$KEYSTORE_PASSWORD"
           export ANDROID_KEY_ALIAS=srgcalendar
           export ANDROID_KEY_PASSWORD="$KEYSTORE_PASSWORD"
-          ./gradlew --no-daemon assembleRelease -PappVersionCode="$VERSION_CODE" -PappVersionName="$APP_VERSION"
+          ./gradlew --no-daemon assembleRelease bundleRelease -PappVersionCode="$VERSION_CODE" -PappVersionName="$APP_VERSION"
           rm -f "$RUNNER_TEMP/release.keystore"
 
       - name: Verify signature
@@ -82,17 +82,25 @@ jobs:
           OUT="CalendarApp-v${APP_VERSION}-build${VERSION_CODE}.apk"
           cp "$APK" "$OUT"
           echo "APK_FILE=$OUT" >> "$GITHUB_ENV"
+          AAB=android/app/build/outputs/bundle/release/app-release.aab
+          jarsigner -verify -certs "$AAB" | tee aab-signature.txt
+          grep -q "jar verified" aab-signature.txt
+          AAB_OUT="CalendarApp-v${APP_VERSION}-build${VERSION_CODE}.aab"
+          cp "$AAB" "$AAB_OUT"
+          echo "AAB_FILE=$AAB_OUT" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ env.APK_FILE }}
-          path: ${{ env.APK_FILE }}
+          path: |
+            ${{ env.APK_FILE }}
+            ${{ env.AAB_FILE }}
 
       - name: Publish release (download the APK from the Releases page on your phone)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "android-v${APP_VERSION}-build${VERSION_CODE}" "$APK_FILE" \
+          gh release create "android-v${APP_VERSION}-build${VERSION_CODE}" "$APK_FILE" "$AAB_FILE" \
             --target "$GITHUB_SHA" --prerelease \
             --title "Calendar App ${APP_VERSION} (Android build ${VERSION_CODE})" \
-            --notes "Built from ${GITHUB_REF_NAME} @ ${GITHUB_SHA::7}. Install over the previous build; your data is kept."
+            --notes "Built from ${GITHUB_REF_NAME} @ ${GITHUB_SHA::7}. Phone: install the .apk over the previous build; your data is kept. Google Play: upload the .aab (versionCode ${VERSION_CODE})."
