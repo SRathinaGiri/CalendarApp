@@ -100,7 +100,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # main = the official release; other branches publish test builds as pre-releases
+          if [ "$GITHUB_REF_NAME" = "main" ]; then RELEASE_KIND="--latest"; else RELEASE_KIND="--prerelease"; fi
           gh release create "android-v${APP_VERSION}-build${VERSION_CODE}" "$APK_FILE" "$AAB_FILE" \
-            --target "$GITHUB_SHA" --prerelease \
+            --target "$GITHUB_SHA" $RELEASE_KIND \
             --title "Calendar App ${APP_VERSION} (Android build ${VERSION_CODE})" \
             --notes "Built from ${GITHUB_REF_NAME} @ ${GITHUB_SHA::7}. Phone: install the .apk over the previous build; your data is kept. Google Play: upload the .aab (versionCode ${VERSION_CODE})."

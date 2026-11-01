@@ -61,7 +61,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # main = the official release; other branches publish test builds as pre-releases
+          if [ "$GITHUB_REF_NAME" = "main" ]; then RELEASE_KIND="--latest"; else RELEASE_KIND="--prerelease"; fi
           gh release create "windows-v${APP_VERSION}-build${BUILD_NO}" "$EXE_FILE" \
-            --target "$GITHUB_SHA" --prerelease \
+            --target "$GITHUB_SHA" $RELEASE_KIND \
             --title "Calendar App ${APP_VERSION} for Windows (build ${BUILD_NO})" \
             --notes "Windows installer built from ${GITHUB_REF_NAME} @ ${GITHUB_SHA::7}. Run it to install or update; your data is kept."
