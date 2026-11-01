@@ -131,7 +131,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.7.0';
+const APP_VERSION = 'v1.7.1';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -1964,6 +1964,7 @@ async function importFullBackupZip(file) {
 
     if (loadingToast) dismissToast(loadingToast);
     showToast(`✓ Full backup restored successfully! Database loaded and ${importedAttachmentsCount} attachments verified and restored.`, 'success', 5000);
+    if (backupPin && !adopted) setTimeout(() => offerSamePinAfterRestore(backupPin), 800);
   } catch (err) {
     if (loadingToast) dismissToast(loadingToast);
     console.error('Error importing full backup zip:', err);
@@ -1981,6 +1982,57 @@ async function importFullBackupZip(file) {
       : 'Failed to restore full backup: ' + err.message;
     showToast(msg, 'error', 6000);
   }
+}
+
+// After restoring someone's backup onto a device that already has its own PIN, the device keeps
+// unlocking with its own PIN. Say so plainly, and offer to switch the device to the backup's PIN
+// so one PIN works everywhere (confirmed with the device's current PIN).
+async function offerSamePinAfterRestore(backupPin) {
+  const env = await loadKeyEnvelope();
+  if (!env) return;
+  try {
+    const raw = await unwrapDekWithPin(env, backupPin);
+    if (raw && raw.fill) raw.fill(0);
+    return; // the backup's PIN already unlocks this device
+  } catch (e) { /* different PIN */ }
+
+  const here = appPlatform() === 'windows' ? 'this computer' : 'this device';
+  if (!confirm(`Restore complete.\n\nImportant: ${here} still unlocks with the PIN you set on it, not the PIN of the backup you just restored.\n\nUse the backup's PIN on ${here} from now on?\n(OK = switch to the backup's PIN, Cancel = keep ${here}'s own PIN)`)) {
+    showToast(`Remember: unlock ${here} with the PIN you set on it, not the backup's PIN.`, 'warning', 9000);
+    return;
+  }
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const currentPin = await requestPinPromptModal({
+      title: 'Confirm Current PIN',
+      message: `Enter the PIN ${here} uses now. After this, the backup's PIN unlocks ${here}.`,
+      placeholder: `Current PIN of ${here}`,
+      confirmText: 'Switch PIN',
+      iconClass: 'fa-solid fa-key'
+    });
+    if (!currentPin) {
+      showToast(`Kept ${here}'s own PIN. Use it to unlock.`, 'info', 7000);
+      return;
+    }
+    let rawDek;
+    try {
+      rawDek = await unwrapDekWithPin(env, currentPin);
+    } catch (e) {
+      showToast('That is not the current PIN of ' + here + '. Try again.', 'error', 4000);
+      continue;
+    }
+    try {
+      const wrapper = await wrapDekWithPin(rawDek, env.dekId, backupPin);
+      await saveKeyEnvelope(Object.assign({}, env, { pin: wrapper, pinChanged: new Date().toISOString() }));
+    } finally {
+      rawDek.fill(0);
+    }
+    if (typeof nativeBio === 'function' && nativeBio() && localStorage.getItem('srg_biometric_enabled') === 'true') {
+      try { await nativeBioStorePin(backupPin, 'Confirm fingerprint for the new PIN'); } catch (e) { await nativeBioForget(); }
+    }
+    showToast(`✓ ${here[0].toUpperCase() + here.slice(1)} now unlocks with the backup's PIN.`, 'success', 6000);
+    return;
+  }
+  showToast(`Kept ${here}'s own PIN. Use it to unlock.`, 'warning', 7000);
 }
 
 /**

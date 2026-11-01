@@ -936,7 +936,7 @@
               Atomic archive (.zip) containing your SQLite database, manifest, and all ticket attachments.
             </div>
             <div style="font-size: 0.73rem; background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 6px; padding: 7px 10px; margin-bottom: 12px; color: var(--text-main); line-height: 1.45;">
-              <i class="fa-solid fa-circle-info" style="color: #38bdf8;"></i> <strong>PIN Security Note:</strong> Backups are encrypted using your active Security PIN. If restoring on a device with a different PIN, enter the backup's original PIN when prompted—the calendar will be decrypted with the old PIN and immediately re-saved using this device's current PIN so you never lose access.
+              <i class="fa-solid fa-circle-info" style="color: #38bdf8;"></i> <strong>PIN Security Note:</strong> Backups are encrypted with the Security PIN in use when they were made, and restoring asks for that PIN. This device keeps unlocking with its own PIN; after the restore you can choose to switch it to the backup's PIN.
             </div>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
               <button id="downloadFullBackupBtn" class="btn-primary" style="justify-content: center; background: #10b981; padding: 10px; font-size: 0.84rem; font-weight: 600;">

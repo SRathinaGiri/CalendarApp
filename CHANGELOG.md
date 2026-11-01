@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. Versions follow the in-app version (`APP_VERSION` in `app.js`, `CACHE_NAME` in `sw.js`).
 
+## v1.7.1 — 2026-11-01
+
+### Restoring a backup onto a device with its own PIN
+- Restoring asks for the backup's PIN, but the device kept unlocking with its own PIN, and the lock screen said "Incorrect Security PIN" when the backup's PIN was tried. Nothing was wrong with the backup.
+- After such a restore the app now says so plainly and offers to switch the device to the backup's PIN, confirmed with the device's current PIN, so one PIN works on every device. Fingerprint unlock (Android) is re-linked to the new PIN.
+
 ## v1.7.0 — 2026-11-01
 
 ### Windows app
