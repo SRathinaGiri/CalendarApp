@@ -3,7 +3,7 @@ name: Android APK
 on:
   push:
     branches: [capacitor, main]
-    paths-ignore: ['**.md']
+    paths-ignore: ['**.md', 'desktop/**', '.github/workflows/windows-app.yml']
   workflow_dispatch:
 
 permissions:

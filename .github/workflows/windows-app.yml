@@ -1,0 +1,67 @@
+name: Windows App
+
+on:
+  push:
+    branches: [capacitor, main]
+    paths-ignore: ['**.md', 'android/**']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # to publish the installer as a GitHub release
+
+concurrency:
+  group: windows-app-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            desktop/package-lock.json
+
+      - name: Test storage layer
+        run: npm ci && npm run test:native-store
+
+      - name: Read version
+        run: |
+          VERSION=$(node -e "const m=require('fs').readFileSync('app.js','utf8').match(/APP_VERSION = 'v([0-9.]+)'/); process.stdout.write(m ? m[1] : '')")
+          test -n "$VERSION"
+          echo "APP_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "BUILD_NO=$((100 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
+
+      - name: Build installer
+        working-directory: desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: |
+          npm ci
+          npm run prepare-web
+          npx electron-builder --win nsis --x64 --publish never -c.extraMetadata.version="$APP_VERSION"
+          ls -la dist
+          cp "dist/CalendarApp-Setup-${APP_VERSION}.exe" "../CalendarApp-Windows-Setup-v${APP_VERSION}-build${BUILD_NO}.exe"
+          echo "EXE_FILE=CalendarApp-Windows-Setup-v${APP_VERSION}-build${BUILD_NO}.exe" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.EXE_FILE }}
+          path: ${{ env.EXE_FILE }}
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "windows-v${APP_VERSION}-build${BUILD_NO}" "$EXE_FILE" \
+            --target "$GITHUB_SHA" --prerelease \
+            --title "Calendar App ${APP_VERSION} for Windows (build ${BUILD_NO})" \
+            --notes "Windows installer built from ${GITHUB_REF_NAME} @ ${GITHUB_SHA::7}. Run it to install or update; your data is kept."

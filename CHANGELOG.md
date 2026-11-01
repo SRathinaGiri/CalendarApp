@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here. Versions follow the in-app version (`APP_VERSION` in `app.js`, `CACHE_NAME` in `sw.js`).
 
+## v1.7.0 — 2026-11-01
+
+### Windows app
+- `desktop/`: the same app packaged for Windows with Electron, installed with a normal setup program (per user, no admin rights needed).
+- Data lives in the program's own storage under `%APPDATA%\Calendar App`, not in a browser. As on Android, every change is also copied to a private folder there, and a daily backup goes to **Documents › SRGCalendar** (last 14 days). If the program's storage is found empty, the private copy is put back before unlock.
+- Uninstalling keeps the data. Only one copy of the program can run at a time, so two windows never write the database at once.
+- **Print** works (Windows print dialog). **Save PDF** writes to Documents › SRGCalendar › Reports; **Share PDF** saves there and opens File Explorer with the file selected. Exports go to Documents › SRGCalendar › Exports.
+- Fingerprint unlock is Android-only; on Windows unlock with the PIN.
+- *Windows App* (GitHub Actions) builds `CalendarApp-Windows-Setup-v….exe` on every push and publishes it as a release. The installer isn't code-signed, so Windows SmartScreen shows "Windows protected your PC" the first time: **More info → Run anyway**.
+
 ## v1.6.1 — 2026-11-01
 
 ### Day panel "Add Schedule" keeps a multi-date selection

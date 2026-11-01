@@ -131,7 +131,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.6.1';
+const APP_VERSION = 'v1.7.0';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -247,8 +247,12 @@ function applyVersionLabels() {
   set('drawerVersionBadge', `${APP_VERSION} \u2022 Encrypted`);
   set('drawerInstallUpdateBadge', APP_VERSION);
   set('aboutModalVersion', APP_VERSION);
-  set('aboutPlatform', native ? 'Android app (single device)' : 'Browser app (single device)');
+  const plat = appPlatform();
+  set('aboutPlatform', { android: 'Android app', windows: 'Windows app', web: 'Browser app' }[plat] + ' (single device)');
   document.documentElement.classList.toggle('is-native', native);
+  document.documentElement.classList.toggle('is-android', plat === 'android');
+  // Fingerprint unlock exists only in the Android app.
+  if (plat === 'windows') { const b = document.getElementById('drawerBiometricBtn'); if (b) b.classList.add('hidden'); }
   // In the Android app, updates come as a new APK, not through the browser.
   const drawerBtn = document.getElementById('drawerInstallUpdateBtn');
   if (drawerBtn && native) drawerBtn.classList.add('hidden');
@@ -3766,6 +3770,7 @@ async function unlockWithNativeBiometric(autoPrompt) {
 }
 
 async function isBiometricAvailable() {
+  if (window.SRG_PLATFORM === 'windows') return false;
   if (nativeBio()) {
     try {
       const r = await nativeBio().isAvailable({ useFallback: false });
@@ -11471,7 +11476,7 @@ function setupUIEventListeners() {
   const printReportBtn = document.getElementById('printReportBtn');
   if (printReportBtn) {
     printReportBtn.addEventListener('click', () => printCurrentReport('print'));
-    if (window.SRG_NATIVE) printReportBtn.classList.add('hidden');
+    if (!canPrint()) printReportBtn.classList.add('hidden');
   }
   const shareReportPdfBtn = document.getElementById('shareReportPdfBtn');
   if (shareReportPdfBtn) shareReportPdfBtn.addEventListener('click', () => printCurrentReport('share'));
@@ -12989,8 +12994,20 @@ async function renderTicketClaimReport(container, fromDate, toDate) {
 }
 
 // 'print' | 'share' | 'save'. The Android WebView cannot print, so the app never uses 'print'.
+function appPlatform() {
+  if (window.SRG_PLATFORM === 'windows') return 'windows';
+  return window.SRG_NATIVE ? 'android' : 'web';
+}
+
+// Only the Android WebView can't print.
+function canPrint() {
+  return appPlatform() !== 'android';
+}
+
 function defaultPrintAction() {
-  if (window.SRG_NATIVE) return 'share';
+  const p = appPlatform();
+  if (p === 'android') return 'share';
+  if (p === 'windows') return 'save';
   return 'print';
 }
 
@@ -13003,7 +13020,7 @@ function activeReportTitle() {
 // Prints in a new window (browser) or turns the page into a PDF to share or save.
 function deliverPrintable(htmlDoc, opts, action) {
   action = action || defaultPrintAction();
-  if (action === 'print' && !window.SRG_NATIVE) {
+  if (action === 'print' && canPrint()) {
     const win = window.open('', '_blank', opts.orientation === 'landscape' ? 'width=1150,height=800' : 'width=950,height=750');
     if (!win) {
       alert('Please allow popups to open the printable page.');
@@ -13072,7 +13089,7 @@ function openPrintMonthModal() {
 function getPrintMonthAction() {
   let a = null;
   try { a = localStorage.getItem('srg_print_action'); } catch (e) {}
-  if (a === 'print' && window.SRG_NATIVE) a = null;
+  if (a === 'print' && !canPrint()) a = null;
   return ['print', 'share', 'save'].includes(a) ? a : defaultPrintAction();
 }
 
@@ -13085,7 +13102,11 @@ function setPrintMonthAction(action) {
     b.setAttribute('aria-pressed', on ? 'true' : 'false');
   });
   const hint = document.getElementById('printMonthActionHint');
-  if (hint) hint.textContent = action === 'share' ? 'Creates a PDF and opens the share sheet.' : action === 'save' ? (window.SRG_NATIVE ? 'Saves the PDF to Documents › SRGCalendar › Reports.' : 'Downloads the PDF.') : 'Opens the print dialog (choose Save as PDF there to keep a copy).';
+  const plat = appPlatform();
+  if (hint) hint.textContent = action === 'share'
+    ? (plat === 'windows' ? 'Saves the PDF and shows it in File Explorer, ready to attach.' : 'Creates a PDF and opens the share sheet.')
+    : action === 'save' ? (window.SRG_NATIVE ? 'Saves the PDF to Documents › SRGCalendar › Reports.' : 'Downloads the PDF.')
+    : 'Opens the print dialog (choose Save as PDF there to keep a copy).';
 }
 
 function closePrintMonthModal() {

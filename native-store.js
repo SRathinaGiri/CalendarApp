@@ -581,10 +581,10 @@
       card.id = 'srgPhoneBackupCard';
       card.style.cssText = 'margin:12px 0;padding:14px;border-radius:12px;border:1px solid var(--border-color, #cbd5e1);background:var(--bg-secondary, transparent);';
       card.innerHTML = `
-        <div style="font-weight:700;margin-bottom:6px;"><i class="fa-solid fa-mobile-screen"></i> Automatic phone backup</div>
+        <div style="font-weight:700;margin-bottom:6px;"><i class="fa-solid ${win.SRG_PLATFORM === 'windows' ? 'fa-desktop' : 'fa-mobile-screen'}"></i> Automatic ${win.SRG_PLATFORM === 'windows' ? '' : 'phone '}backup</div>
         <div style="font-size:0.9em;line-height:1.5;">
           Every change is copied to the app's private storage and, a few seconds later, to
-          <b>Documents › SRGCalendar</b> (last ${BACKUP_KEEP_DAYS} days). Copy those files to Drive now and then.
+          <b>Documents › SRGCalendar</b> (last ${BACKUP_KEEP_DAYS} days). Copy those files to Drive or another disk now and then.
         </div>
         <div id="srgPhoneBackupStatus" style="font-size:0.9em;margin:8px 0;"></div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
