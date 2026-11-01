@@ -106,3 +106,15 @@ jobs:
             --target "$GITHUB_SHA" $RELEASE_KIND \
             --title "Calendar App ${APP_VERSION} (Android build ${VERSION_CODE})" \
             --notes "Built from ${GITHUB_REF_NAME} @ ${GITHUB_SHA::7}. Phone: install the .apk over the previous build; your data is kept. Google Play: upload the .aab (versionCode ${VERSION_CODE})."
+
+      - name: Keep only the newest android release (main only)
+        if: github.ref_name == 'main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release list --limit 200 --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | startswith("android-"))] | sort_by(.createdAt) | reverse | .[1:][] | .tagName' |
+          while read -r tag; do
+            echo "Deleting old release $tag"
+            gh release delete "$tag" --cleanup-tag --yes
+          done
