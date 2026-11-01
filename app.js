@@ -131,7 +131,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.7.1';
+const APP_VERSION = 'v1.7.2';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -376,6 +376,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Android app: wait until a wiped IndexedDB has been refilled from the phone's private copy.
     if (window.srgNativeReady) { try { await window.srgNativeReady; } catch (e) { console.error('Native storage start-up:', e); } }
     applyVersionLabels();
+    initPinKeyboardWarnings();
     initAppTheme();
     setupUIEventListeners(); // Set up all UI event listeners FIRST so form submission and clicks always work
     initAutoLockListeners();
@@ -1778,13 +1779,29 @@ async function importFullBackupZip(file) {
         showToast('Restore cancelled: Security PIN is required for encrypted backup.', 'warning');
         return;
       }
-      try {
-        backupKey = await deriveKeyFromPin(pin, backupSalt, backupIterations, false);
-        dbBinary = await decryptDatabaseBytes(dbBinary, backupKey, false);
-        backupPin = pin;
-      } catch(decErr) {
+      const candidates = Array.from(new Set([pin, pin.trim(), toAsciiDigits(pin).trim()]));
+      let lastErr = null;
+      for (const cand of candidates) {
+        try {
+          backupKey = await deriveKeyFromPin(cand, backupSalt, backupIterations, false);
+          dbBinary = await decryptDatabaseBytes(dbBinary, backupKey, false);
+          backupPin = cand;
+          break;
+        } catch (decErr) {
+          lastErr = decErr;
+          backupKey = null;
+        }
+      }
+      if (!backupPin) {
         if (loadingToast) dismissToast(loadingToast);
-        showToast('❌ Decryption failed: Incorrect Security PIN for this backup.', 'error', 5000);
+        console.error('Backup decryption failed:', lastErr, { typedLength: pin.length, nonAscii: hasNonAsciiChars(pin), salt: backupSalt && backupSalt.length, iterations: backupIterations });
+        if (lastErr && lastErr.name && lastErr.name !== 'OperationError') {
+          showToast(`❌ Decryption failed (${lastErr.name}: ${lastErr.message}). This is not a PIN problem; see Diagnostics.`, 'error', 9000);
+        } else if (hasNonAsciiChars(pin)) {
+          showToast('❌ Decryption failed. The PIN you typed contains non-English characters; switch the keyboard to English and try again.', 'error', 9000);
+        } else {
+          showToast(`❌ Decryption failed: this backup does not open with the ${pin.length}-character PIN you typed. Check the PIN that was in use when the backup was made.`, 'error', 9000);
+        }
         return;
       }
     }
@@ -5622,6 +5639,49 @@ async function atomicReencryptAllData({ dekKey, dekId, keyRing, envelope = null,
    SECURE PIN PROMPT MODAL (MASKED PASSWORD INPUT DIALOG)
    ========================================================================== */
 let activePinPromptResolver = null;
+
+/* Keyboards for Indian and other languages can type digits that look like 0-9 but are different
+   characters (Tamil ௧௮௦, Devanagari १८०, full-width １８０...). Behind the password dots the PIN
+   then looks right but is a different PIN. These helpers spot that and convert to 0-9. */
+const UNICODE_DIGIT_ZEROS = [0x0660, 0x06F0, 0x07C0, 0x0966, 0x09E6, 0x0A66, 0x0AE6, 0x0B66, 0x0BE6, 0x0C66, 0x0CE6, 0x0D66, 0x0DE6, 0x0E50, 0x0ED0, 0x0F20, 0x1040, 0x17E0, 0x1810, 0xFF10];
+
+function toAsciiDigits(str) {
+  return String(str || '').normalize('NFKC').replace(/\p{Nd}/gu, (ch) => {
+    const cp = ch.codePointAt(0);
+    for (const z of UNICODE_DIGIT_ZEROS) if (cp >= z && cp <= z + 9) return String(cp - z);
+    return ch;
+  });
+}
+
+function hasNonAsciiChars(str) {
+  return /[^\x20-\x7E]/.test(String(str || ''));
+}
+
+// Warn under a PIN box when the keyboard is typing non-English characters.
+function attachPinKeyboardWarning(inputEl) {
+  if (!inputEl || inputEl.dataset.kbWarn) return;
+  inputEl.dataset.kbWarn = '1';
+  const warn = document.createElement('div');
+  warn.className = 'pin-kb-warning hidden';
+  warn.style.cssText = 'font-size:0.8rem;color:#f59e0b;margin-top:6px;line-height:1.35;text-align:left;';
+  warn.textContent = '⚠ Your keyboard is typing non-English characters (e.g. Tamil or Hindi digits). Switch the keyboard to English (Win + Space on Windows) and type the PIN again.';
+  // If the input shares a row with a show/hide button, put the warning under that row.
+  const row = inputEl.parentElement;
+  const anchor = row && row !== document.body && row.querySelector('button') && row.children.length <= 3 ? row : inputEl;
+  anchor.insertAdjacentElement('afterend', warn);
+  const check = () => warn.classList.toggle('hidden', !hasNonAsciiChars(inputEl.value));
+  inputEl.addEventListener('input', check);
+  inputEl.addEventListener('focus', check);
+}
+
+function initPinKeyboardWarnings() {
+  ['securePinPromptInput', 'appLockKeyInput', 'setupNewPinInput', 'setupConfirmPinInput', 'currentPinInput', 'newPinInput', 'confirmPinInput', 'forgotNewPinInput']
+    .forEach((id) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      attachPinKeyboardWarning(el);
+    });
+}
 
 function requestPinPromptModal({
   title = 'Enter Security PIN',

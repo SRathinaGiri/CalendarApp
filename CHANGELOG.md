@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented here. Versions follow the in-app version (`APP_VERSION` in `app.js`, `CACHE_NAME` in `sw.js`).
 
+## v1.7.2 — 2026-11-01
+
+### Backup PIN typed on a non-English keyboard
+- A backup that restored fine on one machine reported "Incorrect Security PIN" on a Windows PC with the same PIN. One likely cause is keyboards for Indian languages, which can type digits that look like 0-9 but are different characters (Tamil ௧௮௦, Devanagari १८०, full-width １８０), hidden behind the password dots.
+- Restoring now also tries the typed PIN with such digits converted to 0-9 and with surrounding spaces removed.
+- Every PIN box warns while you type if the keyboard is producing non-English characters.
+- When decryption fails, the message says why: a different PIN, non-English characters, or (with the technical error) a problem that has nothing to do with the PIN.
+
 ## v1.7.1 — 2026-11-01
 
 ### Restoring a backup onto a device with its own PIN
