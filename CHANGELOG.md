@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here. Versions follow the in-app version (`APP_VERSION` in `app.js`, `CACHE_NAME` in `sw.js`).
 
+## v1.6.0 — 2026-11-01
+
+### Share reports as PDF
+- **Reports** have **Share PDF** and **Save PDF** next to Generate. **Print / Export Monthly Calendar** has Share, Save and Print choices (the choice is remembered).
+- Share opens the Android share sheet (WhatsApp, Gmail, Drive, a printer app...). Save writes to **Documents › SRGCalendar › Reports**. In a browser, Share uses the browser's share sheet where it exists, otherwise downloads.
+- PDFs are A4 (the wall-calendar grid is landscape), with page numbers. Pages break between rows, cards and headings, never through them. Content wider than the page is shrunk to fit.
+- Made fully offline with bundled jsPDF 4.2.1 and html2canvas 1.4.1 (`vendor/pdfgen`), loaded only when a PDF is made. Pages are images, so PDF text can't be selected or searched.
+- The Android app hides **Print**: its WebView has no print support.
+
+### Swipe between months
+- Swipe left or right on the month grid or the 30-day month table to go to the next or previous month. Taps, long-press selection and vertical scrolling are unchanged; a table that can still scroll sideways scrolls instead.
+
 ## v1.5.2 — 2026-10-31
 
 ### Fingerprint unlock in the Android app

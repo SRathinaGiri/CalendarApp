@@ -9,7 +9,7 @@ const out = join(root, 'www');
 const FILES = [
   'index.html', 'app.js', 'styles.css', 'manifest.json', 'sw.js',
   'icon-192.png', 'icon-512.png',
-  'diagnostics.js', 'native-store.js', 'taxonomy_seed.js',
+  'diagnostics.js', 'native-store.js', 'pdf-export.js', 'taxonomy_seed.js',
   'sql-wasm.js', 'sql-wasm.wasm', 'pako.min.js', 'jszip.min.js',
   'pdf.min.js', 'pdf.worker.min.js',
 ];

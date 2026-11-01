@@ -4578,3 +4578,14 @@ input:focus, select:focus, textarea:focus {
   /* Stack Dr/Cr on phones so each suggestion list has the full width */
   .form-row-2.account-row { grid-template-columns: 1fr !important; }
 }
+
+/* Android app: hide controls the WebView can't support (e.g. Print). */
+.is-native .native-hide { display: none !important; }
+
+/* Month swipe: slide the new month in from the side it came from. */
+@keyframes srgSwipeInLeft { from { transform: translateX(18%); opacity: 0.35; } to { transform: none; opacity: 1; } }
+@keyframes srgSwipeInRight { from { transform: translateX(-18%); opacity: 0.35; } to { transform: none; opacity: 1; } }
+.swipe-in-left { animation: srgSwipeInLeft 0.2s ease-out; }
+.swipe-in-right { animation: srgSwipeInRight 0.2s ease-out; }
+@media (prefers-reduced-motion: reduce) { .swipe-in-left, .swipe-in-right { animation: none; } }
+#calendarGrid { touch-action: pan-y pinch-zoom; }

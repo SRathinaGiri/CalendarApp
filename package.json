@@ -12,7 +12,10 @@
     "@capacitor/android": "^8.6.0",
     "@capacitor/core": "^8.6.0",
     "@capacitor/filesystem": "^8.1.5",
-    "@capgo/capacitor-native-biometric": "^8.9.1"
+    "@capacitor/share": "^8.0.3",
+    "@capgo/capacitor-native-biometric": "^8.9.1",
+    "html2canvas": "^1.4.1",
+    "jspdf": "^4.2.1"
   },
   "devDependencies": {
     "@capacitor/cli": "^8.6.0",

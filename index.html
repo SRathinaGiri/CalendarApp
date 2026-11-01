@@ -24,6 +24,7 @@
   <script src="jszip.min.js"></script>
   <script src="pdf.min.js"></script>
   <script src="taxonomy_seed.js"></script>
+  <script src="pdf-export.js"></script>
 
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -1029,8 +1030,15 @@
         </div>
         <h3 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 6px;">Print / Export Monthly Calendar</h3>
         <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 18px;">
-          Print or save <strong id="printMonthTitle" style="color:var(--text-main);">October 2026</strong> as a formatted PDF.
+          Share, save or print <strong id="printMonthTitle" style="color:var(--text-main);">October 2026</strong> as a formatted PDF.
         </p>
+
+        <div id="printMonthActionGroup" role="group" aria-label="What to do with the PDF" style="display: flex; gap: 6px; justify-content: center; margin-bottom: 6px;">
+          <button type="button" class="btn-secondary btn-sm" data-action="share"><i class="fa-solid fa-share-nodes"></i> Share</button>
+          <button type="button" class="btn-secondary btn-sm" data-action="save"><i class="fa-solid fa-file-pdf"></i> Save</button>
+          <button type="button" class="btn-secondary btn-sm native-hide" data-action="print"><i class="fa-solid fa-print"></i> Print</button>
+        </div>
+        <p id="printMonthActionHint" style="font-size: 0.78rem; color: var(--text-muted); margin-bottom: 14px;"></p>
 
         <div style="display: flex; flex-direction: column; gap: 10px;">
           <button type="button" id="printGridBtn" class="btn-primary" style="justify-content: center; padding: 12px; font-size: 0.92rem; font-weight: 600; background: linear-gradient(135deg, #0284c7, #2563eb);">
@@ -1092,7 +1100,11 @@
             </div>
 
             <button id="generateReportBtn" class="btn-primary btn-sm"><i class="fa-solid fa-play"></i> Generate Report</button>
-            <button id="printReportBtn" class="btn-secondary btn-sm" style="margin-left: auto;"><i class="fa-solid fa-print"></i> Print / Save PDF</button>
+            <div style="margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap;">
+              <button id="shareReportPdfBtn" class="btn-primary btn-sm"><i class="fa-solid fa-share-nodes"></i> Share PDF</button>
+              <button id="saveReportPdfBtn" class="btn-secondary btn-sm"><i class="fa-solid fa-file-pdf"></i> Save PDF</button>
+              <button id="printReportBtn" class="btn-secondary btn-sm"><i class="fa-solid fa-print"></i> Print</button>
+            </div>
           </div>
 
           <!-- Report Results Container -->

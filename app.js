@@ -131,7 +131,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.5.2';
+const APP_VERSION = 'v1.6.0';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -187,6 +187,58 @@ if ('serviceWorker' in navigator && !window.SRG_NATIVE) {
   });
 }
 
+/* Swipe left/right on the month views to go to the next/previous month.
+   Only clearly horizontal, quick swipes count, so taps, long-press selection and
+   vertical scrolling behave as before. A swipe inside something that can still
+   scroll sideways (a wide table) scrolls it instead. */
+function initMonthSwipe() {
+  const MIN_DX = 60, MAX_MS = 800;
+  let start = null;
+
+  function canScrollSideways(el, stop, dir) {
+    for (let n = el; n && n !== stop.parentElement; n = n.parentElement) {
+      if (n.scrollWidth > n.clientWidth + 2) {
+        const ox = getComputedStyle(n).overflowX;
+        if (ox === 'auto' || ox === 'scroll') {
+          if (dir > 0 && n.scrollLeft > 1) return true;                                   // finger moved right: content can go left
+          if (dir < 0 && n.scrollLeft + n.clientWidth < n.scrollWidth - 1) return true;  // finger moved left
+        }
+      }
+    }
+    return false;
+  }
+
+  function attach(el) {
+    if (!el) return;
+    el.addEventListener('touchstart', (e) => {
+      if (e.touches.length !== 1) { start = null; return; }
+      const t = e.touches[0];
+      start = { x: t.clientX, y: t.clientY, at: Date.now(), target: e.target, el };
+    }, { passive: true });
+    el.addEventListener('touchend', (e) => {
+      if (!start || start.el !== el) return;
+      const t = e.changedTouches[0];
+      const dx = t.clientX - start.x, dy = t.clientY - start.y;
+      const s0 = start; start = null;
+      if (Date.now() - s0.at > MAX_MS) return;
+      if (Math.abs(dx) < MIN_DX || Math.abs(dx) < Math.abs(dy) * 1.8) return;
+      if (currentView !== 'calendar' && currentView !== 'month') return;
+      if (canScrollSideways(s0.target, el, dx)) return;
+      const btn = document.getElementById(dx < 0 ? 'nextBtn' : 'prevBtn');
+      if (!btn) return;
+      btn.click();
+      el.classList.remove('swipe-in-left', 'swipe-in-right');
+      void el.offsetWidth;
+      el.classList.add(dx < 0 ? 'swipe-in-left' : 'swipe-in-right');
+    }, { passive: true });
+    el.addEventListener('touchcancel', () => { start = null; }, { passive: true });
+    el.addEventListener('animationend', () => el.classList.remove('swipe-in-left', 'swipe-in-right'));
+  }
+
+  attach(document.getElementById('calendarGrid'));
+  attach(document.getElementById('portraitMonthView'));
+}
+
 // Every version/platform label comes from APP_VERSION, so the screens can never disagree.
 function applyVersionLabels() {
   const native = !!window.SRG_NATIVE;
@@ -196,6 +248,7 @@ function applyVersionLabels() {
   set('drawerInstallUpdateBadge', APP_VERSION);
   set('aboutModalVersion', APP_VERSION);
   set('aboutPlatform', native ? 'Android app (single device)' : 'Browser app (single device)');
+  document.documentElement.classList.toggle('is-native', native);
   // In the Android app, updates come as a new APK, not through the browser.
   const drawerBtn = document.getElementById('drawerInstallUpdateBtn');
   if (drawerBtn && native) drawerBtn.classList.add('hidden');
@@ -10673,6 +10726,8 @@ function setupUIEventListeners() {
     renderCurrentView();
   });
 
+  initMonthSwipe();
+
   document.getElementById('todayBtn').addEventListener('click', () => {
     currentDate = new Date();
     renderCurrentView();
@@ -10700,6 +10755,10 @@ function setupUIEventListeners() {
   }
 
   // Print Monthly Calendar Controls
+  document.querySelectorAll('#printMonthActionGroup [data-action]').forEach(btn => {
+    btn.addEventListener('click', () => setPrintMonthAction(btn.dataset.action));
+  });
+  setPrintMonthAction(getPrintMonthAction());
   const printCalendarBtn = document.getElementById('printCalendarBtn');
   if (printCalendarBtn) {
     printCalendarBtn.addEventListener('click', openPrintMonthModal);
@@ -10712,14 +10771,14 @@ function setupUIEventListeners() {
   if (printGridBtn) {
     printGridBtn.addEventListener('click', () => {
       closePrintMonthModal();
-      printMonthCalendar('grid');
+      printMonthCalendar('grid', getPrintMonthAction());
     });
   }
   const printTableBtn = document.getElementById('printTableBtn');
   if (printTableBtn) {
     printTableBtn.addEventListener('click', () => {
       closePrintMonthModal();
-      printMonthCalendar('table');
+      printMonthCalendar('table', getPrintMonthAction());
     });
   }
 
@@ -11392,7 +11451,14 @@ function setupUIEventListeners() {
   }
   const printReportBtn = document.getElementById('printReportBtn');
   if (printReportBtn) {
-    printReportBtn.addEventListener('click', printCurrentReport);
+    printReportBtn.addEventListener('click', () => printCurrentReport('print'));
+    if (window.SRG_NATIVE) printReportBtn.classList.add('hidden');
+  }
+  const shareReportPdfBtn = document.getElementById('shareReportPdfBtn');
+  if (shareReportPdfBtn) shareReportPdfBtn.addEventListener('click', () => printCurrentReport('share'));
+  const saveReportPdfBtn = document.getElementById('saveReportPdfBtn');
+  if (saveReportPdfBtn) {
+    saveReportPdfBtn.addEventListener('click', () => printCurrentReport('save'));
   }
   document.querySelectorAll('.report-tab-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -12903,10 +12969,50 @@ async function renderTicketClaimReport(container, fromDate, toDate) {
   renderClaimContent();
 }
 
-function printCurrentReport() {
-  const content = document.getElementById('reportOutputContainer').innerHTML;
-  const win = window.open('', '_blank', 'width=950,height=750');
-  win.document.write(`
+// 'print' | 'share' | 'save'. The Android WebView cannot print, so the app never uses 'print'.
+function defaultPrintAction() {
+  if (window.SRG_NATIVE) return 'share';
+  return 'print';
+}
+
+function activeReportTitle() {
+  const btn = document.querySelector('.report-tab-btn.active');
+  const name = btn ? btn.textContent.replace(/^\s*\d+\.\s*/, '').trim() : 'Report';
+  return `${name} - ${formatDateYMD(new Date())}`;
+}
+
+// Prints in a new window (browser) or turns the page into a PDF to share or save.
+function deliverPrintable(htmlDoc, opts, action) {
+  action = action || defaultPrintAction();
+  if (action === 'print' && !window.SRG_NATIVE) {
+    const win = window.open('', '_blank', opts.orientation === 'landscape' ? 'width=1150,height=800' : 'width=950,height=750');
+    if (!win) {
+      alert('Please allow popups to open the printable page.');
+      return;
+    }
+    win.document.open();
+    win.document.write(htmlDoc);
+    win.document.close();
+    win.focus();
+    setTimeout(() => win.print(), 400);
+    return;
+  }
+  if (!window.SRGPdf) {
+    showToast('PDF export is not available.', 'error', 4000);
+    return;
+  }
+  return window.SRGPdf.exportHtml(htmlDoc, opts, action === 'save' ? 'save' : 'share');
+}
+
+function printCurrentReport(action) {
+  const out = document.getElementById('reportOutputContainer');
+  const content = out ? out.innerHTML : '';
+  if (!out || !out.querySelector('table, h3, h4, .report-section') ) {
+    showToast('Generate a report first.', 'info', 3500);
+    return;
+  }
+  const title = activeReportTitle();
+  const htmlDoc = (`
     <!DOCTYPE html>
     <html>
       <head>
@@ -12927,10 +13033,8 @@ function printCurrentReport() {
         ${content}
       </body>
     </html>
-  `);
-  win.document.close();
-  win.focus();
-  setTimeout(() => win.print(), 400);
+  `).replace('<title>Calendar App - Official Report Statement</title>', `<title>${escapeHtml(title)}</title>`);
+  return deliverPrintable(htmlDoc, { orientation: 'portrait', title, filename: title }, action);
 }
 
 /* ==========================================================================
@@ -12946,12 +13050,31 @@ function openPrintMonthModal() {
   if (modal) modal.classList.remove('hidden');
 }
 
+function getPrintMonthAction() {
+  let a = null;
+  try { a = localStorage.getItem('srg_print_action'); } catch (e) {}
+  if (a === 'print' && window.SRG_NATIVE) a = null;
+  return ['print', 'share', 'save'].includes(a) ? a : defaultPrintAction();
+}
+
+function setPrintMonthAction(action) {
+  lsSet('srg_print_action', action);
+  document.querySelectorAll('#printMonthActionGroup [data-action]').forEach(b => {
+    const on = b.dataset.action === action;
+    b.classList.toggle('btn-primary', on);
+    b.classList.toggle('btn-secondary', !on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+  const hint = document.getElementById('printMonthActionHint');
+  if (hint) hint.textContent = action === 'share' ? 'Creates a PDF and opens the share sheet.' : action === 'save' ? (window.SRG_NATIVE ? 'Saves the PDF to Documents › SRGCalendar › Reports.' : 'Downloads the PDF.') : 'Opens the print dialog (choose Save as PDF there to keep a copy).';
+}
+
 function closePrintMonthModal() {
   const modal = document.getElementById('printMonthModal');
   if (modal) modal.classList.add('hidden');
 }
 
-function printMonthCalendar(layout = 'grid') {
+function printMonthCalendar(layout = 'grid', action) {
   if (!db) return;
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
@@ -12964,12 +13087,6 @@ function printMonthCalendar(layout = 'grid') {
   const totalDays = lastDayOfMonth.getDate();
 
   const schedulesMap = getSchedulesMap(startDateStr, endDateStr);
-
-  const win = window.open('', '_blank', 'width=1150,height=800');
-  if (!win) {
-    alert('Please allow popups to open the printable calendar.');
-    return;
-  }
 
   let htmlContent = '';
 
@@ -13194,11 +13311,8 @@ function printMonthCalendar(layout = 'grid') {
     `;
   }
 
-  win.document.open();
-  win.document.write(htmlContent);
-  win.document.close();
-  win.focus();
-  setTimeout(() => win.print(), 400);
+  const title = layout === 'grid' ? `${monthName} - Calendar` : `${monthName} - Diary`;
+  return deliverPrintable(htmlContent, { orientation: layout === 'grid' ? 'landscape' : 'portrait', title, filename: title }, action);
 }
 
 function renderMonthlyCalendarReport(container, fromDate, toDate) {
@@ -13242,10 +13356,10 @@ function renderMonthlyCalendarReport(container, fromDate, toDate) {
         </div>
         <div style="display: flex; gap: 8px;">
           <button type="button" class="btn-primary" id="reportPrintGridBtn" style="font-size: 0.84rem; padding: 7px 12px;">
-            <i class="fa-solid fa-print"></i> Print Landscape Grid
+            <i class="fa-solid fa-calendar-days"></i> Grid (Landscape)
           </button>
           <button type="button" class="btn-secondary" id="reportPrintTableBtn" style="font-size: 0.84rem; padding: 7px 12px;">
-            <i class="fa-solid fa-table-list"></i> Print Portrait Table
+            <i class="fa-solid fa-table-list"></i> Diary (Portrait)
           </button>
         </div>
       </div>
@@ -13327,7 +13441,7 @@ function renderMonthlyCalendarReport(container, fromDate, toDate) {
   container.innerHTML = html;
 
   const btnGrid = document.getElementById('reportPrintGridBtn');
-  if (btnGrid) btnGrid.addEventListener('click', () => printMonthCalendar('grid'));
+  if (btnGrid) btnGrid.addEventListener('click', () => printMonthCalendar('grid', getPrintMonthAction()));
   const btnTable = document.getElementById('reportPrintTableBtn');
-  if (btnTable) btnTable.addEventListener('click', () => printMonthCalendar('table'));
+  if (btnTable) btnTable.addEventListener('click', () => printMonthCalendar('table', getPrintMonthAction()));
 }
