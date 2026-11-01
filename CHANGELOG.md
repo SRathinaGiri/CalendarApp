@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here. Versions follow the in-app version (`APP_VERSION` in `app.js`, `CACHE_NAME` in `sw.js`).
 
+## v1.6.1 — 2026-11-01
+
+### Day panel "Add Schedule" keeps a multi-date selection
+- With several dates selected, the **Add Schedule** buttons in the day panel under the calendar used to clear the selection and add a schedule for that one day only. When the highlighted day is part of the selection they now read **Add for N dates** and open the form with all selected dates, as **Apply Tags & Schedules** does.
+
 ## v1.6.0 — 2026-11-01
 
 ### Share reports as PDF

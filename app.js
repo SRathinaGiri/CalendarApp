@@ -131,7 +131,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.6.0';
+const APP_VERSION = 'v1.6.1';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -7631,11 +7631,11 @@ function renderPortraitCalendarDayAgenda(dateStr) {
 
   container.innerHTML = html;
 
+  refreshDayPanelAddLabels();
   const addBtn = container.querySelector('#portraitAgendaAddBtn');
   if (addBtn) {
     addBtn.addEventListener('click', () => {
-      selectedDates.clear();
-      selectedDates.add(dateStr);
+      useSelectionOrDay(dateStr);
       openScheduleModal();
     });
   }
@@ -7643,8 +7643,7 @@ function renderPortraitCalendarDayAgenda(dateStr) {
   const emptyAddBtn = container.querySelector('#portraitAgendaEmptyAddBtn');
   if (emptyAddBtn) {
     emptyAddBtn.addEventListener('click', () => {
-      selectedDates.clear();
-      selectedDates.add(dateStr);
+      useSelectionOrDay(dateStr);
       openScheduleModal();
     });
   }
@@ -7791,6 +7790,25 @@ function parseIndianDateToYMD(str) {
    4. MULTI-DATE SELECTION LOGIC
    ========================================================================== */
 
+// The day panel's "Add Schedule" uses the multi-date selection when this day is part of it,
+// so a batch is never silently reduced to one day.
+function useSelectionOrDay(dateStr) {
+  if (selectedDates.size > 1 && selectedDates.has(dateStr)) return;
+  selectedDates.clear();
+  selectedDates.add(dateStr);
+}
+
+function refreshDayPanelAddLabels() {
+  document.querySelectorAll('#portraitAgendaAddBtn, #portraitAgendaEmptyAddBtn').forEach(btn => {
+    const n = selectedDates.size;
+    const forSelection = n > 1 && portraitSelectedDate && selectedDates.has(portraitSelectedDate);
+    btn.innerHTML = forSelection
+      ? `<i class="fa-solid fa-layer-group"></i> Add for ${n} dates`
+      : '<i class="fa-solid fa-plus"></i> Add Schedule';
+    btn.title = forSelection ? `Add one group schedule on all ${n} selected dates` : 'Add Schedule for this Date';
+  });
+}
+
 function toggleDateSelection(dateStr) {
   if (selectedDates.has(dateStr)) {
     selectedDates.delete(dateStr);
@@ -7814,6 +7832,7 @@ function updateSelectionBar() {
   } else {
     bar.classList.add('hidden');
   }
+  refreshDayPanelAddLabels();
 }
 
 function clearDateSelection() {
