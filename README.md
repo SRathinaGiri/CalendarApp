@@ -13,7 +13,7 @@
 
 ### [⬇ Download for Android or Windows](https://github.com/SRathinaGiri/CalendarApp/releases)
 
-**[📖 User guide: how to use every feature](docs/USER_GUIDE.md)**
+**[📖 User guide: how to use every feature](docs/USER_GUIDE.md)** · [PDF](docs/CalendarApp-User-Guide.pdf)
 
 <img src="docs/screenshot-month.jpg" alt="Calendar App month view" width="820">
 

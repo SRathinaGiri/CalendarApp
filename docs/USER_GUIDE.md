@@ -1,5 +1,7 @@
 # 📖 Calendar App: User Guide
 
+**[⬇ Download this guide as a PDF](CalendarApp-User-Guide.pdf)** (12 pages, A4)
+
 A step-by-step guide for **Calendar App 1.7.2** on Android and Windows. The screenshots are from an Android phone with made-up sample data. The Windows app has the same screens, just wider.
 
 **Contents**
