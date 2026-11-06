@@ -13,6 +13,8 @@
 
 ### [⬇ Download for Android or Windows](https://github.com/SRathinaGiri/CalendarApp/releases)
 
+**[📖 User guide: how to use every feature](docs/USER_GUIDE.md)**
+
 <img src="docs/screenshot-month.jpg" alt="Calendar App month view" width="820">
 
 🪔 *Part of the [Diwali Mega Gift Week 2026](https://srathinagiri.github.io/#gift-week): one free app every day, 6–12 November.*
@@ -41,7 +43,7 @@ Open the **[Releases](https://github.com/SRathinaGiri/CalendarApp/releases)** pa
 
 > The `.aab` file in the Android release is for the Google Play Store. Phone users should install the `.apk`.
 
-**First start:** choose a PIN or passphrase (6+ characters). The app then shows an **Emergency Recovery Key**. Save it somewhere safe: it is the only way back in if you forget your PIN.
+**First start:** choose a PIN or passphrase (6+ characters). The app then shows an **Emergency Recovery Key**. Save it somewhere safe: it is the only way back in if you forget your PIN. New to the app? The **[user guide](docs/USER_GUIDE.md)** walks through everything with screenshots.
 
 ## 🔒 Privacy
 
