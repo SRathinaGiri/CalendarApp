@@ -2635,6 +2635,16 @@ input:focus, select:focus, textarea:focus {
     display: none !important;
   }
 
+  /* Phone grid: moon in the cell's top-right corner so the date stays centred */
+  .calendar-grid .day-header .moon-phase {
+    position: absolute !important;
+    top: 4px !important;
+    right: 4px !important;
+    width: 8px !important;
+    height: 8px !important;
+    margin: 0 !important;
+  }
+
   /* Remove bulky schedule chips inside the day cells in portrait mode */
   .calendar-grid .day-schedules-list {
     display: none !important;
@@ -4589,3 +4599,18 @@ input:focus, select:focus, textarea:focus {
 .swipe-in-right { animation: srgSwipeInRight 0.2s ease-out; }
 @media (prefers-reduced-motion: reduce) { .swipe-in-left, .swipe-in-right { animation: none; } }
 #calendarGrid { touch-action: pan-y pinch-zoom; }
+
+/* Moon phase: new moon = black disc, full moon = white disc (outlined so both show in either theme) */
+.moon-phase {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  margin-left: 6px;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+.moon-phase.new { background: #000; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.6); }
+.moon-phase.full { background: #fff; box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.45), 0 0 5px rgba(255, 255, 255, 0.55); }
+[data-theme="light"] .moon-phase.new { box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.25); }
+.moon-phase.inline { width: 9px; height: 9px; margin: 0 2px 0 0; position: relative; top: -1px; }

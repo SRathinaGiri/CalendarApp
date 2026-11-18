@@ -131,7 +131,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.7.2';
+const APP_VERSION = 'v1.8.0';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -7319,6 +7319,29 @@ function renderPortraitMonthView() {
   }
 }
 
+/* New moon (Amavasya) = black disc, full moon (Pournami) = white disc, on the local date the
+   exact phase falls (see moon-phase.js). */
+function moonPhaseFor(dateStr) {
+  if (!window.SRGMoon || !dateStr) return null;
+  const [y, m] = dateStr.split('-').map(Number);
+  return window.SRGMoon.phasesForMonth(y, m - 1)[dateStr] || null;
+}
+
+function moonPhaseLabel(p) {
+  const name = p.type === 'full' ? 'Full moon (Pournami)' : 'New moon (Amavasya)';
+  const time = p.at.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true });
+  return `${name} · ${time}`;
+}
+
+function moonPhaseBadge(p) {
+  const el = document.createElement('span');
+  el.className = `moon-phase ${p.type}`;
+  el.title = moonPhaseLabel(p);
+  el.setAttribute('role', 'img');
+  el.setAttribute('aria-label', el.title);
+  return el;
+}
+
 function createDayCell(dateStr, dayNum, isOtherMonth, schedules, dayOfWeekIdx, isToday = false, dailyNotesMap = {}, dailyTxnsMap = {}) {
   const cell = document.createElement('div');
   cell.className = 'day-cell';
@@ -7370,6 +7393,8 @@ function createDayCell(dateStr, dayNum, isOtherMonth, schedules, dayOfWeekIdx, i
   actionsWrap.appendChild(financeBtn);
 
   header.appendChild(numSpan);
+  const moon = moonPhaseFor(dateStr);
+  if (moon) header.appendChild(moonPhaseBadge(moon));
   header.appendChild(actionsWrap);
   cell.appendChild(header);
 
@@ -7645,7 +7670,7 @@ function renderPortraitCalendarDayAgenda(dateStr) {
           <span>${dayOfWeek}, ${indianDate}</span>
           ${isToday ? '<span class="today-badge">TODAY</span>' : ''}
         </div>
-        <div class="portrait-agenda-count">${daySchedules.length} Event${daySchedules.length === 1 ? '' : 's'}</div>
+        <div class="portrait-agenda-count">${daySchedules.length} Event${daySchedules.length === 1 ? '' : 's'}${(() => { const mp = moonPhaseFor(dateStr); return mp ? ` · <span class="moon-phase inline ${mp.type}" aria-hidden="true"></span> ${escapeHtml(moonPhaseLabel(mp))}` : ''; })()}</div>
       </div>
       <button type="button" class="portrait-agenda-add-btn" id="portraitAgendaAddBtn" title="Add Schedule for this Date">
         <i class="fa-solid fa-plus"></i> Add Schedule

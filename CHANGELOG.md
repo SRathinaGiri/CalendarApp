@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here. Versions follow the in-app version (`APP_VERSION` in `app.js`, `CACHE_NAME` in `sw.js`).
 
+## v1.8.0 — 2026-11-18
+
+### Moon phases in the month view
+- The month grid marks **new moon (Amavasya)** with a black disc and **full moon (Pournami)** with a white disc, on the local date on which the exact phase falls. Hover (or tap the day on a phone) for the exact time, e.g. "Full moon (Pournami) · 8:23 pm".
+- Computed offline in `moon-phase.js` (Meeus, *Astronomical Algorithms*, ch. 49), accurate to about a minute; checked against the book's worked example and published 2026 dates.
+- The date is the astronomical one in the device's time zone. Panchang calendars that count tithi at sunrise can occasionally show Amavasya/Pournami a day apart.
+
 ## v1.7.2 — 2026-11-01
 
 ### Backup PIN typed on a non-English keyboard
