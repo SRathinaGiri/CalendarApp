@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here. Versions follow the in-app version (`APP_VERSION` in `app.js`, `CACHE_NAME` in `sw.js`).
 
+## v1.9.0 — 2026-11-18
+
+### The moon for every day
+- Every day in the month grid now shows the moon's face as it looks that day: a dark disc at new moon (Amavasya), a growing crescent lit on the right, half at first quarter, white disc at full moon (Pournami), then waning, lit on the left. Hover (or tap the day on a phone) for the phase and how much is lit, e.g. "Waxing crescent · 14% lit"; on new/full moon days the exact time is shown.
+- Illumination from the Moon's phase angle (Meeus, *Astronomical Algorithms*, ch. 48), taken at local noon; exact new/full moons as before (ch. 49).
+
+### Government of India holidays (2026 and 2027)
+- The 17 gazetted holidays for Central Government offices (Delhi/New Delhi list) are marked: red date and the holiday's name in the cell; on a phone, a red date with a red bar, and the name in the day panel. 🇮🇳 marks Republic Day, Independence Day and Gandhi Jayanti.
+- Data in `holidays-in.js`, from DoPT O.M. F. No. 12/2/2023-JCA dated 03.07.2025 (2026) and dated 16.07.2026 (2027). Central Government offices outside Delhi replace 3 of these with holidays chosen by their State capital's coordination committee, and State Government holidays differ. Each new year is added once its O.M. is issued.
+
 ## v1.8.0 — 2026-11-18
 
 ### Moon phases in the month view

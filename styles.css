@@ -2638,12 +2638,14 @@ input:focus, select:focus, textarea:focus {
   /* Phone grid: moon in the cell's top-right corner so the date stays centred */
   .calendar-grid .day-header .moon-phase {
     position: absolute !important;
-    top: 4px !important;
-    right: 4px !important;
-    width: 8px !important;
-    height: 8px !important;
+    top: 3px !important;
+    right: 3px !important;
     margin: 0 !important;
   }
+  .calendar-grid .day-header .moon-phase svg { width: 9px !important; height: 9px !important; }
+  /* Phone grid: holiday shown by the red date and a red bar; the name is in the day panel */
+  .calendar-grid .day-holiday-label { display: none !important; }
+  .calendar-grid .day-cell.gov-holiday { box-shadow: inset 0 -3px 0 #ef4444 !important; }
 
   /* Remove bulky schedule chips inside the day cells in portrait mode */
   .calendar-grid .day-schedules-list {
@@ -4600,17 +4602,31 @@ input:focus, select:focus, textarea:focus {
 @media (prefers-reduced-motion: reduce) { .swipe-in-left, .swipe-in-right { animation: none; } }
 #calendarGrid { touch-action: pan-y pinch-zoom; }
 
-/* Moon phase: new moon = black disc, full moon = white disc (outlined so both show in either theme) */
-.moon-phase {
-  display: inline-block;
-  width: 11px;
-  height: 11px;
-  border-radius: 50%;
-  margin-left: 6px;
-  flex-shrink: 0;
-  vertical-align: middle;
+/* Moon phase for every day: dark disc with the lit part drawn over it (SVG from moon-phase.js) */
+.moon-phase { display: inline-flex; margin-left: 6px; flex-shrink: 0; line-height: 0; vertical-align: middle; }
+.moon-phase svg { display: block; overflow: visible; }
+.moon-phase .moon-dark { fill: #05070d; }
+.moon-phase .moon-lit { fill: #f8fafc; }
+.moon-phase .moon-rim { fill: none; stroke: rgba(255, 255, 255, 0.55); stroke-width: 0.8; }
+[data-theme="light"] .moon-phase .moon-dark { fill: #111827; }
+[data-theme="light"] .moon-phase .moon-rim { stroke: rgba(15, 23, 42, 0.45); }
+.moon-phase.exact.full svg { filter: drop-shadow(0 0 2px rgba(255, 255, 255, 0.8)); }
+[data-theme="light"] .moon-phase.exact.full svg { filter: none; }
+.moon-phase.inline { margin: 0 2px 0 0; position: relative; top: 1px; }
+.other-month .moon-phase { opacity: 0.5; }
+
+/* Government of India gazetted holidays */
+.day-cell.gov-holiday .day-number { color: #ef4444; }
+.day-cell.gov-holiday.today .day-number { color: #fff; }
+.day-holiday-label {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: #ef4444;
+  line-height: 1.2;
+  margin: -2px 0 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.moon-phase.new { background: #000; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.6); }
-.moon-phase.full { background: #fff; box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.45), 0 0 5px rgba(255, 255, 255, 0.55); }
-[data-theme="light"] .moon-phase.new { box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.25); }
-.moon-phase.inline { width: 9px; height: 9px; margin: 0 2px 0 0; position: relative; top: -1px; }
+.day-cell.national-holiday .day-holiday-label::before { content: '🇮🇳 '; }
+.portrait-agenda-holiday { font-size: 0.8rem; font-weight: 700; color: #ef4444; margin-top: 2px; }

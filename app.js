@@ -131,7 +131,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.8.0';
+const APP_VERSION = 'v1.9.0';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -7319,27 +7319,35 @@ function renderPortraitMonthView() {
   }
 }
 
-/* New moon (Amavasya) = black disc, full moon (Pournami) = white disc, on the local date the
-   exact phase falls (see moon-phase.js). */
-function moonPhaseFor(dateStr) {
+/* The moon's face for every day (moon-phase.js): lit part grows from new moon (dark disc,
+   Amavasya) to full moon (white disc, Pournami). Exact new/full moon times are shown on their dates. */
+function moonInfoFor(dateStr) {
   if (!window.SRGMoon || !dateStr) return null;
-  const [y, m] = dateStr.split('-').map(Number);
-  return window.SRGMoon.phasesForMonth(y, m - 1)[dateStr] || null;
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return window.SRGMoon.moonOn(y, m - 1, d);
 }
 
-function moonPhaseLabel(p) {
-  const name = p.type === 'full' ? 'Full moon (Pournami)' : 'New moon (Amavasya)';
-  const time = p.at.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true });
-  return `${name} · ${time}`;
+function moonPhaseLabel(info) {
+  if (info.exact) {
+    const name = info.exact.type === 'full' ? 'Full moon (Pournami)' : 'New moon (Amavasya)';
+    const time = info.exact.at.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true });
+    return `${name} · ${time}`;
+  }
+  return `${info.name} · ${Math.round(info.fraction * 100)}% lit`;
 }
 
-function moonPhaseBadge(p) {
+function moonPhaseBadge(info, size = 12) {
   const el = document.createElement('span');
-  el.className = `moon-phase ${p.type}`;
-  el.title = moonPhaseLabel(p);
+  el.className = 'moon-phase' + (info.exact ? ` exact ${info.exact.type}` : '');
+  el.title = moonPhaseLabel(info);
   el.setAttribute('role', 'img');
   el.setAttribute('aria-label', el.title);
+  el.innerHTML = window.SRGMoon.moonSvg(info, size);
   return el;
+}
+
+function holidayFor(dateStr) {
+  return window.SRGHolidaysIN ? window.SRGHolidaysIN.get(dateStr) : null;
 }
 
 function createDayCell(dateStr, dayNum, isOtherMonth, schedules, dayOfWeekIdx, isToday = false, dailyNotesMap = {}, dailyTxnsMap = {}) {
@@ -7393,10 +7401,21 @@ function createDayCell(dateStr, dayNum, isOtherMonth, schedules, dayOfWeekIdx, i
   actionsWrap.appendChild(financeBtn);
 
   header.appendChild(numSpan);
-  const moon = moonPhaseFor(dateStr);
+  const moon = moonInfoFor(dateStr);
   if (moon) header.appendChild(moonPhaseBadge(moon));
   header.appendChild(actionsWrap);
   cell.appendChild(header);
+
+  const holiday = holidayFor(dateStr);
+  if (holiday) {
+    cell.classList.add('gov-holiday');
+    if (holiday.national) cell.classList.add('national-holiday');
+    const hl = document.createElement('div');
+    hl.className = 'day-holiday-label';
+    hl.textContent = holiday.names.join(' · ');
+    hl.title = `${holiday.names.join(' · ')} — Central Government holiday (${holiday.source})`;
+    cell.appendChild(hl);
+  }
 
   // Portrait mode indicator (small colored square in center)
   const portraitIndicatorWrap = document.createElement('div');
@@ -7670,7 +7689,7 @@ function renderPortraitCalendarDayAgenda(dateStr) {
           <span>${dayOfWeek}, ${indianDate}</span>
           ${isToday ? '<span class="today-badge">TODAY</span>' : ''}
         </div>
-        <div class="portrait-agenda-count">${daySchedules.length} Event${daySchedules.length === 1 ? '' : 's'}${(() => { const mp = moonPhaseFor(dateStr); return mp ? ` · <span class="moon-phase inline ${mp.type}" aria-hidden="true"></span> ${escapeHtml(moonPhaseLabel(mp))}` : ''; })()}</div>
+        <div class="portrait-agenda-count">${daySchedules.length} Event${daySchedules.length === 1 ? '' : 's'}${(() => { const mp = moonInfoFor(dateStr); return mp ? ` · <span class="moon-phase inline" aria-hidden="true">${window.SRGMoon.moonSvg(mp, 10)}</span> ${escapeHtml(moonPhaseLabel(mp))}` : ''; })()}</div>${(() => { const hd = holidayFor(dateStr); return hd ? `<div class="portrait-agenda-holiday">🇮🇳 ${escapeHtml(hd.names.join(' · '))} · Govt holiday</div>` : ''; })()}
       </div>
       <button type="button" class="portrait-agenda-add-btn" id="portraitAgendaAddBtn" title="Add Schedule for this Date">
         <i class="fa-solid fa-plus"></i> Add Schedule
