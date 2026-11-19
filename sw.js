@@ -1,4 +1,4 @@
-const CACHE_NAME = 'calendar-app-v1.9.0';
+const CACHE_NAME = 'calendar-app-v1.10.0';
 const CORE_ASSETS = [
   './',
   './index.html',
@@ -19,6 +19,8 @@ const CORE_ASSETS = [
   './pdf-export.js',
   './moon-phase.js',
   './holidays-in.js',
+  './panchang.js',
+  './vendor/astronomy/astronomy.browser.min.js',
   './vendor/pdfgen/jspdf.umd.min.js',
   './vendor/pdfgen/html2canvas.min.js',
   './vendor/fontawesome/css/fontawesome.min.css',

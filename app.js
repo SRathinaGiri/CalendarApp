@@ -131,7 +131,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.9.0';
+const APP_VERSION = 'v1.10.0';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -7336,14 +7336,56 @@ function moonPhaseLabel(info) {
   return `${info.name} · ${Math.round(info.fraction * 100)}% lit`;
 }
 
-function moonPhaseBadge(info, size = 12) {
+function moonPhaseBadge(info, size = 12, dateStr = null) {
   const el = document.createElement('span');
   el.className = 'moon-phase' + (info.exact ? ` exact ${info.exact.type}` : '');
   el.title = moonPhaseLabel(info);
+  if (dateStr) {
+    const p = panchangFor(dateStr);
+    if (p) el.title += `\n${p.special ? p.special + ' · ' : ''}${p.name} · ${p.nakshatra} · ${p.rasi}`;
+  }
   el.setAttribute('role', 'img');
   el.setAttribute('aria-label', el.title);
   el.innerHTML = window.SRGMoon.moonSvg(info, size);
   return el;
+}
+
+/* Panchang for a date (panchang.js): tithi, nakshatra and rasi with end times, Pradosham etc.
+   Shown only in a date's details: the phone day panel, the Day view and the moon's tooltip. */
+function panchangFor(dateStr) {
+  if (!window.SRGPanchang || !window.Astronomy || !dateStr) return null;
+  try {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    return window.SRGPanchang.dayInfo(y, m - 1, d);
+  } catch (e) {
+    console.warn('Panchang:', e);
+    return null;
+  }
+}
+
+function panchangTime(dt, dateStr) {
+  const t = dt.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true });
+  // name the date when the change is on a later day (a rasi can last over two days)
+  if (formatDateYMD(dt) === dateStr) return t;
+  return `${t}, ${dt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`;
+}
+
+// Within ~24 h the next item may also start; show "till … then …" whenever it changes before the next sunrise.
+function panchangLine(label, name, ends, next, dateStr) {
+  return `<div><span class="pc-k">${label}</span> <b>${escapeHtml(name)}</b> till ${escapeHtml(panchangTime(ends, dateStr))}, then ${escapeHtml(next)}</div>`;
+}
+
+function panchangDetailsHtml(dateStr) {
+  const p = panchangFor(dateStr);
+  if (!p) return '';
+  const sun = (dt) => dt.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true });
+  return `<div class="panchang-details">
+    ${p.special ? `<div class="pc-special">${escapeHtml(p.special)}</div>` : ''}
+    ${panchangLine('Tithi', p.name, p.tithiEnds, p.nextName, dateStr)}
+    ${panchangLine('Nakshatra', p.nakshatra, p.nakshatraEnds, p.nextNakshatra, dateStr)}
+    ${panchangLine('Rasi', p.rasi, p.rasiEnds, p.nextRasi, dateStr)}
+    <div class="pc-sun">Sunrise ${escapeHtml(sun(p.sunrise))} · Sunset ${escapeHtml(sun(p.sunset))} · ${escapeHtml(p.place)}</div>
+  </div>`;
 }
 
 function holidayFor(dateStr) {
@@ -7402,7 +7444,7 @@ function createDayCell(dateStr, dayNum, isOtherMonth, schedules, dayOfWeekIdx, i
 
   header.appendChild(numSpan);
   const moon = moonInfoFor(dateStr);
-  if (moon) header.appendChild(moonPhaseBadge(moon));
+  if (moon) header.appendChild(moonPhaseBadge(moon, 12, dateStr));
   header.appendChild(actionsWrap);
   cell.appendChild(header);
 
@@ -7695,6 +7737,7 @@ function renderPortraitCalendarDayAgenda(dateStr) {
         <i class="fa-solid fa-plus"></i> Add Schedule
       </button>
     </div>
+    ${panchangDetailsHtml(dateStr)}
   `;
 
   if (noteContent) {
@@ -8023,6 +8066,15 @@ function renderDayView() {
 
   if (dayNameEl) dayNameEl.textContent = dayName;
   if (fullDateEl) fullDateEl.textContent = indianDate;
+  const dayPanchangEl = document.getElementById('dayViewPanchang');
+  if (dayPanchangEl) {
+    const hd = holidayFor(dateYmd);
+    const mp = moonInfoFor(dateYmd);
+    dayPanchangEl.innerHTML =
+      (hd ? `<div class="portrait-agenda-holiday">🇮🇳 ${escapeHtml(hd.names.join(' · '))} · Govt holiday</div>` : '') +
+      (mp ? `<div class="pc-moon"><span class="moon-phase inline" aria-hidden="true">${window.SRGMoon.moonSvg(mp, 12)}</span> ${escapeHtml(moonPhaseLabel(mp))}</div>` : '') +
+      panchangDetailsHtml(dateYmd);
+  }
   if (pickerInput) pickerInput.value = dateYmd;
 
   const noteContent = getDailyNoteForDate(dateYmd);

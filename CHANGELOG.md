@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented here. Versions follow the in-app version (`APP_VERSION` in `app.js`, `CACHE_NAME` in `sw.js`).
 
+## v1.10.0 — 2026-11-19
+
+### Panchang in a date's details
+- Tap a date (phone) or open the **Day** view (all screens) to see the day's **Tithi**, **Nakshatra** and **Rasi**, each with the time it changes and what follows, plus sunrise and sunset. **Pradosham** (Soma/Shani Pradosham on Mondays/Saturdays), **Ekadasi**, **Pournami** and **Amavasya** are highlighted. The month grid itself stays uncluttered; hovering the moon shows a one-line summary.
+- Names in Tamil usage: Valarpirai/Theipirai Prathamai … Chathurdasi, Pournami, Amavasya; Ashwini … Revathi; Mesham … Meenam.
+- Rules: tithi, nakshatra and rasi at local sunrise; Pradosham when Thrayodasi runs at sunset. Sidereal positions use the Lahiri (Chitrapaksha) ayanamsa (23.857092° at J2000, 50.28″/year). Sunrise/sunset for Chennai.
+- Computed offline with astronomy-engine 2.1.19 (MIT, bundled in `vendor/astronomy`); logic in `panchang.js`. Checked against published Panchangs: tithi end times within ~2 minutes.
+
 ## v1.9.0 — 2026-11-18
 
 ### The moon for every day

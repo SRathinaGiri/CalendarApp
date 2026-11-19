@@ -4630,3 +4630,13 @@ input:focus, select:focus, textarea:focus {
 }
 .day-cell.national-holiday .day-holiday-label::before { content: '🇮🇳 '; }
 .portrait-agenda-holiday { font-size: 0.8rem; font-weight: 700; color: #ef4444; margin-top: 2px; }
+
+/* Panchang details (phone day panel, Day view) */
+.panchang-details { font-size: 0.82rem; line-height: 1.5; color: var(--text-muted); margin-top: 4px; }
+.portrait-calendar-day-agenda > .panchang-details { padding: 8px 12px; margin: 4px 0 8px; border-radius: var(--radius-md, 10px); background: var(--bg-primary); border: 1px solid var(--border-color); }
+.panchang-details b { color: var(--text-main); font-weight: 700; }
+.panchang-details .pc-k { display: inline-block; min-width: 68px; color: var(--text-muted); }
+.panchang-details .pc-special { display: inline-block; font-weight: 700; color: #f59e0b; margin-bottom: 2px; }
+.panchang-details .pc-sun { font-size: 0.76rem; opacity: 0.85; }
+.day-view-panchang { margin-top: 6px; }
+.day-view-panchang .pc-moon { font-size: 0.82rem; color: var(--text-muted); }
