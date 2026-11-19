@@ -4640,3 +4640,10 @@ input:focus, select:focus, textarea:focus {
 .panchang-details .pc-sun { font-size: 0.76rem; opacity: 0.85; }
 .day-view-panchang { margin-top: 6px; }
 .day-view-panchang .pc-moon { font-size: 0.82rem; color: var(--text-muted); }
+
+/* Settings → Language & Place */
+.region-field { display: flex; flex-direction: column; gap: 6px; font-weight: 600; font-size: 0.88rem; color: var(--text-main); }
+.region-field select { padding: 9px 10px; border-radius: var(--radius-md, 10px); border: 1px solid var(--border-color); background: var(--bg-primary); color: var(--text-main); font-size: 0.95rem; }
+.region-field small { font-weight: 400; color: var(--text-muted); font-size: 0.76rem; }
+.region-preview { padding: 10px 12px; border-radius: var(--radius-md, 10px); border: 1px dashed var(--border-color); background: var(--bg-primary); }
+.region-preview-title { font-weight: 700; font-size: 0.86rem; color: var(--text-main); }

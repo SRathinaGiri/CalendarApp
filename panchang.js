@@ -24,24 +24,48 @@
 
   const A = root.Astronomy || (typeof require === 'function' ? require('astronomy-engine') : null);
 
+  // Reference places for sunrise/sunset: State/UT capitals and large cities (lat, lon in degrees).
   const PLACES = {
-    chennai: { name: 'Chennai', lat: 13.0827, lon: 80.2707 },
-    trivandrum: { name: 'Thiruvananthapuram', lat: 8.5241, lon: 76.9366 },
+    agartala: { name: 'Agartala', lat: 23.8315, lon: 91.2868 },
+    ahmedabad: { name: 'Ahmedabad', lat: 23.0225, lon: 72.5714 },
+    aizawl: { name: 'Aizawl', lat: 23.7271, lon: 92.7176 },
     bengaluru: { name: 'Bengaluru', lat: 12.9716, lon: 77.5946 },
+    bhopal: { name: 'Bhopal', lat: 23.2599, lon: 77.4126 },
+    bhubaneswar: { name: 'Bhubaneswar', lat: 20.2961, lon: 85.8245 },
+    chandigarh: { name: 'Chandigarh', lat: 30.7333, lon: 76.7794 },
+    chennai: { name: 'Chennai', lat: 13.0827, lon: 80.2707 },
+    coimbatore: { name: 'Coimbatore', lat: 11.0168, lon: 76.9558 },
+    dehradun: { name: 'Dehradun', lat: 30.3165, lon: 78.0322 },
+    gangtok: { name: 'Gangtok', lat: 27.3389, lon: 88.6065 },
+    guwahati: { name: 'Guwahati', lat: 26.1445, lon: 91.7362 },
+    hyderabad: { name: 'Hyderabad', lat: 17.3850, lon: 78.4867 },
+    imphal: { name: 'Imphal', lat: 24.8170, lon: 93.9368 },
+    itanagar: { name: 'Itanagar', lat: 27.0844, lon: 93.6053 },
+    jaipur: { name: 'Jaipur', lat: 26.9124, lon: 75.7873 },
+    jammu: { name: 'Jammu', lat: 32.7266, lon: 74.8570 },
+    kochi: { name: 'Kochi', lat: 9.9312, lon: 76.2673 },
+    kohima: { name: 'Kohima', lat: 25.6751, lon: 94.1086 },
+    kolkata: { name: 'Kolkata', lat: 22.5726, lon: 88.3639 },
+    lucknow: { name: 'Lucknow', lat: 26.8467, lon: 80.9462 },
+    madurai: { name: 'Madurai', lat: 9.9252, lon: 78.1198 },
     mumbai: { name: 'Mumbai', lat: 19.0760, lon: 72.8777 },
     delhi: { name: 'New Delhi', lat: 28.6139, lon: 77.2090 },
-    kolkata: { name: 'Kolkata', lat: 22.5726, lon: 88.3639 },
+    panaji: { name: 'Panaji', lat: 15.4909, lon: 73.8278 },
+    patna: { name: 'Patna', lat: 25.5941, lon: 85.1376 },
+    puducherry: { name: 'Puducherry', lat: 11.9416, lon: 79.8083 },
+    pune: { name: 'Pune', lat: 18.5204, lon: 73.8567 },
+    raipur: { name: 'Raipur', lat: 21.2514, lon: 81.6296 },
+    ranchi: { name: 'Ranchi', lat: 23.3441, lon: 85.3096 },
+    shillong: { name: 'Shillong', lat: 25.5788, lon: 91.8933 },
+    shimla: { name: 'Shimla', lat: 31.1048, lon: 77.1734 },
+    srinagar: { name: 'Srinagar', lat: 34.0837, lon: 74.7973 },
+    trivandrum: { name: 'Thiruvananthapuram', lat: 8.5241, lon: 76.9366 },
+    tiruchirappalli: { name: 'Tiruchirappalli', lat: 10.7905, lon: 78.7047 },
+    varanasi: { name: 'Varanasi', lat: 25.3176, lon: 82.9739 },
+    vijayawada: { name: 'Vijayawada', lat: 16.5062, lon: 80.6480 },
+    visakhapatnam: { name: 'Visakhapatnam', lat: 17.6868, lon: 83.2185 },
   };
   let placeKey = 'chennai';
-
-  const TITHI = ['Prathamai', 'Dhvitiyai', 'Thrithiyai', 'Chathurthi', 'Panchami', 'Sashti', 'Sapthami',
-    'Ashtami', 'Navami', 'Dhasami', 'Ekadasi', 'Dhvadasi', 'Thrayodasi', 'Chathurdasi'];
-
-  const NAKSHATRA = ['Ashwini', 'Bharani', 'Karthigai', 'Rohini', 'Mirugasirisham', 'Thiruvathirai', 'Punarpoosam',
-    'Poosam', 'Ayilyam', 'Magam', 'Pooram', 'Uthiram', 'Hastham', 'Chithirai', 'Swathi', 'Visakam', 'Anusham',
-    'Kettai', 'Moolam', 'Pooradam', 'Uthiradam', 'Thiruvonam', 'Avittam', 'Sadhayam', 'Poorattathi', 'Uthirattathi', 'Revathi'];
-  const RASI = ['Mesham', 'Rishabam', 'Mithunam', 'Kadagam', 'Simmam', 'Kanni', 'Thulam', 'Viruchigam',
-    'Dhanusu', 'Magaram', 'Kumbam', 'Meenam'];
 
   function lahiriAyanamsa(date) {
     const years = (date.getTime() / 86400000 + 2440587.5 - 2451545.0) / 365.25;
@@ -75,13 +99,6 @@
     return Math.min(30, Math.floor(elong / 12) + 1);
   }
 
-  function tithiName(n) {
-    if (n === 15) return 'Pournami';
-    if (n === 30) return 'Amavasya';
-    const paksha = n <= 15 ? 'Valarpirai' : 'Theipirai';
-    return `${paksha} ${TITHI[(n - 1) % 15]}`;
-  }
-
   function observer() {
     const p = PLACES[placeKey] || PLACES.chennai;
     return new A.Observer(p.lat, p.lon, 0);
@@ -102,26 +119,24 @@
     const tSet = tithiAt(sunset);
     const weekday = midnight.getDay();
 
+    // special day code: pradosham / soma / shani / purnima / amavasya / ekadasi
     let special = null;
-    if (tSet === 13 || tSet === 28) {
-      special = weekday === 1 ? 'Soma Pradosham' : weekday === 6 ? 'Shani Pradosham' : 'Pradosham';
-    } else if (t === 15) special = 'Pournami';
-    else if (t === 30) special = 'Amavasya';
-    else if (t === 11 || t === 26) special = 'Ekadasi';
+    if (tSet === 13 || tSet === 28) special = weekday === 1 ? 'soma' : weekday === 6 ? 'shani' : 'pradosham';
+    else if (t === 15) special = 'purnima';
+    else if (t === 30) special = 'amavasya';
+    else if (t === 11 || t === 26) special = 'ekadasi';
 
     const sid = moonSidereal(sunrise);
     const nak = Math.floor(sid / (360 / 27));
     const rasi = Math.floor(sid / 30);
     const info = {
-      tithi: t, name: tithiName(t), special, sunrise, sunset,
+      tithi: t,                     // 1-30 (15 Purnima, 30 Amavasya); names come from panchang-i18n.js
       tithiEnds: nextBoundary((d) => A.MoonPhase(d), sunrise, 12, 12.19),
-      nextName: tithiName((t % 30) + 1),
-      nakshatra: NAKSHATRA[nak],
+      nakshatra: nak,               // 0-26, Ashwini..Revati
       nakshatraEnds: nextBoundary(moonSidereal, sunrise, 360 / 27, 13.18),
-      nextNakshatra: NAKSHATRA[(nak + 1) % 27],
-      rasi: RASI[rasi],
+      rasi,                         // 0-11, Mesha..Meena
       rasiEnds: nextBoundary(moonSidereal, sunrise, 30, 13.18),
-      nextRasi: RASI[(rasi + 1) % 12],
+      special, sunrise, sunset,
       place: (PLACES[placeKey] || PLACES.chennai).name,
     };
     cache.set(key, info);
@@ -132,7 +147,7 @@
     if (PLACES[key]) { placeKey = key; cache.clear(); }
   }
 
-  const api = { dayInfo, tithiAt, tithiName, moonSidereal, lahiriAyanamsa, setPlace, places: PLACES, get place() { return placeKey; } };
+  const api = { dayInfo, tithiAt, moonSidereal, lahiriAyanamsa, setPlace, places: PLACES, get place() { return placeKey; } };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.SRGPanchang = api;
 })(typeof window !== 'undefined' ? window : globalThis);

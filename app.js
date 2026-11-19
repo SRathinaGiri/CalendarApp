@@ -131,7 +131,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.10.0';
+const APP_VERSION = 'v1.11.0';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -377,6 +377,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (window.srgNativeReady) { try { await window.srgNativeReady; } catch (e) { console.error('Native storage start-up:', e); } }
     applyVersionLabels();
     initPinKeyboardWarnings();
+    applyCalendarRegion();
+    const drawerRegionBtn = document.getElementById('drawerRegionBtn');
+    if (drawerRegionBtn) drawerRegionBtn.addEventListener('click', () => { if (typeof closeSideMenu === 'function') closeSideMenu(); openRegionModal(); });
     initAppTheme();
     setupUIEventListeners(); // Set up all UI event listeners FIRST so form submission and clicks always work
     initAutoLockListeners();
@@ -7327,13 +7330,54 @@ function moonInfoFor(dateStr) {
   return window.SRGMoon.moonOn(y, m - 1, d);
 }
 
+/* Calendar language and place (Settings → Language & Place). Language changes the Panchang words,
+   moon labels and weekday names; the rest of the app stays English. Place sets sunrise/sunset. */
+function calLang() {
+  let c = null;
+  try { c = localStorage.getItem('srg_cal_lang'); } catch (e) {}
+  return (window.SRGPanchangI18n && window.SRGPanchangI18n.languages[c]) ? c : 'en';
+}
+
+function calPlace() {
+  let p = null;
+  try { p = localStorage.getItem('srg_cal_place'); } catch (e) {}
+  const places = window.SRGPanchang ? window.SRGPanchang.places : {};
+  if (p && places[p]) return p;
+  const suggested = window.SRGPanchangI18n ? window.SRGPanchangI18n.lang(calLang()).place : 'chennai';
+  return places[suggested] ? suggested : 'chennai';
+}
+
+function calLocale() {
+  return window.SRGPanchangI18n ? window.SRGPanchangI18n.locale(calLang()) : 'en-IN';
+}
+
+function applyCalendarRegion() {
+  if (window.SRGPanchang) window.SRGPanchang.setPlace(calPlace());
+}
+
+function calTime(dt) {
+  return dt.toLocaleTimeString(calLocale(), { hour: 'numeric', minute: '2-digit', hour12: true });
+}
+
+function calWeekday(date) {
+  return calLang() === 'en' || calLang() === 'ta-Latn'
+    ? DAY_NAMES[date.getDay()]
+    : date.toLocaleDateString(calLocale(), { weekday: 'long' });
+}
+
 function moonPhaseLabel(info) {
+  const I = window.SRGPanchangI18n;
+  const code = calLang();
+  const english = !I || code === 'en';
   if (info.exact) {
-    const name = info.exact.type === 'full' ? 'Full moon (Pournami)' : 'New moon (Amavasya)';
-    const time = info.exact.at.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true });
-    return `${name} · ${time}`;
+    const isFull = info.exact.type === 'full';
+    const name = english
+      ? (isFull ? 'Full moon (Purnima)' : 'New moon (Amavasya)')
+      : I.lang(code).tithi[isFull ? 14 : 15];
+    return `${name} · ${calTime(info.exact.at)}`;
   }
-  return `${info.name} · ${Math.round(info.fraction * 100)}% lit`;
+  if (english) return `${info.name} · ${Math.round(info.fraction * 100)}% lit`;
+  return `${I.lang(code).paksha[info.waxing ? 0 : 1]} · ${Math.round(info.fraction * 100)}%`;
 }
 
 function moonPhaseBadge(info, size = 12, dateStr = null) {
@@ -7342,7 +7386,11 @@ function moonPhaseBadge(info, size = 12, dateStr = null) {
   el.title = moonPhaseLabel(info);
   if (dateStr) {
     const p = panchangFor(dateStr);
-    if (p) el.title += `\n${p.special ? p.special + ' · ' : ''}${p.name} · ${p.nakshatra} · ${p.rasi}`;
+    const I = window.SRGPanchangI18n;
+    if (p && I) {
+      const code = calLang(), x = I.lang(code), sp = I.specialName(code, p.special);
+      el.title += `\n${sp ? sp + ' · ' : ''}${I.tithiName(code, p.tithi)} · ${x.nakshatra[p.nakshatra]} · ${x.rasi[p.rasi]}`;
+    }
   }
   el.setAttribute('role', 'img');
   el.setAttribute('aria-label', el.title);
@@ -7350,8 +7398,8 @@ function moonPhaseBadge(info, size = 12, dateStr = null) {
   return el;
 }
 
-/* Panchang for a date (panchang.js): tithi, nakshatra and rasi with end times, Pradosham etc.
-   Shown only in a date's details: the phone day panel, the Day view and the moon's tooltip. */
+/* Panchang for a date (panchang.js + panchang-i18n.js): tithi, nakshatra and rasi with end times,
+   Pradosham etc. Shown only in a date's details: the phone day panel, the Day view and the moon's tooltip. */
 function panchangFor(dateStr) {
   if (!window.SRGPanchang || !window.Astronomy || !dateStr) return null;
   try {
@@ -7364,28 +7412,94 @@ function panchangFor(dateStr) {
 }
 
 function panchangTime(dt, dateStr) {
-  const t = dt.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true });
   // name the date when the change is on a later day (a rasi can last over two days)
-  if (formatDateYMD(dt) === dateStr) return t;
-  return `${t}, ${dt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`;
-}
-
-// Within ~24 h the next item may also start; show "till … then …" whenever it changes before the next sunrise.
-function panchangLine(label, name, ends, next, dateStr) {
-  return `<div><span class="pc-k">${label}</span> <b>${escapeHtml(name)}</b> till ${escapeHtml(panchangTime(ends, dateStr))}, then ${escapeHtml(next)}</div>`;
+  if (formatDateYMD(dt) === dateStr) return calTime(dt);
+  return `${calTime(dt)}, ${dt.toLocaleDateString(calLocale(), { day: 'numeric', month: 'short' })}`;
 }
 
 function panchangDetailsHtml(dateStr) {
   const p = panchangFor(dateStr);
-  if (!p) return '';
-  const sun = (dt) => dt.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true });
-  return `<div class="panchang-details">
-    ${p.special ? `<div class="pc-special">${escapeHtml(p.special)}</div>` : ''}
-    ${panchangLine('Tithi', p.name, p.tithiEnds, p.nextName, dateStr)}
-    ${panchangLine('Nakshatra', p.nakshatra, p.nakshatraEnds, p.nextNakshatra, dateStr)}
-    ${panchangLine('Rasi', p.rasi, p.rasiEnds, p.nextRasi, dateStr)}
-    <div class="pc-sun">Sunrise ${escapeHtml(sun(p.sunrise))} · Sunset ${escapeHtml(sun(p.sunset))} · ${escapeHtml(p.place)}</div>
+  const I = window.SRGPanchangI18n;
+  if (!p || !I) return '';
+  const code = calLang(), x = I.lang(code);
+  const line = (label, name, ends, next) =>
+    `<div><span class="pc-k">${escapeHtml(label)}</span> ${x.till(`<b>${escapeHtml(name)}</b>`, escapeHtml(panchangTime(ends, dateStr)), escapeHtml(next))}</div>`;
+  const sp = I.specialName(code, p.special);
+  return `<div class="panchang-details" lang="${escapeHtml(x.locale)}">
+    ${sp ? `<div class="pc-special">${escapeHtml(sp)}</div>` : ''}
+    ${line(x.labels.tithi, I.tithiName(code, p.tithi), p.tithiEnds, I.tithiName(code, (p.tithi % 30) + 1))}
+    ${line(x.labels.nakshatra, x.nakshatra[p.nakshatra], p.nakshatraEnds, x.nakshatra[(p.nakshatra + 1) % 27])}
+    ${line(x.labels.rasi, x.rasi[p.rasi], p.rasiEnds, x.rasi[(p.rasi + 1) % 12])}
+    <div class="pc-sun">${escapeHtml(x.labels.sunrise)} ${escapeHtml(calTime(p.sunrise))} · ${escapeHtml(x.labels.sunset)} ${escapeHtml(calTime(p.sunset))} · ${escapeHtml(p.place)}</div>
   </div>`;
+}
+
+/* Settings → Language & Place */
+function openRegionModal() {
+  const I = window.SRGPanchangI18n, P = window.SRGPanchang;
+  if (!I || !P) { showToast('Panchang data is not available.', 'error'); return; }
+  let modal = document.getElementById('regionModal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'regionModal';
+    modal.className = 'modal-backdrop hidden';
+    const langOpts = I.order.map((c) => `<option value="${c}">${escapeHtml(I.languages[c].label)}</option>`).join('');
+    const placeOpts = Object.entries(P.places).sort((a, b) => a[1].name.localeCompare(b[1].name))
+      .map(([k, v]) => `<option value="${k}">${escapeHtml(v.name)}</option>`).join('');
+    modal.innerHTML = `
+      <div class="modal-card" style="max-width: 460px;">
+        <div class="modal-header">
+          <h3><i class="fa-solid fa-language" style="color:#f59e0b;"></i> Language & Place</h3>
+          <button class="btn-icon" id="closeRegionModalBtn" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="modal-body" style="padding: 18px 20px; display: flex; flex-direction: column; gap: 14px;">
+          <label class="region-field">Calendar language
+            <select id="regionLangSelect">${langOpts}</select>
+            <small>Panchang (tithi, nakshatra, rasi), moon and weekday names. Menus stay in English.</small>
+          </label>
+          <label class="region-field">Place for sunrise & Panchang
+            <select id="regionPlaceSelect">${placeOpts}</select>
+            <small>The tithi, nakshatra and rasi are those at sunrise here; Pradosham uses sunset.</small>
+          </label>
+          <div class="region-preview" id="regionPreview"></div>
+          <button type="button" class="btn-primary" id="saveRegionBtn" style="justify-content:center;"><i class="fa-solid fa-check"></i> Save</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+    const langSel = modal.querySelector('#regionLangSelect');
+    const placeSel = modal.querySelector('#regionPlaceSelect');
+    let placeTouched = false;
+    const preview = () => {
+      const prevLang = localStorage.getItem('srg_cal_lang'), prevPlace = localStorage.getItem('srg_cal_place');
+      lsSet('srg_cal_lang', langSel.value); lsSet('srg_cal_place', placeSel.value); applyCalendarRegion();
+      const today = formatDateYMD(new Date());
+      modal.querySelector('#regionPreview').innerHTML = `<div class="region-preview-title">${escapeHtml(calWeekday(new Date()))}, ${escapeHtml(formatDateIndian(new Date()))}</div>${panchangDetailsHtml(today)}`;
+      if (prevLang === null) localStorage.removeItem('srg_cal_lang'); else lsSet('srg_cal_lang', prevLang);
+      if (prevPlace === null) localStorage.removeItem('srg_cal_place'); else lsSet('srg_cal_place', prevPlace);
+      applyCalendarRegion();
+    };
+    langSel.addEventListener('change', () => {
+      if (!placeTouched) placeSel.value = I.lang(langSel.value).place;   // suggest the language's home city
+      preview();
+    });
+    placeSel.addEventListener('change', () => { placeTouched = true; preview(); });
+    modal.querySelector('#closeRegionModalBtn').addEventListener('click', () => modal.classList.add('hidden'));
+    modal.querySelector('#saveRegionBtn').addEventListener('click', () => {
+      lsSet('srg_cal_lang', langSel.value);
+      lsSet('srg_cal_place', placeSel.value);
+      applyCalendarRegion();
+      modal.classList.add('hidden');
+      renderCurrentView();
+      showToast(`Calendar: ${I.languages[langSel.value].label} · ${P.places[placeSel.value].name}`, 'success', 3500);
+    });
+    modal._preview = preview;
+    modal._reset = () => { placeTouched = false; };
+  }
+  modal.querySelector('#regionLangSelect').value = calLang();
+  modal.querySelector('#regionPlaceSelect').value = calPlace();
+  modal._reset();
+  modal._preview();
+  modal.classList.remove('hidden');
 }
 
 function holidayFor(dateStr) {
@@ -7728,7 +7842,7 @@ function renderPortraitCalendarDayAgenda(dateStr) {
     <div class="portrait-agenda-header">
       <div class="portrait-agenda-title-wrap">
         <div class="portrait-agenda-date">
-          <span>${dayOfWeek}, ${indianDate}</span>
+          <span>${escapeHtml(calWeekday(new Date(dateStr + 'T12:00:00')))}, ${indianDate}</span>
           ${isToday ? '<span class="today-badge">TODAY</span>' : ''}
         </div>
         <div class="portrait-agenda-count">${daySchedules.length} Event${daySchedules.length === 1 ? '' : 's'}${(() => { const mp = moonInfoFor(dateStr); return mp ? ` · <span class="moon-phase inline" aria-hidden="true">${window.SRGMoon.moonSvg(mp, 10)}</span> ${escapeHtml(moonPhaseLabel(mp))}` : ''; })()}</div>${(() => { const hd = holidayFor(dateStr); return hd ? `<div class="portrait-agenda-holiday">🇮🇳 ${escapeHtml(hd.names.join(' · '))} · Govt holiday</div>` : ''; })()}
@@ -8064,7 +8178,7 @@ function renderDayView() {
   const pickerInput = document.getElementById('dayViewDatePicker');
   const dayNoteBtn = document.getElementById('dayViewNoteBtn');
 
-  if (dayNameEl) dayNameEl.textContent = dayName;
+  if (dayNameEl) dayNameEl.textContent = calWeekday(currentDate);
   if (fullDateEl) fullDateEl.textContent = indianDate;
   const dayPanchangEl = document.getElementById('dayViewPanchang');
   if (dayPanchangEl) {

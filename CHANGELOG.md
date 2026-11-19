@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here. Versions follow the in-app version (`APP_VERSION` in `app.js`, `CACHE_NAME` in `sw.js`).
 
+## v1.11.0 — 2026-11-19
+
+### Language & Place (side menu → Settings)
+- **Calendar language:** English (default), Tamil names in English letters, Hindi, Bengali, Marathi, Telugu, Tamil, Gujarati, Kannada and Malayalam. Changes the Panchang (tithi, nakshatra, rasi, Pradosham, Ekadasi), moon labels and weekday names, in each language's own script and regional terms (e.g. Gujarati Sud/Vad, Punam, Agiyaras; Telugu Padyami; Malayalam Aswathi, Medam). Menus stay in English. Times keep 0-9 digits.
+- **Place:** 38 State/UT capitals and large cities. The Panchang is computed for sunrise/sunset there. Choosing a language suggests its home city (Tamil → Chennai, Malayalam → Thiruvananthapuram, Hindi → New Delhi …).
+- The settings screen previews today's Panchang before saving.
+- English now uses the pan-Indian forms (Shukla Dashami, Krittika, Mesha (Aries)); the earlier Tamil-style names are the "Tamil names in English letters" option.
+- Words are in `panchang-i18n.js`; the calculation in `panchang.js` returns positions only.
+
 ## v1.10.0 — 2026-11-19
 
 ### Panchang in a date's details
