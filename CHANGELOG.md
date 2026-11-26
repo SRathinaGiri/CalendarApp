@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented here. Versions follow the in-app version (`APP_VERSION` in `app.js`, `CACHE_NAME` in `sw.js`).
 
+## v1.12.0 — 2026-11-27
+
+### Finance entries on the right date
+- **Fix:** tapping a past day in the month grid and then the header (or side-menu) **Finance** or **Notes** shortcut opened today instead of the tapped day, so a forgotten entry for yesterday was posted on today's date. The shortcuts now open the day you are looking at: the Day view's date, else the single selected/tapped day, else today.
+- The Daily Receipts & Payments window now shows the **entry date** as an editable field with previous/next-day buttons, and warns when an entry is back-dated or future-dated. Changing the date while editing an entry moves that entry to the new date when saved.
+
+### Programme details come from tags
+- The free-text "Programme Title / Details" box (with its drop-down of earlier titles) is gone. Select **at least one tag**; the first four selected tags, in the order the tag picker shows them, become the programme details (e.g. "Offline, ICAI, Bengaluru, AITT"). A live preview above the tag picker shows the result. The value is still stored as the schedule's title, so it shows everywhere schedules are listed.
+- Editing an older schedule rebuilds its programme details from its tags when saved.
+
+### Compact buttons in Add / Edit Schedule
+- The bottom buttons (Delete, Delete batch, Cancel, Save) are now one row of equal, compact buttons pinned to the bottom of the form on phones, with shorter labels; on desktop the deletes sit left and Cancel/Save right, all the same size. On very narrow phones the delete buttons show icons only.
+
 ## v1.11.0 — 2026-11-19
 
 ### Language & Place (side menu → Settings)

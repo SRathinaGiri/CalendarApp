@@ -4647,3 +4647,136 @@ input:focus, select:focus, textarea:focus {
 .region-field small { font-weight: 400; color: var(--text-muted); font-size: 0.76rem; }
 .region-preview { padding: 10px 12px; border-radius: var(--radius-md, 10px); border: 1px dashed var(--border-color); background: var(--bg-primary); }
 .region-preview-title { font-weight: 700; font-size: 0.86rem; color: var(--text-main); }
+
+/* ==========================================================================
+   v1.12.0 — finance entry date, tag-built programme details, compact schedule footer
+   Mobile first: the base rules target phones; the min-width query restores desktop spacing.
+   ========================================================================== */
+
+/* Finance: visible, editable entry date */
+.finance-date-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.finance-date-row label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.finance-date-row input[type="date"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  color: var(--text-main);
+  border: 1px solid var(--border-color);
+  font-size: 0.88rem;
+}
+.finance-date-row .btn-sm {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  justify-content: center;
+}
+.finance-date-hint {
+  margin: 0 0 12px;
+  padding: 6px 10px;
+  font-size: 0.78rem;
+  border-radius: var(--radius-md);
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+}
+
+/* Schedule: programme details preview (built from the first 4 tags) */
+.programme-title-preview {
+  font-size: 0.85rem;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  line-height: 1.35;
+  word-break: break-word;
+}
+.programme-title-preview .programme-title-label {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.programme-title-preview .programme-title-value {
+  color: var(--text-main);
+  font-weight: 600;
+}
+.programme-title-preview.empty {
+  border-color: rgba(244, 63, 94, 0.45);
+}
+.programme-title-preview.empty .programme-title-value {
+  color: var(--accent-rose);
+  font-weight: 500;
+}
+
+/* Schedule add/edit footer: one row of equal, compact buttons pinned to the bottom of the form */
+#scheduleForm .schedule-modal-footer {
+  position: sticky;
+  bottom: -20px;              /* .modal-form has 20px padding; sit flush with the card edge */
+  z-index: 2;
+  margin: 4px -20px -20px;
+  padding: 8px 12px calc(8px + env(safe-area-inset-bottom, 0px));
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border-color);
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 6px;
+}
+#scheduleForm .schedule-modal-footer .footer-left-buttons,
+#scheduleForm .schedule-modal-footer .footer-right-buttons {
+  display: contents;          /* every visible button becomes an equal grid column */
+}
+#scheduleForm .schedule-modal-footer button {
+  height: 38px;
+  min-width: 0;
+  padding: 0 8px;
+  font-size: 0.8rem;
+  gap: 5px;
+  justify-content: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#scheduleForm .schedule-modal-footer button > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Phones editing a batch (four buttons): 2 x 2 of equal buttons, deletes above Cancel/Save */
+@media (max-width: 480px) {
+  #scheduleForm .schedule-modal-footer:has(#deleteGroupBtn:not(.hidden)) {
+    grid-auto-flow: row;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Desktop: deletes on the left, Cancel/Save on the right, all the same height and width */
+@media (min-width: 769px) {
+  #scheduleForm .schedule-modal-footer {
+    display: flex;
+    justify-content: space-between;
+    padding: 10px 20px;
+  }
+  #scheduleForm .schedule-modal-footer .footer-left-buttons,
+  #scheduleForm .schedule-modal-footer .footer-right-buttons {
+    display: flex;
+    gap: 8px;
+  }
+  #scheduleForm .schedule-modal-footer button {
+    height: 36px;
+    width: 126px;
+    padding: 0 10px;
+    font-size: 0.85rem;
+  }
+}

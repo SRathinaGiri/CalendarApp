@@ -410,12 +410,8 @@
             <div id="selectedDatesChips" class="selected-dates-chips"></div>
           </div>
 
-          <!-- Title with Autocomplete from previous titles -->
-          <div class="form-group">
-            <label for="schedTitle">Programme Title / Details *</label>
-            <input type="text" id="schedTitle" list="previousTitlesDatalist" required placeholder="e.g. Team Meeting, Lecture, or Project Review" autocomplete="off">
-            <datalist id="previousTitlesDatalist"></datalist>
-          </div>
+          <!-- Programme details are built from the first 4 selected tags (see buildProgrammeTitleFromTags) -->
+          <input type="hidden" id="schedTitle">
 
           <!-- Batch / Group Indicator (if multi-date or existing group) -->
           <div id="groupBadgeContainer" class="group-badge-container hidden">
@@ -599,9 +595,10 @@
           <!-- Categorized Tags Selection Area -->
           <div class="form-group">
             <div class="tags-picker-header">
-              <label class="section-label"><i class="fa-solid fa-tags"></i> Tag Classification (Select multiple)</label>
-              <span class="hint-small">Click "+" beside any category to add new tags instantly</span>
+              <label class="section-label"><i class="fa-solid fa-tags"></i> Tags * <span class="hint-small">(select at least one)</span></label>
+              <span class="hint-small">Tap "+" beside a category to add a new tag</span>
             </div>
+            <div id="programmeTitlePreview" class="programme-title-preview" aria-live="polite"></div>
             <div id="categoryTagsPicker" class="category-tags-picker"></div>
           </div>
 
@@ -631,18 +628,18 @@
           </div>
 
           <!-- Actions -->
-          <div class="modal-footer">
+          <div class="modal-footer schedule-modal-footer">
             <div class="footer-left-buttons">
-              <button type="button" id="deleteScheduleBtn" class="btn-danger hidden">
-                <i class="fa-solid fa-trash"></i> Delete
+              <button type="button" id="deleteScheduleBtn" class="btn-danger hidden" title="Delete this schedule">
+                <i class="fa-solid fa-trash"></i> <span>Delete</span>
               </button>
-              <button type="button" id="deleteGroupBtn" class="btn-danger hidden">
-                <i class="fa-solid fa-layer-group"></i> Delete Entire Batch Group
+              <button type="button" id="deleteGroupBtn" class="btn-danger hidden" title="Delete the entire batch group" aria-label="Delete the entire batch group">
+                <i class="fa-solid fa-layer-group"></i> <span>Delete batch</span>
               </button>
             </div>
             <div class="footer-right-buttons">
               <button type="button" id="cancelScheduleBtn" class="btn-secondary">Cancel</button>
-              <button type="submit" class="btn-primary"><i class="fa-solid fa-check"></i> Save Schedule</button>
+              <button type="submit" class="btn-primary"><i class="fa-solid fa-check"></i> <span>Save</span></button>
             </div>
           </div>
         </form>
@@ -754,8 +751,15 @@
         </div>
         <div class="modal-body" style="padding: 16px 20px; overflow-y: auto; max-height: 75vh;">
           <input type="hidden" id="financeTxnId">
-          <input type="hidden" id="financeTxnDate">
-          
+          <!-- Entry date: visible and editable so a missed day can be posted later -->
+          <div class="finance-date-row">
+            <label for="financeTxnDate"><i class="fa-solid fa-calendar-day"></i> Entry date</label>
+            <input type="date" id="financeTxnDate" required>
+            <button type="button" id="financeDatePrevBtn" class="btn-secondary btn-sm" title="Previous day" aria-label="Previous day"><i class="fa-solid fa-chevron-left"></i></button>
+            <button type="button" id="financeDateNextBtn" class="btn-secondary btn-sm" title="Next day" aria-label="Next day"><i class="fa-solid fa-chevron-right"></i></button>
+          </div>
+          <p id="financeDateHint" class="finance-date-hint hidden"></p>
+
           <!-- Summary Cards -->
           <div class="finance-summary-grid" style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 16px;">
             <div style="background: var(--badge-green-bg); border: 1px solid var(--badge-green-border); border-radius: var(--radius-md); padding: 10px; text-align: center;">

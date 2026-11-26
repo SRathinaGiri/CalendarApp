@@ -131,7 +131,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.11.0';
+const APP_VERSION = 'v1.12.0';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -2502,6 +2502,7 @@ function renderAgendaActiveTagsBar() {
 function populateTitlesDatalist() {
   if (!db) return;
   const datalist = document.getElementById('previousTitlesDatalist');
+  if (!datalist) return; // Programme details now come from tags; no free-text title picker.
   datalist.innerHTML = '';
   try {
     const res = db.exec("SELECT DISTINCT title FROM schedules WHERE title IS NOT NULL AND title != '' ORDER BY title ASC");
@@ -6104,8 +6105,47 @@ function openDailyFinanceModal(dateStr) {
   resetFinanceForm();
   renderFinanceTransactionsList(dateStr);
   populateFinanceAccountsDatalists();
+  updateFinanceDateHint(dateStr);
 
   modal.classList.remove('hidden');
+}
+
+// The entry date can be changed inside the modal (a missed day is posted later).
+// The form keeps what was typed; an entry being edited moves to the new date when saved.
+function setFinanceModalDate(dateStr) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr || '')) return;
+  const [y, m, d] = dateStr.split('-').map(Number);
+  document.getElementById('financeTxnDate').value = dateStr;
+  const modalTitle = document.getElementById('dailyFinanceModalTitle');
+  if (modalTitle) modalTitle.textContent = `Daily Receipts & Payments (${formatDateIndian(new Date(y, m - 1, d))})`;
+  renderFinanceTransactionsList(dateStr);
+  updateFinanceDateHint(dateStr);
+}
+
+function updateFinanceDateHint(dateStr) {
+  const hint = document.getElementById('financeDateHint');
+  if (!hint) return;
+  const today = formatDateYMD(new Date());
+  if (dateStr === today) {
+    hint.classList.add('hidden');
+    hint.textContent = '';
+    return;
+  }
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const label = formatDateIndian(new Date(y, m - 1, d));
+  hint.textContent = dateStr < today
+    ? `Back-dated entry: will be posted on ${label}, not today.`
+    : `Future-dated entry: will be posted on ${label}.`;
+  hint.classList.remove('hidden');
+}
+
+// The date the user is looking at: the day view's date, else the day tapped in the month grid.
+// Header and drawer shortcuts (Notes, Finance) open for this date instead of always today.
+function getActiveDateYMD() {
+  if (currentView === 'day') return formatDateYMD(currentDate);
+  if (selectedDates.size === 1) return Array.from(selectedDates)[0];
+  if (currentView === 'calendar' && portraitSelectedDate) return portraitSelectedDate;
+  return formatDateYMD(currentDate);
 }
 
 function closeDailyFinanceModal() {
@@ -8973,6 +9013,48 @@ function closeScheduleModal() {
   document.getElementById('scheduleModal').classList.add('hidden');
 }
 
+// Programme details = the first 4 selected tags, in the order the tag picker shows them
+// (category order, then tag order), e.g. "Offline, ICAI, Bengaluru, AITT".
+const PROGRAMME_TITLE_TAG_COUNT = 4;
+function getSelectedTagsInPickerOrder() {
+  const out = [];
+  tagMasterCategories.forEach(cat => {
+    tagMasterTags.forEach(t => {
+      if (t.category_id === cat.id && activeModalSelectedTagIds.has(t.id)) out.push(t);
+    });
+  });
+  // Tags whose category is missing still count, after the rest.
+  tagMasterTags.forEach(t => {
+    if (activeModalSelectedTagIds.has(t.id) && !out.includes(t)) out.push(t);
+  });
+  return out;
+}
+
+function buildProgrammeTitleFromTags() {
+  return getSelectedTagsInPickerOrder()
+    .slice(0, PROGRAMME_TITLE_TAG_COUNT)
+    .map(t => (t.name || '').trim())
+    .filter(Boolean)
+    .join(', ');
+}
+
+function updateProgrammeTitlePreview() {
+  const preview = document.getElementById('programmeTitlePreview');
+  const title = buildProgrammeTitleFromTags();
+  const hidden = document.getElementById('schedTitle');
+  if (hidden) hidden.value = title;
+  if (!preview) return;
+  preview.classList.toggle('empty', !title);
+  preview.textContent = '';
+  const label = document.createElement('span');
+  label.className = 'programme-title-label';
+  label.textContent = 'Programme details:';
+  const value = document.createElement('span');
+  value.className = 'programme-title-value';
+  value.textContent = title || 'Select at least one tag';
+  preview.append(label, ' ', value);
+}
+
 function renderTagPickerInModal() {
   const container = document.getElementById('categoryTagsPicker');
   container.innerHTML = '';
@@ -9027,6 +9109,7 @@ function renderTagPickerInModal() {
           tagBtn.classList.add('selected');
         }
         renderCustomFieldsInModal();
+        updateProgrammeTitlePreview();
       });
 
       tagsRow.appendChild(tagBtn);
@@ -9035,6 +9118,7 @@ function renderTagPickerInModal() {
     group.appendChild(tagsRow);
     container.appendChild(group);
   });
+  updateProgrammeTitlePreview();
 }
 
 async function handleQuickAddTagInline(catId, catName) {
@@ -9588,14 +9672,6 @@ function applyTicketDataToForm(type, data) {
     }
   }
 
-  // Pre-fill Programme Title if title input is blank
-  const titleInput = document.getElementById('schedTitle');
-  if (titleInput && (!titleInput.value.trim() || titleInput.value.trim().toLowerCase() === 'travel')) {
-    const fromStr = data.fromStation ? data.fromStation.split('(')[0].trim() : 'Departure';
-    const toStr = data.toStation ? data.toStation.split('(')[0].trim() : 'Destination';
-    titleInput.value = `${fromStr} to ${toStr} Travel (${data.train || 'Train'})`;
-  }
-
   updateTravelReimbursableState(type);
 }
 
@@ -9712,7 +9788,13 @@ async function handleScheduleFormSubmit(e) {
   e.preventDefault();
 
   const editId = document.getElementById('editScheduleId').value;
-  const title = document.getElementById('schedTitle').value.trim();
+  if (activeModalSelectedTagIds.size === 0) {
+    showToast('⚠ Select at least one tag. The first 4 tags become the programme details.', 'warning', 5000);
+    document.getElementById('categoryTagsPicker')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    return;
+  }
+  const title = buildProgrammeTitleFromTags();
+  document.getElementById('schedTitle').value = title;
   const fromTime = document.getElementById('schedFromTime').value;
   const toTime = document.getElementById('schedToTime').value;
 
@@ -10860,14 +10942,14 @@ function setupUIEventListeners() {
   if (drawerNoteBtn) {
     drawerNoteBtn.addEventListener('click', () => {
       closeSideMenu();
-      openDailyNoteModal(formatDateYMD(currentDate));
+      openDailyNoteModal(getActiveDateYMD());
     });
   }
   const drawerFinanceBtn = document.getElementById('drawerFinanceBtn');
   if (drawerFinanceBtn) {
     drawerFinanceBtn.addEventListener('click', () => {
       closeSideMenu();
-      openDailyFinanceModal(formatDateYMD(currentDate));
+      openDailyFinanceModal(getActiveDateYMD());
     });
   }
 
@@ -11375,14 +11457,14 @@ function setupUIEventListeners() {
   const headerNoteBtn = document.getElementById('headerNoteBtn');
   if (headerNoteBtn) {
     headerNoteBtn.addEventListener('click', () => {
-      openDailyNoteModal(formatDateYMD(currentDate));
+      openDailyNoteModal(getActiveDateYMD());
     });
   }
 
   const headerFinanceBtn = document.getElementById('headerFinanceBtn');
   if (headerFinanceBtn) {
     headerFinanceBtn.addEventListener('click', () => {
-      openDailyFinanceModal(formatDateYMD(currentDate));
+      openDailyFinanceModal(getActiveDateYMD());
     });
   }
 
@@ -11445,6 +11527,18 @@ function setupUIEventListeners() {
   if (resetFinanceFormBtn) {
     resetFinanceFormBtn.addEventListener('click', resetFinanceForm);
   }
+  const financeDateInput = document.getElementById('financeTxnDate');
+  if (financeDateInput) {
+    financeDateInput.addEventListener('change', () => setFinanceModalDate(financeDateInput.value));
+  }
+  const shiftFinanceDate = (days) => {
+    const cur = document.getElementById('financeTxnDate').value;
+    if (!cur) return;
+    const [y, m, d] = cur.split('-').map(Number);
+    setFinanceModalDate(formatDateYMD(new Date(y, m - 1, d + days)));
+  };
+  document.getElementById('financeDatePrevBtn')?.addEventListener('click', () => shiftFinanceDate(-1));
+  document.getElementById('financeDateNextBtn')?.addEventListener('click', () => shiftFinanceDate(1));
   const financeForm = document.getElementById('financeTxnForm');
   if (financeForm) {
     financeForm.addEventListener('submit', async (e) => {
