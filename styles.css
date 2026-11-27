@@ -4780,3 +4780,152 @@ input:focus, select:focus, textarea:focus {
     font-size: 0.85rem;
   }
 }
+
+/* ==========================================================================
+   v1.13.0 — SMS inbox (bank alerts shared to the app)
+   ========================================================================== */
+.sms-count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--accent-rose);
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1;
+}
+.drawer-nav-item .sms-count-badge { margin-left: auto; }
+.finance-sms-row {
+  display: flex;
+  justify-content: flex-end;
+  margin: -4px 0 10px;
+}
+
+.sms-inbox-body {
+  padding: 12px 14px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.sms-inbox-help {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+.sms-paste-box {
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 6px 10px;
+}
+.sms-paste-box summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-main);
+}
+.sms-paste-box textarea {
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px;
+  font-size: 0.85rem;
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  color: var(--text-main);
+  border: 1px solid var(--border-color);
+  resize: vertical;
+}
+.sms-paste-actions { display: flex; justify-content: flex-end; margin-top: 6px; }
+.sms-inbox-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  font-size: 0.8rem;
+}
+.sms-suspense-label { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); }
+.sms-inbox-list { display: flex; flex-direction: column; gap: 10px; }
+.sms-inbox-empty {
+  text-align: center;
+  padding: 24px 10px;
+  color: var(--text-muted);
+}
+.sms-inbox-empty i { font-size: 1.8rem; opacity: 0.5; }
+.sms-inbox-empty p { margin: 6px 0 0; }
+
+.sms-card {
+  border: 1px solid var(--border-color);
+  border-left: 4px solid #f59e0b;
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sms-card.ready { border-left-color: #10b981; }
+.sms-card select,
+.sms-card input {
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  padding: 0 8px;
+  font-size: 0.85rem;
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  color: var(--text-main);
+  border: 1px solid var(--border-color);
+}
+.sms-card-top {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.sms-card-top .sms-date { grid-column: 1 / -1; }
+.sms-card-meta {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  word-break: break-word;
+}
+.sms-card-accts { display: grid; grid-template-columns: 1fr; gap: 6px; }
+.sms-raw summary { cursor: pointer; font-size: 0.75rem; color: var(--text-muted); }
+.sms-raw p {
+  margin: 6px 0 0;
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-muted);
+}
+.sms-card-foot {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 6px;
+}
+.sms-card-foot .btn-sm { height: 34px; justify-content: center; min-width: 72px; }
+.sms-card-foot .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
+.sms-card-status { font-size: 0.78rem; color: #f59e0b; }
+.sms-card.ready .sms-card-status { color: #10b981; font-weight: 600; }
+
+.sms-inbox-footer {
+  padding: 10px 14px calc(10px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  margin-top: 0;
+  gap: 10px;
+}
+.sms-inbox-summary { font-size: 0.8rem; color: var(--text-muted); }
+.sms-inbox-footer .btn-primary { height: 38px; justify-content: center; }
+.sms-inbox-footer .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
+
+@media (min-width: 600px) {
+  .sms-card-top { grid-template-columns: 1fr 1fr 1fr; }
+  .sms-card-top .sms-date { grid-column: auto; }
+  .sms-card-accts { grid-template-columns: 1fr 1fr; }
+}

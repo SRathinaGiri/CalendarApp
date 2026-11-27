@@ -131,7 +131,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.12.0';
+const APP_VERSION = 'v1.13.0';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -601,6 +601,9 @@ function ensureSchemaUpToDate() {
     } catch (e) {
       console.warn('Chart of accounts schema note:', e);
     }
+
+    // SMS inbox (bank alerts shared to the app) and its account-mapping rules
+    try { ensureSmsInboxSchema(); } catch (e) { console.warn('SMS inbox schema note:', e); }
 
     // Auto-transition past planned/confirmed schedules to completed
     try {
@@ -3541,6 +3544,8 @@ async function runPostUnlockIntegrityCheck() {
 
 // Everything that should happen in the background after any successful unlock.
 function afterUnlockBackgroundTasks() {
+  // Text shared to the app while it was locked waits in the native queue until now.
+  setTimeout(() => { refreshSmsInboxBadges(); drainNativeShareInbox(); }, 300);
   const key = currentEncryptionKey;
   if (!key) return;
   setTimeout(async () => {
@@ -6139,6 +6144,440 @@ function updateFinanceDateHint(dateStr) {
   hint.classList.remove('hidden');
 }
 
+/* ==========================================================================
+   SMS INBOX: bank / UPI / card alerts shared to the app, posted as transactions in one go
+   --------------------------------------------------------------------------
+   - Android: Share -> "Calendar: SMS inbox" queues the text natively (ShareInboxPlugin); it is
+     moved into the encrypted database once the app is unlocked. Any platform: paste the text.
+   - sms-parser.js reads amount, payment/receipt, date, own account (last 4), party and reference.
+   - Account mapping rules: own account last-4 -> bank/card account; party -> ledger account.
+     Choosing an account once fills every other waiting message with the same account or party.
+   - The raw SMS text is kept only until the item is posted or ignored, then cleared.
+     OTP / verification-code messages are never saved. The UPI/UTR reference is kept to skip re-shares.
+   ========================================================================== */
+const SMS_SUSPENSE_ACCOUNT = 'Suspense A/c';
+
+function ensureSmsInboxSchema() {
+  if (!db) return;
+  db.run(`
+    CREATE TABLE IF NOT EXISTS sms_inbox (
+      id TEXT PRIMARY KEY,
+      received_at TEXT,
+      raw_text TEXT,
+      txn_date TEXT,
+      direction TEXT,
+      amount REAL,
+      acct_last4 TEXT,
+      party TEXT,
+      ref TEXT,
+      bank_account TEXT,
+      party_account TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      txn_id TEXT,
+      created_at TEXT,
+      updated_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS sms_rules (
+      kind TEXT NOT NULL,
+      rule_key TEXT NOT NULL,
+      account TEXT NOT NULL,
+      updated_at TEXT,
+      PRIMARY KEY (kind, rule_key)
+    );
+  `);
+}
+
+function smsPartyKey(party) {
+  return String(party || '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function smsGetRule(kind, key) {
+  if (!db || !key) return '';
+  const res = db.exec("SELECT account FROM sms_rules WHERE kind = ? AND rule_key = ?", [kind, key]);
+  const name = res.length && res[0].values.length ? res[0].values[0][0] : '';
+  const acct = name ? findAccount(name) : null;
+  return acct ? acct.name : '';
+}
+
+function smsSetRule(kind, key, account) {
+  if (!db || !key || !account) return;
+  db.run("INSERT OR REPLACE INTO sms_rules (kind, rule_key, account, updated_at) VALUES (?, ?, ?, ?)",
+    [kind, key, account, new Date().toISOString()]);
+}
+
+function smsInboxCanSave() {
+  const overlay = document.getElementById('appLockOverlay');
+  const locked = overlay && !overlay.classList.contains('hidden');
+  return !!db && !locked && !biometricSnapshotFallbackActive && (!isPinConfigured() || !!currentEncryptionKey);
+}
+
+function getPendingSmsItems() {
+  if (!db) return [];
+  try {
+    const res = db.exec("SELECT * FROM sms_inbox WHERE status = 'pending' ORDER BY txn_date ASC, received_at ASC");
+    return res.length ? rowsToObjects(res[0]) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+// Adds shared texts to the inbox. items: [{ text, at }] (at = ms timestamp). Returns counts; saves once.
+async function smsInboxIntake(items) {
+  const out = { added: 0, otp: 0, duplicate: 0 };
+  if (!db || !window.SmsParser) return out;
+  ensureSmsInboxSchema();
+  const nowIso = new Date().toISOString();
+  for (const item of items) {
+    const receivedAt = item.at ? new Date(item.at) : new Date();
+    const receivedYmd = formatDateYMD(receivedAt);
+    for (const text of SmsParser.splitSharedText(item.text)) {
+      if (SmsParser.isOtpMessage(text)) { out.otp++; continue; }
+      const p = SmsParser.parseBankSms(text, receivedYmd);
+      const dup = db.exec(
+        "SELECT 1 FROM sms_inbox WHERE (? != '' AND ref = ?) OR (status = 'pending' AND raw_text = ?) LIMIT 1",
+        [p.ref, p.ref, text]);
+      if (dup.length && dup[0].values.length) { out.duplicate++; continue; }
+      const id = 'sms_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+      db.run(`INSERT INTO sms_inbox (id, received_at, raw_text, txn_date, direction, amount, acct_last4, party, ref,
+                bank_account, party_account, status, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+        [id, receivedAt.toISOString(), text, p.date || receivedYmd, p.direction || '', p.amount || 0,
+         p.acctLast4 || '', p.party || '', p.ref || '',
+         smsGetRule('acct', p.acctLast4), smsGetRule('party', smsPartyKey(p.party)), nowIso, nowIso]);
+      out.added++;
+    }
+  }
+  if (out.added) await saveDbToIndexedDB();
+  return out;
+}
+
+function smsIntakeToast(r) {
+  const bits = [];
+  if (r.added) bits.push(`📩 ${r.added} message${r.added > 1 ? 's' : ''} saved to SMS inbox`);
+  if (r.duplicate) bits.push(`${r.duplicate} already in the inbox`);
+  if (r.otp) bits.push(`${r.otp} OTP message${r.otp > 1 ? 's' : ''} not saved`);
+  if (bits.length) showToast(bits.join(' · '), r.added ? 'success' : 'info', 4500);
+}
+
+function getShareInboxPlugin() {
+  return (window.SRG_NATIVE && window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.ShareInbox) || null;
+}
+
+let smsDrainBusy = false;
+// Moves texts shared on Android into the database. Runs at unlock and whenever a new share arrives.
+async function drainNativeShareInbox() {
+  const plugin = getShareInboxPlugin();
+  if (!plugin || smsDrainBusy || !smsInboxCanSave()) return;
+  smsDrainBusy = true;
+  let items = [];
+  try {
+    const res = await plugin.drain();
+    items = (res && res.items) || [];
+    if (!items.length) return;
+    const r = await smsInboxIntake(items);
+    smsIntakeToast(r);
+    refreshSmsInboxBadges();
+    if (r.added) openSmsInboxModal();
+  } catch (err) {
+    console.error('SMS inbox: could not save shared text', err);
+    // Not saved: give the texts back to the native queue so nothing is lost.
+    if (items.length) { try { await plugin.requeue({ items }); } catch (e) {} }
+    showToast('⚠ Shared text could not be saved yet: ' + (err && err.message ? err.message : err), 'warning', 6000);
+  } finally {
+    smsDrainBusy = false;
+  }
+}
+
+function initNativeShareInbox() {
+  const plugin = getShareInboxPlugin();
+  if (!plugin || typeof plugin.addListener !== 'function') return;
+  try { plugin.addListener('shared', () => { drainNativeShareInbox(); }); } catch (e) {}
+}
+
+function refreshSmsInboxBadges() {
+  let n = 0;
+  try {
+    const res = db ? db.exec("SELECT COUNT(*) FROM sms_inbox WHERE status = 'pending'") : [];
+    n = res.length ? res[0].values[0][0] : 0;
+  } catch (e) { n = 0; }
+  document.querySelectorAll('[data-sms-count]').forEach(el => {
+    el.textContent = n ? String(n) : '';
+    el.classList.toggle('hidden', !n);
+  });
+}
+
+// Ready = everything needed for a balanced voucher is present.
+function smsItemProblem(it, useSuspense) {
+  if (it.direction !== 'payment' && it.direction !== 'receipt') return 'Choose Payment or Receipt';
+  if (!(toPaise(it.amount) > 0)) return 'Enter the amount';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(it.txn_date || '')) return 'Enter the date';
+  const bank = findAccount(it.bank_account);
+  if (!bank) return 'Choose the bank / card account';
+  const party = findAccount(it.party_account) || (useSuspense ? { name: SMS_SUSPENSE_ACCOUNT } : null);
+  if (!party) return it.direction === 'payment' ? 'Choose who was paid' : 'Choose who paid';
+  if (bank.name.toLowerCase() === party.name.toLowerCase()) return 'Bank and party accounts must differ';
+  return null;
+}
+
+function smsUpdateItem(id, fields) {
+  const cols = Object.keys(fields);
+  if (!cols.length) return;
+  db.run(`UPDATE sms_inbox SET ${cols.map(c => c + ' = ?').join(', ')}, updated_at = ? WHERE id = ?`,
+    [...cols.map(c => fields[c]), new Date().toISOString(), id]);
+}
+
+// Remember the choice and fill every other waiting message that has the same account / party and no choice yet.
+function smsApplyMapping(kind, key, account) {
+  if (!key || !account) return 0;
+  smsSetRule(kind, key, account);
+  const col = kind === 'acct' ? 'bank_account' : 'party_account';
+  const items = getPendingSmsItems().filter(it =>
+    !findAccount(it[col]) && (kind === 'acct' ? it.acct_last4 === key : smsPartyKey(it.party) === key));
+  items.forEach(it => smsUpdateItem(it.id, { [col]: account }));
+  return items.length;
+}
+
+function smsPersistQuietly() {
+  saveDbToIndexedDB().catch(err => showToast('⚠ Could not save: ' + err.message, 'error', 5000));
+}
+
+function openSmsInboxModal() {
+  const modal = document.getElementById('smsInboxModal');
+  if (!modal || !db) return;
+  ensureSmsInboxSchema();
+  const chk = document.getElementById('smsSuspenseChk');
+  if (chk) { let v = null; try { v = localStorage.getItem('srg_sms_suspense'); } catch (e) {} chk.checked = v === '1'; }
+  renderSmsInbox();
+  modal.classList.remove('hidden');
+}
+
+function closeSmsInboxModal() {
+  document.getElementById('smsInboxModal')?.classList.add('hidden');
+}
+
+function smsAccountSelect(cls, value, placeholder, accounts) {
+  const sel = document.createElement('select');
+  sel.className = cls;
+  const first = document.createElement('option');
+  first.value = '';
+  first.textContent = placeholder;
+  sel.appendChild(first);
+  ACCOUNT_TYPE_ORDER.forEach(type => {
+    const group = accounts.filter(a => a.account_type === type);
+    if (!group.length) return;
+    const og = document.createElement('optgroup');
+    og.label = ACCOUNT_TYPES[type];
+    group.forEach(a => {
+      const o = document.createElement('option');
+      o.value = a.name;
+      o.textContent = a.name;
+      og.appendChild(o);
+    });
+    sel.appendChild(og);
+  });
+  const found = value ? findAccount(value) : null;
+  sel.value = found ? found.name : '';
+  return sel;
+}
+
+function renderSmsInbox() {
+  const list = document.getElementById('smsInboxList');
+  const summary = document.getElementById('smsInboxSummary');
+  const postAll = document.getElementById('smsPostAllBtn');
+  if (!list) return;
+  const useSuspense = !!document.getElementById('smsSuspenseChk')?.checked;
+  const items = getPendingSmsItems();
+  const accounts = getChartOfAccounts();
+  list.innerHTML = '';
+
+  if (!items.length) {
+    list.innerHTML = '<div class="sms-inbox-empty"><i class="fa-solid fa-inbox"></i><p>No messages waiting.</p>' +
+      '<p class="hint-small">' + (getShareInboxPlugin()
+        ? 'In your SMS app, long-press a bank message → Share → <b>Calendar: SMS inbox</b>.'
+        : 'Paste bank SMS text above.') + '</p></div>';
+  }
+
+  let ready = 0;
+  items.forEach(it => {
+    const problem = smsItemProblem(it, useSuspense);
+    if (!problem) ready++;
+    const card = document.createElement('div');
+    card.className = 'sms-card ' + (problem ? 'incomplete' : 'ready');
+    card.dataset.id = it.id;
+
+    const top = document.createElement('div');
+    top.className = 'sms-card-top';
+    const type = document.createElement('select');
+    type.className = 'sms-type';
+    type.setAttribute('aria-label', 'Voucher type');
+    [['', 'Type?'], ['payment', '🔴 Payment'], ['receipt', '🟢 Receipt']].forEach(([v, l]) => {
+      const o = document.createElement('option'); o.value = v; o.textContent = l; type.appendChild(o);
+    });
+    type.value = it.direction || '';
+    const amount = document.createElement('input');
+    amount.type = 'number'; amount.step = '0.01'; amount.min = '0.01'; amount.inputMode = 'decimal';
+    amount.className = 'sms-amount'; amount.placeholder = '₹ amount'; amount.setAttribute('aria-label', 'Amount');
+    amount.value = it.amount > 0 ? String(it.amount) : '';
+    const date = document.createElement('input');
+    date.type = 'date'; date.className = 'sms-date'; date.value = it.txn_date || ''; date.setAttribute('aria-label', 'Date');
+    top.append(type, amount, date);
+
+    const meta = document.createElement('div');
+    meta.className = 'sms-card-meta';
+    const metaBits = [];
+    if (it.acct_last4) metaBits.push(`A/c ··${it.acct_last4}`);
+    if (it.party) metaBits.push(it.party);
+    if (it.ref) metaBits.push(`Ref ${it.ref}`);
+    meta.textContent = metaBits.length ? metaBits.join(' · ') : 'Could not read this message: fill in the details';
+
+    const accts = document.createElement('div');
+    accts.className = 'sms-card-accts';
+    const bankSel = smsAccountSelect('sms-bank', it.bank_account,
+      it.acct_last4 ? `Bank / card for ··${it.acct_last4}…` : 'Bank / card account…', accounts);
+    bankSel.setAttribute('aria-label', 'Bank or card account');
+    const partySel = smsAccountSelect('sms-party', it.party_account,
+      useSuspense ? `${SMS_SUSPENSE_ACCOUNT} (default)` : (it.direction === 'receipt' ? 'Received from…' : 'Paid to / expense…'), accounts);
+    partySel.setAttribute('aria-label', it.direction === 'receipt' ? 'Received from' : 'Paid to');
+    accts.append(bankSel, partySel);
+
+    const raw = document.createElement('details');
+    raw.className = 'sms-raw';
+    const sum = document.createElement('summary');
+    sum.textContent = 'Original message';
+    const pre = document.createElement('p');
+    pre.textContent = it.raw_text || '';
+    raw.append(sum, pre);
+
+    const foot = document.createElement('div');
+    foot.className = 'sms-card-foot';
+    const status = document.createElement('span');
+    status.className = 'sms-card-status';
+    status.textContent = problem ? problem : 'Ready';
+    const ignore = document.createElement('button');
+    ignore.type = 'button'; ignore.className = 'btn-secondary btn-sm'; ignore.textContent = 'Ignore';
+    const post = document.createElement('button');
+    post.type = 'button'; post.className = 'btn-primary btn-sm'; post.innerHTML = '<i class="fa-solid fa-check"></i> Post';
+    post.disabled = !!problem;
+    foot.append(status, ignore, post);
+
+    card.append(top, meta, accts, raw, foot);
+    list.appendChild(card);
+
+    // Edits are saved as they are made, so the inbox can be finished later.
+    type.addEventListener('change', () => { smsUpdateItem(it.id, { direction: type.value }); smsPersistQuietly(); renderSmsInbox(); });
+    amount.addEventListener('change', () => { smsUpdateItem(it.id, { amount: toPaise(amount.value) / 100 }); smsPersistQuietly(); renderSmsInbox(); });
+    date.addEventListener('change', () => { smsUpdateItem(it.id, { txn_date: date.value }); smsPersistQuietly(); renderSmsInbox(); });
+    bankSel.addEventListener('change', () => {
+      smsUpdateItem(it.id, { bank_account: bankSel.value });
+      const more = bankSel.value ? smsApplyMapping('acct', it.acct_last4, bankSel.value) : 0;
+      smsPersistQuietly(); renderSmsInbox();
+      if (more) showToast(`Also filled ${more} other message${more > 1 ? 's' : ''} from A/c ··${it.acct_last4}`, 'info', 3000);
+    });
+    partySel.addEventListener('change', () => {
+      smsUpdateItem(it.id, { party_account: partySel.value });
+      const more = partySel.value ? smsApplyMapping('party', smsPartyKey(it.party), partySel.value) : 0;
+      smsPersistQuietly(); renderSmsInbox();
+      if (more) showToast(`Also filled ${more} other message${more > 1 ? 's' : ''} for ${it.party}`, 'info', 3000);
+    });
+    ignore.addEventListener('click', async () => {
+      smsUpdateItem(it.id, { status: 'ignored', raw_text: '' });
+      await saveDbToIndexedDB().catch(() => {});
+      renderSmsInbox(); refreshSmsInboxBadges();
+    });
+    post.addEventListener('click', () => postSmsInboxItems([it.id]));
+  });
+
+  if (summary) summary.textContent = items.length ? `${ready} of ${items.length} ready` : '';
+  if (postAll) {
+    postAll.disabled = !ready;
+    postAll.querySelector('span').textContent = ready ? `Post all ready (${ready})` : 'Post all ready';
+  }
+  refreshSmsInboxBadges();
+}
+
+// Posts the given inbox items (or all ready ones) as Receipt / Payment vouchers in one database save.
+async function postSmsInboxItems(ids = null) {
+  if (!db) return;
+  const useSuspense = !!document.getElementById('smsSuspenseChk')?.checked;
+  const items = getPendingSmsItems().filter(it => !ids || ids.includes(it.id));
+  const ready = items.filter(it => !smsItemProblem(it, useSuspense));
+  if (!ready.length) { showToast('⚠ Nothing is ready to post yet.', 'warning', 3500); return; }
+  const now = new Date().toISOString();
+  const touchedDates = new Set();
+  try {
+    db.run('BEGIN');
+    if (useSuspense && ready.some(it => !findAccount(it.party_account)) && !findAccount(SMS_SUSPENSE_ACCOUNT)) {
+      db.run("INSERT INTO chart_of_accounts (name, account_type, created_at, updated_at) VALUES (?, 'unclassified', ?, ?)",
+        [SMS_SUSPENSE_ACCOUNT, now, now]);
+    }
+    ready.forEach((it, i) => {
+      const bank = findAccount(it.bank_account).name;
+      const party = (findAccount(it.party_account) || findAccount(SMS_SUSPENSE_ACCOUNT)).name;
+      const isPayment = it.direction === 'payment';
+      const txnId = 'txn_' + Date.now() + '_' + i + '_' + Math.random().toString(36).slice(2, 6);
+      const desc = [it.party || 'Bank SMS', it.ref ? 'Ref ' + it.ref : '', 'via SMS'].filter(Boolean).join(' · ');
+      db.run(`INSERT INTO daily_transactions (id, txn_date, type, debit_account, credit_account, amount, description, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [txnId, it.txn_date, it.direction, isPayment ? party : bank, isPayment ? bank : party,
+         toPaise(it.amount) / 100, desc, now, now]);
+      smsUpdateItem(it.id, { status: 'posted', txn_id: txnId, raw_text: '' });
+      // Remember mappings for the next messages (Suspense is a fallback, not a choice to remember).
+      if (it.acct_last4) smsSetRule('acct', it.acct_last4, bank);
+      if (it.party && findAccount(it.party_account)) smsSetRule('party', smsPartyKey(it.party), party);
+      touchedDates.add(it.txn_date);
+    });
+    db.run('COMMIT');
+  } catch (err) {
+    try { db.run('ROLLBACK'); } catch (e) {}
+    showToast('❌ Could not post: ' + err.message, 'error', 5000);
+    return;
+  }
+  try {
+    await saveDbToIndexedDB();
+  } catch (err) {
+    showToast('❌ Posted in this session but not saved: ' + err.message, 'error', 6000);
+  }
+  renderCurrentView();
+  populateFinanceAccountsDatalists();
+  const finModal = document.getElementById('dailyFinanceModal');
+  const finDate = document.getElementById('financeTxnDate');
+  if (finModal && !finModal.classList.contains('hidden') && finDate) renderFinanceTransactionsList(finDate.value);
+  renderSmsInbox();
+  const left = items.length - ready.length;
+  showToast(`✓ Posted ${ready.length} transaction${ready.length > 1 ? 's' : ''} across ${touchedDates.size} date${touchedDates.size > 1 ? 's' : ''}` +
+    (left ? ` · ${left} still need details` : ''), 'success', 4500);
+}
+
+function initSmsInboxUi() {
+  document.getElementById('closeSmsInboxBtn')?.addEventListener('click', closeSmsInboxModal);
+  document.getElementById('smsPostAllBtn')?.addEventListener('click', () => postSmsInboxItems(null));
+  document.getElementById('smsManageAccountsBtn')?.addEventListener('click', openChartOfAccountsModal);
+  document.getElementById('smsSuspenseChk')?.addEventListener('change', (e) => {
+    lsSet('srg_sms_suspense', e.target.checked ? '1' : '0');
+    renderSmsInbox();
+  });
+  document.querySelectorAll('[data-open-sms-inbox]').forEach(btn => btn.addEventListener('click', () => {
+    closeSideMenu();
+    openSmsInboxModal();
+  }));
+  document.getElementById('smsPasteAddBtn')?.addEventListener('click', async () => {
+    const box = document.getElementById('smsPasteInput');
+    const text = (box.value || '').trim();
+    if (!text) return;
+    if (!smsInboxCanSave()) { showToast('⚠ Unlock the app to save.', 'warning', 3500); return; }
+    try {
+      const r = await smsInboxIntake([{ text, at: Date.now() }]);
+      smsIntakeToast(r);
+      if (!r.added && !r.duplicate && !r.otp) showToast('Nothing to add.', 'info', 2500);
+      box.value = '';
+      renderSmsInbox();
+    } catch (err) {
+      showToast('❌ Could not save: ' + err.message, 'error', 5000);
+    }
+  });
+  initNativeShareInbox();
+}
+
 // The date the user is looking at: the day view's date, else the day tapped in the month grid.
 // Header and drawer shortcuts (Notes, Finance) open for this date instead of always today.
 function getActiveDateYMD() {
@@ -6668,6 +7107,8 @@ function closeChartOfAccountsModal() {
   const financeModal = document.getElementById('dailyFinanceModal');
   const financeDate = document.getElementById('financeTxnDate');
   if (financeModal && !financeModal.classList.contains('hidden') && financeDate) renderFinanceTransactionsList(financeDate.value);
+  const smsModal = document.getElementById('smsInboxModal');
+  if (smsModal && !smsModal.classList.contains('hidden')) renderSmsInbox();
 }
 
 function renderChartOfAccounts() {
@@ -11585,6 +12026,7 @@ function setupUIEventListeners() {
   });
   const financeManageAccountsBtn = document.getElementById('financeManageAccountsBtn');
   if (financeManageAccountsBtn) financeManageAccountsBtn.addEventListener('click', openChartOfAccountsModal);
+  initSmsInboxUi();
   const closeCoaBtn = document.getElementById('closeChartOfAccountsModalBtn');
   if (closeCoaBtn) closeCoaBtn.addEventListener('click', closeChartOfAccountsModal);
   const coaAddForm = document.getElementById('coaAddForm');

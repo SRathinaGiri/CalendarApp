@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented here. Versions follow the in-app version (`APP_VERSION` in `app.js`, `CACHE_NAME` in `sw.js`).
 
+## v1.13.0 — 2026-11-27
+
+### SMS inbox: bank alerts → transactions in one tap
+- **Android:** in your SMS app, long-press a bank / UPI / card message → **Share** → **Calendar: SMS inbox**. Several messages can be shared together. Shared while the app is locked, they wait and move in after you unlock. No SMS permission is used: the app sees only what you share.
+- **Any platform:** side menu → **SMS Inbox**, or **SMS inbox** in Daily Receipts & Payments → *Paste SMS text*.
+- Each message is read for amount, Payment/Receipt, date (from the message, so yesterday's alert posts on yesterday), your account or card (last 4 digits), the party (UPI ID, merchant or name) and the UPI/IMPS/UTR reference. Anything can be corrected on the card.
+- **Map once:** choose the bank/card account for "··1234" and the ledger account for a party (e.g. swiggy@icici → Food Expenses) once; every waiting and future message with the same account or party fills in by itself.
+- **Post all ready** posts every complete message as a Receipt (Dr Bank, Cr party) or Payment (Dr party, Cr Bank) voucher in one go. Optional: post unmapped parties to **Suspense A/c** and reclassify later.
+- **Privacy:** OTP and verification-code messages are never saved. The original SMS text is kept only until the message is posted or ignored. The reference number is kept so the same SMS shared again is skipped.
+- Parser checks for SBI, HDFC, ICICI, Axis and Kotak formats, credit-card spends, NEFT credits and refunds run with the storage tests (`npm run test:sms-parser`).
+
 ## v1.12.0 — 2026-11-27
 
 ### Finance entries on the right date

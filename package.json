@@ -6,7 +6,8 @@
   "scripts": {
     "build:web": "node scripts/build-web.mjs",
     "sync": "npm run build:web && npx cap sync android",
-    "test:native-store": "node scripts/test-native-store.mjs"
+    "test:native-store": "node scripts/test-native-store.mjs && node scripts/test-sms-parser.mjs",
+    "test:sms-parser": "node scripts/test-sms-parser.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^8.6.0",

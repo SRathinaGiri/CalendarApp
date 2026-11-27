@@ -24,6 +24,7 @@
   <script src="jszip.min.js"></script>
   <script src="pdf.min.js"></script>
   <script src="taxonomy_seed.js"></script>
+  <script src="sms-parser.js"></script>
   <script src="pdf-export.js"></script>
   <script src="moon-phase.js"></script>
   <script src="holidays-in.js"></script>
@@ -192,6 +193,11 @@
           <button id="drawerFinanceBtn" class="drawer-nav-item">
             <i class="fa-solid fa-coins text-emerald"></i>
             <span>Daily Receipts & Payments</span>
+          </button>
+          <button id="drawerSmsInboxBtn" class="drawer-nav-item" data-open-sms-inbox>
+            <i class="fa-solid fa-inbox text-emerald"></i>
+            <span>SMS Inbox (bank alerts)</span>
+            <span class="sms-count-badge hidden" data-sms-count></span>
           </button>
           <button id="drawerAccountsBtn" class="drawer-nav-item">
             <i class="fa-solid fa-sitemap text-emerald"></i>
@@ -759,6 +765,11 @@
             <button type="button" id="financeDateNextBtn" class="btn-secondary btn-sm" title="Next day" aria-label="Next day"><i class="fa-solid fa-chevron-right"></i></button>
           </div>
           <p id="financeDateHint" class="finance-date-hint hidden"></p>
+          <div class="finance-sms-row">
+            <button type="button" id="financeSmsInboxBtn" class="btn-secondary btn-sm" data-open-sms-inbox title="Bank SMS shared to the app, waiting to be posted">
+              <i class="fa-solid fa-inbox"></i> SMS inbox <span class="sms-count-badge hidden" data-sms-count></span>
+            </button>
+          </div>
 
           <!-- Summary Cards -->
           <div class="finance-summary-grid" style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 16px;">
@@ -857,6 +868,33 @@
               <button type="submit" class="btn-primary btn-sm"><i class="fa-solid fa-floppy-disk"></i> Save Transaction</button>
             </div>
           </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL: SMS INBOX (bank alerts shared to the app → transactions) -->
+    <div id="smsInboxModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="smsInboxTitle">
+      <div class="modal-card" style="max-width: 600px;">
+        <div class="modal-header">
+          <h3 id="smsInboxTitle"><i class="fa-solid fa-inbox" style="color: #34d399;"></i> SMS Inbox</h3>
+          <button class="modal-close-btn" id="closeSmsInboxBtn" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="modal-body sms-inbox-body">
+          <p class="sms-inbox-help">Pick the bank/card account and the party once; other messages from the same account or party fill in by themselves. Then post them all in one tap.</p>
+          <details class="sms-paste-box">
+            <summary><i class="fa-solid fa-paste"></i> Paste SMS text</summary>
+            <textarea id="smsPasteInput" rows="4" placeholder="Paste one or more bank SMS (leave a blank line between messages)"></textarea>
+            <div class="sms-paste-actions"><button type="button" id="smsPasteAddBtn" class="btn-secondary btn-sm"><i class="fa-solid fa-plus"></i> Add to inbox</button></div>
+          </details>
+          <div class="sms-inbox-toolbar">
+            <label class="sms-suspense-label"><input type="checkbox" id="smsSuspenseChk"> Post unmapped parties to <b>Suspense A/c</b></label>
+            <button type="button" id="smsManageAccountsBtn" class="btn-link-sm"><i class="fa-solid fa-sitemap"></i> Chart of accounts</button>
+          </div>
+          <div id="smsInboxList" class="sms-inbox-list"></div>
+        </div>
+        <div class="modal-footer sms-inbox-footer">
+          <span id="smsInboxSummary" class="sms-inbox-summary"></span>
+          <button type="button" id="smsPostAllBtn" class="btn-primary"><i class="fa-solid fa-check-double"></i> <span>Post all ready</span></button>
         </div>
       </div>
     </div>
