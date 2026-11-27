@@ -73,9 +73,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release list --limit 200 --json tagName,createdAt \
-            --jq '[.[] | select(.tagName | startswith("windows-"))] | sort_by(.createdAt) | reverse | .[1:][] | .tagName' |
+          # Keep the release this run just published; delete every other windows-* release.
+          # (Not "newest createdAt": GitHub sets that from the commit date, so two builds of one commit tie.)
+          KEEP="windows-v${APP_VERSION}-build${BUILD_NO}"
+          gh release list --limit 200 --json tagName \
+            --jq '.[] | select(.tagName | startswith("windows-")) | .tagName' |
           while read -r tag; do
+            [ "$tag" = "$KEEP" ] && continue
             echo "Deleting old release $tag"
             gh release delete "$tag" --cleanup-tag --yes
           done
