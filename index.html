@@ -880,9 +880,10 @@
           <button class="modal-close-btn" id="closeSmsInboxBtn" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
         </div>
         <div class="modal-body sms-inbox-body">
-          <p class="sms-inbox-help">Pick the bank/card account and the party once; other messages from the same account or party fill in by themselves. Then post them all in one tap.</p>
+          <button type="button" id="smsClipboardBtn" class="btn-primary sms-clipboard-btn"><i class="fa-solid fa-clipboard"></i> Paste copied SMS</button>
+          <p class="sms-inbox-help">In your SMS app: long-press a bank message → <b>Copy</b> (select several to copy them together), then tap <b>Paste copied SMS</b>. Pick the bank account and the party once; similar messages fill in by themselves.</p>
           <details class="sms-paste-box">
-            <summary><i class="fa-solid fa-paste"></i> Paste SMS text</summary>
+            <summary><i class="fa-solid fa-keyboard"></i> Type or paste by hand</summary>
             <textarea id="smsPasteInput" rows="4" placeholder="Paste one or more bank SMS (leave a blank line between messages)"></textarea>
             <div class="sms-paste-actions"><button type="button" id="smsPasteAddBtn" class="btn-secondary btn-sm"><i class="fa-solid fa-plus"></i> Add to inbox</button></div>
           </details>

@@ -90,5 +90,10 @@ if (multi.length !== 3) { failed++; console.error(`✗ split: expected 3, got ${
 const single = splitSharedText('Dear customer,\n\nRs.60 paid to a@ybl from A/c XX1234');
 if (single.length !== 1) { failed++; console.error(`✗ split single: expected 1, got ${single.length}`); } else console.log('✓ one message with a blank line stays whole');
 
+const perLine = splitSharedText('Rs.60 paid to a@ybl from A/c XX1234 on 26-11-26\nRs.90 paid to b@ybl from A/c XX1234 on 26-11-26');
+if (perLine.length !== 2) { failed++; console.error(`✗ split per line: expected 2, got ${perLine.length}`); } else console.log('✓ split 2 messages copied one per line');
+const hdfc = splitSharedText('Sent Rs.1,250.00\nFrom HDFC Bank A/C *5678\nTo swiggy@icici\nOn 26/11/26\nRef 433011112222');
+if (hdfc.length !== 1) { failed++; console.error(`✗ multi-line HDFC alert split into ${hdfc.length}`); } else console.log('✓ multi-line HDFC alert stays whole');
+
 if (failed) { console.error(`\n${failed} check(s) failed`); process.exit(1); }
 console.log('\nAll SMS parser checks passed');

@@ -182,10 +182,14 @@
   function splitSharedText(text) {
     const whole = String(text || '').trim();
     if (!whole) return [];
+    const isMoney = p => !!(findAmount(p.replace(/\s+/g, ' ')) && findDirection(p));
     const parts = whole.split(/\n\s*\n+/).map(s => s.trim()).filter(Boolean);
-    if (parts.length < 2) return [whole];
-    const money = parts.filter(p => findAmount(p.replace(/\s+/g, ' ')) && findDirection(p));
-    return money.length >= 2 ? parts : [whole];
+    if (parts.length >= 2 && parts.filter(isMoney).length >= 2) return parts;
+    // Copied together, one message per line: split only when every line is a money message
+    // (a single multi-line alert, e.g. HDFC's, has lines without an amount and stays whole).
+    const lines = whole.split(/\n+/).map(s => s.trim()).filter(Boolean);
+    if (lines.length >= 2 && lines.every(isMoney)) return lines;
+    return [whole];
   }
 
   const api = { parseBankSms, isOtpMessage, splitSharedText };

@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented here. Versions follow the in-app version (`APP_VERSION` in `app.js`, `CACHE_NAME` in `sw.js`).
 
+## v1.13.1 — 2026-11-27
+
+### SMS inbox: copy instead of share
+- Google Messages and many other SMS apps have no **Share** for a single message (only Copy, Forward, Delete). New **Paste copied SMS** button at the top of the SMS inbox: long-press the bank message → **Copy**, open the inbox, tap the button. Select several messages before copying to bring them in together.
+- Messages copied together one per line are split into separate entries; a single multi-line alert stays whole.
+- Text that doesn't look like a bank SMS asks before it is added. If the clipboard can't be read, the manual paste box opens.
+- Android uses the official @capacitor/clipboard plugin; Windows reads the clipboard directly.
+
 ## v1.13.0 — 2026-11-27
 
 ### SMS inbox: bank alerts → transactions in one tap

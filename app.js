@@ -131,7 +131,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.13.0';
+const APP_VERSION = 'v1.13.1';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -6393,8 +6393,8 @@ function renderSmsInbox() {
   if (!items.length) {
     list.innerHTML = '<div class="sms-inbox-empty"><i class="fa-solid fa-inbox"></i><p>No messages waiting.</p>' +
       '<p class="hint-small">' + (getShareInboxPlugin()
-        ? 'In your SMS app, long-press a bank message → Share → <b>Calendar: SMS inbox</b>.'
-        : 'Paste bank SMS text above.') + '</p></div>';
+        ? 'In your SMS app, long-press a bank message → <b>Copy</b>, then tap <b>Paste copied SMS</b>. (If your SMS app has <b>Share</b>, share to <b>Calendar: SMS inbox</b> instead.)'
+        : 'Copy a bank SMS, then tap <b>Paste copied SMS</b>.') + '</p></div>';
   }
 
   let ready = 0;
@@ -6548,7 +6548,51 @@ async function postSmsInboxItems(ids = null) {
     (left ? ` · ${left} still need details` : ''), 'success', 4500);
 }
 
+// Android: Capacitor Clipboard plugin. Windows (Electron) and browsers: the web Clipboard API.
+async function readClipboardText() {
+  const cb = window.SRG_NATIVE && window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Clipboard;
+  if (cb && typeof cb.read === 'function') {
+    const r = await cb.read();
+    return (r && typeof r.value === 'string') ? r.value : '';
+  }
+  if (navigator.clipboard && navigator.clipboard.readText) return await navigator.clipboard.readText();
+  throw new Error('Clipboard is not available here');
+}
+
+function showSmsPasteBoxFallback(message) {
+  const box = document.querySelector('#smsInboxModal .sms-paste-box');
+  if (box) box.open = true;
+  const ta = document.getElementById('smsPasteInput');
+  if (ta) ta.focus();
+  showToast(message, 'info', 4500);
+}
+
+async function pasteSmsFromClipboard() {
+  if (!smsInboxCanSave()) { showToast('⚠ Unlock the app to save.', 'warning', 3500); return; }
+  let text = '';
+  try {
+    text = (await readClipboardText() || '').trim();
+  } catch (err) {
+    showSmsPasteBoxFallback('Could not read the clipboard here. Long-press the box below → Paste.');
+    return;
+  }
+  if (!text) {
+    showSmsPasteBoxFallback('Clipboard is empty. In your SMS app, long-press the bank message → Copy, then tap here again.');
+    return;
+  }
+  const looksLikeMoney = SmsParser.splitSharedText(text).some(t => SmsParser.isOtpMessage(t) || SmsParser.parseBankSms(t, formatDateYMD(new Date())).readable);
+  if (!looksLikeMoney && !confirm('The copied text does not look like a bank SMS:\n\n"' + text.slice(0, 120) + (text.length > 120 ? '…' : '') + '"\n\nAdd it to the SMS inbox anyway?')) return;
+  try {
+    const r = await smsInboxIntake([{ text, at: Date.now() }]);
+    smsIntakeToast(r);
+    renderSmsInbox();
+  } catch (err) {
+    showToast('❌ Could not save: ' + err.message, 'error', 5000);
+  }
+}
+
 function initSmsInboxUi() {
+  document.getElementById('smsClipboardBtn')?.addEventListener('click', pasteSmsFromClipboard);
   document.getElementById('closeSmsInboxBtn')?.addEventListener('click', closeSmsInboxModal);
   document.getElementById('smsPostAllBtn')?.addEventListener('click', () => postSmsInboxItems(null));
   document.getElementById('smsManageAccountsBtn')?.addEventListener('click', openChartOfAccountsModal);
