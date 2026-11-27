@@ -4935,3 +4935,58 @@ input:focus, select:focus, textarea:focus {
   justify-content: center;
   font-size: 0.95rem;
 }
+
+/* v1.13.2 — SMS inbox keeps every message: status tabs, chips, archived cards */
+.sms-tabs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding-bottom: 2px;
+}
+.sms-tabs::-webkit-scrollbar { display: none; }
+.sms-tab {
+  flex: 0 0 auto;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 16px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--text-muted);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+}
+.sms-tab.active {
+  color: #fff;
+  background: #3b82f6;
+  border-color: #3b82f6;
+}
+.sms-archive-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.sms-archive-what { font-size: 0.85rem; font-weight: 600; color: var(--text-main); }
+.sms-status-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 10px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.sms-status-chip.status-pending { color: #f59e0b; background: rgba(245, 158, 11, 0.14); }
+.sms-status-chip.status-posted  { color: #10b981; background: rgba(16, 185, 129, 0.14); }
+.sms-status-chip.status-ignored { color: var(--text-muted); background: rgba(148, 163, 184, 0.16); }
+.sms-card.archived.status-posted  { border-left-color: #10b981; }
+.sms-card.archived.status-ignored { border-left-color: #64748b; opacity: 0.85; }
+.sms-posted-line.warn { color: #f59e0b; }
+.sms-card-foot { grid-template-columns: 1fr auto auto auto; }
+.sms-card-foot .sms-delete-btn { min-width: 36px; width: 36px; padding: 0; }
+.sms-inbox-body > * { flex-shrink: 0; }
+.sms-tabs { flex-wrap: wrap; overflow: visible; }

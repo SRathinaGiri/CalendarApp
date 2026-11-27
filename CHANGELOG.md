@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here. Versions follow the in-app version (`APP_VERSION` in `app.js`, `CACHE_NAME` in `sw.js`).
 
+## v1.13.2 — 2026-11-27
+
+### SMS inbox keeps every message
+- Nothing is removed automatically any more. Each message stays, with its original text, tagged **To be processed**, **Posted** or **Ignored**; tabs filter by tag (with counts) or show **All**.
+- A message leaves the inbox only when you delete it (🗑, with confirmation). Deleting a posted message keeps the transaction it created.
+- **Ignored** messages can be **restored** to To be processed. If a posted message's transaction is later deleted from the accounts, the message says so and offers **Process again**.
+- Posted messages show the voucher they created (Dr / Cr accounts).
+- Messages posted or ignored in v1.13.0–v1.13.1 had their text cleared at the time; their details (amount, date, party, reference) are still shown.
+
 ## v1.13.1 — 2026-11-27
 
 ### SMS inbox: copy instead of share

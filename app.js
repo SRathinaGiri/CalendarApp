@@ -131,7 +131,7 @@ function dismissToast(toastEl) {
 }
 
 // Register Service Worker for Offline PWA & Lifecycle Management
-const APP_VERSION = 'v1.13.1';
+const APP_VERSION = 'v1.13.2';
 let deferredInstallPrompt = null;
 let swRegistration = null;
 let updateWaiting = false;
@@ -6152,8 +6152,8 @@ function updateFinanceDateHint(dateStr) {
    - sms-parser.js reads amount, payment/receipt, date, own account (last 4), party and reference.
    - Account mapping rules: own account last-4 -> bank/card account; party -> ledger account.
      Choosing an account once fills every other waiting message with the same account or party.
-   - The raw SMS text is kept only until the item is posted or ignored, then cleared.
-     OTP / verification-code messages are never saved. The UPI/UTR reference is kept to skip re-shares.
+   - Every message is kept, with its text, as To be processed / Posted / Ignored until the user deletes it.
+     OTP / verification-code messages are never saved. The UPI/UTR reference skips re-shares.
    ========================================================================== */
 const SMS_SUSPENSE_ACCOUNT = 'Suspense A/c';
 
@@ -6380,6 +6380,147 @@ function smsAccountSelect(cls, value, placeholder, accounts) {
   return sel;
 }
 
+// Every message is kept with its status until the user deletes it.
+let smsInboxFilter = 'pending';
+const SMS_STATUS_LABELS = { pending: 'To be processed', posted: 'Posted', ignored: 'Ignored' };
+
+function getSmsItems(filter) {
+  if (!db) return [];
+  if (filter === 'pending') return getPendingSmsItems();
+  try {
+    const where = filter === 'all' ? '' : 'WHERE status = ?';
+    const res = db.exec(`SELECT * FROM sms_inbox ${where} ORDER BY txn_date DESC, received_at DESC`, filter === 'all' ? [] : [filter]);
+    return res.length ? rowsToObjects(res[0]) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function smsStatusCounts() {
+  const c = { pending: 0, posted: 0, ignored: 0, all: 0 };
+  try {
+    const res = db ? db.exec("SELECT status, COUNT(*) FROM sms_inbox GROUP BY status") : [];
+    (res.length ? res[0].values : []).forEach(([st, n]) => { if (c[st] !== undefined) c[st] = n; c.all += n; });
+  } catch (e) {}
+  return c;
+}
+
+function renderSmsTabs(counts) {
+  const bar = document.getElementById('smsInboxTabs');
+  if (!bar) return;
+  bar.innerHTML = '';
+  [['pending', 'To be processed'], ['posted', 'Posted'], ['ignored', 'Ignored'], ['all', 'All']].forEach(([key, label]) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'sms-tab' + (smsInboxFilter === key ? ' active' : '');
+    b.setAttribute('role', 'tab');
+    b.setAttribute('aria-selected', smsInboxFilter === key ? 'true' : 'false');
+    b.textContent = `${label} (${counts[key]})`;
+    b.addEventListener('click', () => { smsInboxFilter = key; renderSmsInbox(); });
+    bar.appendChild(b);
+  });
+}
+
+function smsStatusChip(status) {
+  const chip = document.createElement('span');
+  chip.className = 'sms-status-chip status-' + status;
+  chip.textContent = SMS_STATUS_LABELS[status] || status;
+  return chip;
+}
+
+function smsOriginalDetails(it) {
+  const raw = document.createElement('details');
+  raw.className = 'sms-raw';
+  const sum = document.createElement('summary');
+  sum.textContent = 'Original message';
+  const pre = document.createElement('p');
+  pre.textContent = it.raw_text || '(text not kept by an earlier version)';
+  raw.append(sum, pre);
+  return raw;
+}
+
+function smsDeleteButton(it) {
+  const del = document.createElement('button');
+  del.type = 'button';
+  del.className = 'btn-secondary btn-sm sms-delete-btn';
+  del.title = 'Delete this message';
+  del.setAttribute('aria-label', 'Delete this message');
+  del.innerHTML = '<i class="fa-solid fa-trash"></i>';
+  del.addEventListener('click', () => deleteSmsItem(it));
+  return del;
+}
+
+// The only way a message leaves the inbox: the user deletes it.
+async function deleteSmsItem(it) {
+  const msg = it.status === 'posted'
+    ? 'Delete this SMS permanently?\n\nThe transaction it created stays in your accounts. This cannot be undone.'
+    : 'Delete this SMS permanently?\n\nThis cannot be undone.';
+  if (!confirm(msg)) return;
+  db.run("DELETE FROM sms_inbox WHERE id = ?", [it.id]);
+  try { await saveDbToIndexedDB(); } catch (err) { showToast('❌ Could not save: ' + err.message, 'error', 5000); }
+  renderSmsInbox();
+}
+
+// Read-only card for Posted / Ignored messages.
+function buildSmsArchiveCard(it) {
+  const card = document.createElement('div');
+  card.className = 'sms-card archived status-' + it.status;
+  card.dataset.id = it.id;
+
+  const head = document.createElement('div');
+  head.className = 'sms-archive-head';
+  const what = document.createElement('span');
+  what.className = 'sms-archive-what';
+  const typeLabel = it.direction === 'receipt' ? '🟢 Receipt' : it.direction === 'payment' ? '🔴 Payment' : 'Unknown';
+  const dateLabel = /^\d{4}-\d{2}-\d{2}$/.test(it.txn_date || '')
+    ? formatDateIndian(new Date(...it.txn_date.split('-').map((v, i) => i === 1 ? v - 1 : +v))) : '';
+  what.textContent = [typeLabel, it.amount > 0 ? formatINR(toPaise(it.amount)) : '', dateLabel].filter(Boolean).join(' · ');
+  head.append(smsStatusChip(it.status), what);
+
+  const meta = document.createElement('div');
+  meta.className = 'sms-card-meta';
+  meta.textContent = [it.acct_last4 ? `A/c ··${it.acct_last4}` : '', it.party, it.ref ? `Ref ${it.ref}` : ''].filter(Boolean).join(' · ');
+
+  card.append(head);
+  if (meta.textContent) card.append(meta);
+
+  let txnMissing = false;
+  if (it.status === 'posted') {
+    const line = document.createElement('div');
+    line.className = 'sms-card-meta sms-posted-line';
+    const res = it.txn_id ? db.exec("SELECT debit_account, credit_account FROM daily_transactions WHERE id = ?", [it.txn_id]) : [];
+    if (res.length && res[0].values.length) {
+      line.textContent = `Dr ${res[0].values[0][0]} · Cr ${res[0].values[0][1]}`;
+    } else {
+      txnMissing = true;
+      line.textContent = 'Its transaction has since been deleted from the accounts.';
+      line.classList.add('warn');
+    }
+    card.append(line);
+  }
+  card.append(smsOriginalDetails(it));
+
+  const foot = document.createElement('div');
+  foot.className = 'sms-card-foot';
+  foot.append(document.createElement('span'));
+  if (it.status === 'ignored' || txnMissing) {
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.className = 'btn-secondary btn-sm';
+    back.innerHTML = '<i class="fa-solid fa-rotate-left"></i> ' + (txnMissing ? 'Process again' : 'Restore');
+    back.title = 'Move back to To be processed';
+    back.addEventListener('click', async () => {
+      smsUpdateItem(it.id, { status: 'pending', txn_id: null });
+      try { await saveDbToIndexedDB(); } catch (e) {}
+      renderSmsInbox();
+    });
+    foot.append(back);
+  }
+  foot.append(smsDeleteButton(it));
+  card.append(foot);
+  return card;
+}
+
 function renderSmsInbox() {
   const list = document.getElementById('smsInboxList');
   const summary = document.getElementById('smsInboxSummary');
@@ -6387,20 +6528,25 @@ function renderSmsInbox() {
   if (!list) return;
   const useSuspense = !!document.getElementById('smsSuspenseChk')?.checked;
   const items = getPendingSmsItems();
+  const shown = smsInboxFilter === 'pending' ? items : getSmsItems(smsInboxFilter);
   const accounts = getChartOfAccounts();
   list.innerHTML = '';
+  renderSmsTabs(smsStatusCounts());
 
-  if (!items.length) {
+  if (!shown.length && smsInboxFilter !== 'pending') {
+    list.innerHTML = '<div class="sms-inbox-empty"><i class="fa-solid fa-inbox"></i><p>No ' +
+      (smsInboxFilter === 'all' ? '' : escapeHtml(SMS_STATUS_LABELS[smsInboxFilter].toLowerCase()) + ' ') + 'messages.</p></div>';
+  } else if (!shown.length) {
     list.innerHTML = '<div class="sms-inbox-empty"><i class="fa-solid fa-inbox"></i><p>No messages waiting.</p>' +
       '<p class="hint-small">' + (getShareInboxPlugin()
         ? 'In your SMS app, long-press a bank message → <b>Copy</b>, then tap <b>Paste copied SMS</b>. (If your SMS app has <b>Share</b>, share to <b>Calendar: SMS inbox</b> instead.)'
         : 'Copy a bank SMS, then tap <b>Paste copied SMS</b>.') + '</p></div>';
   }
 
-  let ready = 0;
-  items.forEach(it => {
+  const ready = items.filter(it => !smsItemProblem(it, useSuspense)).length;
+  shown.forEach(it => {
+    if (it.status !== 'pending') { list.appendChild(buildSmsArchiveCard(it)); return; }
     const problem = smsItemProblem(it, useSuspense);
-    if (!problem) ready++;
     const card = document.createElement('div');
     card.className = 'sms-card ' + (problem ? 'incomplete' : 'ready');
     card.dataset.id = it.id;
@@ -6440,13 +6586,7 @@ function renderSmsInbox() {
     partySel.setAttribute('aria-label', it.direction === 'receipt' ? 'Received from' : 'Paid to');
     accts.append(bankSel, partySel);
 
-    const raw = document.createElement('details');
-    raw.className = 'sms-raw';
-    const sum = document.createElement('summary');
-    sum.textContent = 'Original message';
-    const pre = document.createElement('p');
-    pre.textContent = it.raw_text || '';
-    raw.append(sum, pre);
+    const raw = smsOriginalDetails(it);
 
     const foot = document.createElement('div');
     foot.className = 'sms-card-foot';
@@ -6458,9 +6598,12 @@ function renderSmsInbox() {
     const post = document.createElement('button');
     post.type = 'button'; post.className = 'btn-primary btn-sm'; post.innerHTML = '<i class="fa-solid fa-check"></i> Post';
     post.disabled = !!problem;
-    foot.append(status, ignore, post);
+    foot.append(status, ignore, smsDeleteButton(it), post);
 
-    card.append(top, meta, accts, raw, foot);
+    const head = document.createElement('div');
+    head.className = 'sms-archive-head';
+    head.append(smsStatusChip('pending'));
+    card.append(head, top, meta, accts, raw, foot);
     list.appendChild(card);
 
     // Edits are saved as they are made, so the inbox can be finished later.
@@ -6480,7 +6623,7 @@ function renderSmsInbox() {
       if (more) showToast(`Also filled ${more} other message${more > 1 ? 's' : ''} for ${it.party}`, 'info', 3000);
     });
     ignore.addEventListener('click', async () => {
-      smsUpdateItem(it.id, { status: 'ignored', raw_text: '' });
+      smsUpdateItem(it.id, { status: 'ignored' });
       await saveDbToIndexedDB().catch(() => {});
       renderSmsInbox(); refreshSmsInboxBadges();
     });
@@ -6520,7 +6663,7 @@ async function postSmsInboxItems(ids = null) {
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [txnId, it.txn_date, it.direction, isPayment ? party : bank, isPayment ? bank : party,
          toPaise(it.amount) / 100, desc, now, now]);
-      smsUpdateItem(it.id, { status: 'posted', txn_id: txnId, raw_text: '' });
+      smsUpdateItem(it.id, { status: 'posted', txn_id: txnId });
       // Remember mappings for the next messages (Suspense is a fallback, not a choice to remember).
       if (it.acct_last4) smsSetRule('acct', it.acct_last4, bank);
       if (it.party && findAccount(it.party_account)) smsSetRule('party', smsPartyKey(it.party), party);
